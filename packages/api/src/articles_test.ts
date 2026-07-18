@@ -32,7 +32,13 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
       },
     },
     ASSETS: { fetch: () => Promise.resolve(new Response("not used")) },
+    AI: {
+      run(): Promise<unknown> {
+        throw new Error("AI.run should not be called — these tests configure direct/gateway mode");
+      },
+    },
     SUMMARY_MODEL: "test-model",
+    WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     ANTHROPIC_API_KEY: "test-key",
     ...overrides,

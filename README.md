@@ -1,8 +1,9 @@
 # ClipFeed
 
 A personal article-digest web app. Save articles (via a Chrome extension, Telegram, or an automated
-agent); the backend extracts text and generates Russian + English AI summaries via the Anthropic
-API; a minimalist SPA shows them as a Medium-like single-column feed.
+agent); the backend extracts text and generates Russian + English AI summaries (Cloudflare Workers
+AI by default, or Claude via direct API or AI Gateway — see "LLM modes" below); a minimalist SPA
+shows them as a Medium-like single-column feed.
 
 Runs as a single Cloudflare Worker (Workers Static Assets) serving both the JSON API (Hono) and the
 SPA. Storage is Cloudflare D1 + KV. Deno is the task runner, formatter, linter, and test runner;
@@ -35,6 +36,24 @@ packages/shared/src/types.ts  Types shared between API and (future) SPA
 migrations/                   D1 schema migrations
 ```
 
+## LLM modes
+
+ClipFeed picks a summarization backend at request time, in this priority order:
+
+1. **Workers AI (default)** — zero config, free tier (10k neurons/day), works immediately after
+   `deno task deploy` with no secrets set. Uses Cloudflare's
+   `@cf/meta/llama-3.3-70b-instruct-fp8-fast` via the native `AI` binding declared in
+   `wrangler.toml`. Quality is noticeably below Claude for nuanced summarization — good enough to
+   try the app out, not the last word.
+2. **AI Gateway (recommended upgrade)** — routes calls through Cloudflare AI Gateway to a real
+   Claude model, with usage/cost visibility and key rotation without a redeploy. Set secrets
+   `AI_GATEWAY_URL` (+ `CF_AIG_TOKEN` for an authenticated gateway).
+3. **Direct Anthropic** — calls `api.anthropic.com` straight. Set secret `ANTHROPIC_API_KEY`.
+
+Setting `AI_GATEWAY_URL` moves you to mode 2 regardless of whether `ANTHROPIC_API_KEY` is also set;
+setting only `ANTHROPIC_API_KEY` moves you to mode 3; leaving both unset stays on the free Workers
+AI default. See "Deploy your own (fork)" below for the exact commands.
+
 ## Database
 
 Apply migrations locally with:
@@ -63,7 +82,8 @@ is tied to a specific account, domain, or Access team.
    and KV namespace, patches `wrangler.toml` with your real ids, and applies migrations to the
    remote database. It never commits that patch for you; review and commit it yourself. It also
    prints which of the secrets below are already set, without ever reading or printing their values.
-3. Choose one LLM mode and set its secret(s):
+3. (Optional) Upgrade the LLM mode — ClipFeed already works out of the box on the free Workers AI
+   default (see "LLM modes" above). To use a real Claude model instead, set one of:
    - **AI Gateway (recommended)** — gives you usage/cost visibility and lets you rotate or swap the
      provider key without a redeploy. Create a Gateway named `clipfeed` in the Cloudflare dashboard
      (AI > AI Gateway), then either store a provider (BYOK) key on it or load Unified Billing

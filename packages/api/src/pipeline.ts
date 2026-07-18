@@ -1,7 +1,12 @@
 import "./env.d.ts";
+import type { SummaryJson } from "@clipfeed/shared/types";
 import { safeFetchText } from "./ssrf.ts";
 import { extractArticle } from "./extract.ts";
-import { renderSummaryMarkdown, summarizeArticle } from "./summarize.ts";
+import {
+  renderSummaryMarkdown,
+  summarizeArticle,
+  summarizeArticleWithWorkersAi,
+} from "./summarize.ts";
 import { tryConsumeSummaryBudget } from "./cost-guard.ts";
 import { markArticleFailed, markArticleReady } from "./db.ts";
 
@@ -20,6 +25,37 @@ export function mergeTags(requestTags: string[], modelTags: string[]): string[] 
   return Array.from(new Set(merged));
 }
 
+// Provider selection, in priority order: AI Gateway > direct Anthropic >
+// Workers AI. Workers AI needs no configuration at all (the AI binding is
+// always present), so it's the zero-config default when neither of the
+// other two is set up.
+export async function runSummarization(
+  env: Env,
+  title: string,
+  text: string,
+): Promise<SummaryJson> {
+  if (env.AI_GATEWAY_URL) {
+    return await summarizeArticle(
+      {
+        apiKey: env.ANTHROPIC_API_KEY,
+        aiGatewayUrl: env.AI_GATEWAY_URL,
+        aiGatewayToken: env.CF_AIG_TOKEN,
+        model: env.SUMMARY_MODEL,
+      },
+      title,
+      text,
+    );
+  }
+  if (env.ANTHROPIC_API_KEY) {
+    return await summarizeArticle(
+      { apiKey: env.ANTHROPIC_API_KEY, model: env.SUMMARY_MODEL },
+      title,
+      text,
+    );
+  }
+  return await summarizeArticleWithWorkersAi(env.AI, env.WORKERS_AI_MODEL, title, text);
+}
+
 // Runs the full extract -> summarize -> persist pipeline for one article.
 // Called from ctx.executionCtx.waitUntil() — never throws, always leaves the
 // row in 'ready' or 'failed'.
@@ -35,16 +71,7 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
       return;
     }
 
-    const summary = await summarizeArticle(
-      {
-        apiKey: env.ANTHROPIC_API_KEY,
-        aiGatewayUrl: env.AI_GATEWAY_URL,
-        aiGatewayToken: env.CF_AIG_TOKEN,
-        model: env.SUMMARY_MODEL,
-      },
-      title,
-      extracted.textContent,
-    );
+    const summary = await runSummarization(env, title, extracted.textContent);
 
     await markArticleReady(env.DB, input.id, {
       full_text: extracted.textContent,
