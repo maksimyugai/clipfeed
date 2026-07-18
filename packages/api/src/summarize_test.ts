@@ -1,10 +1,21 @@
+import "./env.d.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   buildAnthropicRequest,
   parseSummaryJson,
+  parseWorkersAiResult,
   renderSummaryMarkdown,
   summarizeArticle,
+  summarizeArticleWithWorkersAi,
 } from "./summarize.ts";
+
+function makeStubAi(handler: (model: string, input: Record<string, unknown>) => unknown): Ai {
+  return {
+    run(model: string, input: unknown): Promise<unknown> {
+      return Promise.resolve(handler(model, input as Record<string, unknown>));
+    },
+  };
+}
 
 const VALID_SUMMARY = {
   title_ru: "Заголовок",
@@ -240,4 +251,125 @@ Deno.test("summarizeArticle: fails after two broken responses", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// --- Workers AI mode ---
+
+const VALID_SUMMARY_2 = {
+  title_ru: "Заголовок 2",
+  title_en: "Title 2",
+  tldr_ru: "Кратко 2.",
+  tldr_en: "Short 2.",
+  bullets_ru: ["А", "Б", "В"],
+  bullets_en: ["A", "B", "C"],
+  tags: ["новости"],
+  lang_original: "ru",
+};
+
+Deno.test("parseWorkersAiResult: plain string response", () => {
+  assertEquals(parseWorkersAiResult(JSON.stringify(VALID_SUMMARY_2)), VALID_SUMMARY_2);
+});
+
+Deno.test("parseWorkersAiResult: { response: string } wrapper", () => {
+  assertEquals(
+    parseWorkersAiResult({ response: JSON.stringify(VALID_SUMMARY_2) }),
+    VALID_SUMMARY_2,
+  );
+});
+
+Deno.test("parseWorkersAiResult: { response: object } wrapper (json_schema honored)", () => {
+  assertEquals(parseWorkersAiResult({ response: VALID_SUMMARY_2 }), VALID_SUMMARY_2);
+});
+
+Deno.test("parseWorkersAiResult: bare object with no response wrapper", () => {
+  assertEquals(parseWorkersAiResult(VALID_SUMMARY_2), VALID_SUMMARY_2);
+});
+
+Deno.test("parseWorkersAiResult: broken string returns null", () => {
+  assertEquals(parseWorkersAiResult("not json"), null);
+});
+
+Deno.test("parseWorkersAiResult: object missing a required field returns null", () => {
+  const { tags: _tags, ...withoutTags } = VALID_SUMMARY_2;
+  assertEquals(parseWorkersAiResult({ response: withoutTags }), null);
+});
+
+Deno.test("parseWorkersAiResult: non-object, non-string results are null", () => {
+  assertEquals(parseWorkersAiResult(null), null);
+  assertEquals(parseWorkersAiResult(undefined), null);
+  assertEquals(parseWorkersAiResult(42), null);
+});
+
+Deno.test("summarizeArticleWithWorkersAi: succeeds with response_format honored (object response)", async () => {
+  let calls = 0;
+  const ai = makeStubAi((_model, input) => {
+    calls += 1;
+    assertEquals(typeof input.response_format, "object");
+    return { response: VALID_SUMMARY_2 };
+  });
+
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+  assertEquals(calls, 1);
+});
+
+Deno.test("summarizeArticleWithWorkersAi: succeeds with a plain string response", async () => {
+  const ai = makeStubAi(() => ({ response: JSON.stringify(VALID_SUMMARY_2) }));
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+});
+
+Deno.test("summarizeArticleWithWorkersAi: falls back to plain messages when response_format is rejected", async () => {
+  let calls = 0;
+  const ai = makeStubAi((_model, input) => {
+    calls += 1;
+    if (input.response_format) {
+      throw new Error("response_format is not supported by this model");
+    }
+    return { response: JSON.stringify(VALID_SUMMARY_2) };
+  });
+
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+  assertEquals(calls, 2); // schema attempt (throws) + plain fallback (succeeds)
+});
+
+Deno.test("summarizeArticleWithWorkersAi: retries once on broken output, then succeeds", async () => {
+  let calls = 0;
+  const ai = makeStubAi(() => {
+    calls += 1;
+    if (calls === 1) return { response: "not valid json" };
+    return { response: VALID_SUMMARY_2 };
+  });
+
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+  assertEquals(calls, 2);
+});
+
+Deno.test("summarizeArticleWithWorkersAi: fails after two broken responses with a workers-ai-prefixed error", async () => {
+  let calls = 0;
+  const ai = makeStubAi(() => {
+    calls += 1;
+    return { response: "still not json" };
+  });
+
+  await assertRejects(
+    () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
+    Error,
+    "workers ai error:",
+  );
+  assertEquals(calls, 2);
+});
+
+Deno.test("summarizeArticleWithWorkersAi: a hard binding failure surfaces as a workers-ai-prefixed error", async () => {
+  const ai = makeStubAi(() => {
+    throw new Error("binding call failed: model not found");
+  });
+
+  await assertRejects(
+    () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
+    Error,
+    "workers ai error: binding call failed: model not found",
+  );
 });
