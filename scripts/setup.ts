@@ -62,6 +62,24 @@ export function extractKvId(wranglerOutput: string): string | null {
   return wranglerOutput.match(/\bid\s*=\s*"([0-9a-f]{32})"/)?.[1] ?? null;
 }
 
+export function findExistingD1Id(
+  databases: { name: string; uuid: string }[],
+  dbName: string,
+): string | null {
+  return databases.find((db) => db.name === dbName)?.uuid ?? null;
+}
+
+// `wrangler kv namespace create <binding>` titles the namespace exactly
+// <binding> (no project-name prefix, at least on wrangler 4.x) — matched
+// this way after a real setup run produced a namespace titled plain "CACHE",
+// not "clipfeed-CACHE" as an earlier version of this function assumed.
+export function findExistingKvId(
+  namespaces: { id: string; title: string }[],
+  binding: string,
+): string | null {
+  return namespaces.find((ns) => ns.title === binding)?.id ?? null;
+}
+
 // --- Orchestration ---
 
 async function ensureAuthenticated(): Promise<void> {
@@ -85,7 +103,7 @@ async function ensureD1(toml: string, created: string[], reused: string[]): Prom
   if (list.code === 0) {
     try {
       const databases = JSON.parse(list.stdout) as { name: string; uuid: string }[];
-      existingId = databases.find((db) => db.name === D1_DB_NAME)?.uuid ?? null;
+      existingId = findExistingD1Id(databases, D1_DB_NAME);
     } catch {
       // Unparseable list output — fall through to create.
     }
@@ -118,7 +136,7 @@ async function ensureKv(toml: string, created: string[], reused: string[]): Prom
   if (list.code === 0) {
     try {
       const namespaces = JSON.parse(list.stdout) as { id: string; title: string }[];
-      existingId = namespaces.find((ns) => ns.title.endsWith(`-${KV_BINDING}`))?.id ?? null;
+      existingId = findExistingKvId(namespaces, KV_BINDING);
     } catch {
       // Unparseable list output — fall through to create.
     }

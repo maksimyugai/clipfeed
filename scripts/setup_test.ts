@@ -2,6 +2,8 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   extractDatabaseId,
   extractKvId,
+  findExistingD1Id,
+  findExistingKvId,
   patchD1DatabaseId,
   patchKvNamespaceId,
   readD1DatabaseId,
@@ -105,4 +107,39 @@ Deno.test("extractKvId: parses the id from `wrangler kv namespace create` output
 
 Deno.test("extractKvId: returns null when there is no id field", () => {
   assertEquals(extractKvId("some unrelated wrangler output"), null);
+});
+
+Deno.test("findExistingD1Id: matches by exact database name", () => {
+  const databases = [
+    { name: "other-db", uuid: "00000000-0000-0000-0000-000000000000" },
+    { name: "clipfeed", uuid: "11111111-2222-3333-4444-555555555555" },
+  ];
+  assertEquals(findExistingD1Id(databases, "clipfeed"), "11111111-2222-3333-4444-555555555555");
+});
+
+Deno.test("findExistingD1Id: returns null when no database matches", () => {
+  const databases = [{ name: "other-db", uuid: "00000000-0000-0000-0000-000000000000" }];
+  assertEquals(findExistingD1Id(databases, "clipfeed"), null);
+});
+
+Deno.test("findExistingKvId: matches the exact binding title, e.g. plain 'CACHE'", () => {
+  // Regression test: `wrangler kv namespace create CACHE` titles the
+  // namespace exactly "CACHE" (no "clipfeed-" prefix) on wrangler 4.x —
+  // an earlier version of this lookup assumed a "<project>-CACHE" prefix
+  // and silently never found an existing namespace, causing setup to try
+  // (and fail) to create a duplicate every run.
+  const namespaces = [
+    { id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", title: "CACHE" },
+    { id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", title: "some-other-kv" },
+  ];
+  assertEquals(findExistingKvId(namespaces, "CACHE"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+});
+
+Deno.test("findExistingKvId: does not match on a prefixed title", () => {
+  const namespaces = [{ id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", title: "clipfeed-CACHE" }];
+  assertEquals(findExistingKvId(namespaces, "CACHE"), null);
+});
+
+Deno.test("findExistingKvId: returns null when no namespace matches", () => {
+  assertEquals(findExistingKvId([], "CACHE"), null);
 });
