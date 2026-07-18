@@ -36,8 +36,12 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
     }
 
     const summary = await summarizeArticle(
-      env.ANTHROPIC_API_KEY,
-      env.SUMMARY_MODEL,
+      {
+        apiKey: env.ANTHROPIC_API_KEY,
+        aiGatewayUrl: env.AI_GATEWAY_URL,
+        aiGatewayToken: env.CF_AIG_TOKEN,
+        model: env.SUMMARY_MODEL,
+      },
       title,
       extracted.textContent,
     );

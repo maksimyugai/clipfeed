@@ -3,8 +3,17 @@
 #
 # In production, set secrets with `wrangler secret put <NAME>` instead.
 
-# Required. Get a key at https://console.anthropic.com/
+# Pick one LLM mode.
+
+# --- Direct mode: call api.anthropic.com straight. ---
+# Get a key at https://console.anthropic.com/
 ANTHROPIC_API_KEY=
+
+# --- AI Gateway mode (recommended): route calls through Cloudflare AI ---
+# --- Gateway instead. Uncomment both and leave ANTHROPIC_API_KEY empty, ---
+# --- unless you want a per-request BYOK passthrough alongside the gateway. ---
+# AI_GATEWAY_URL=https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/anthropic
+# CF_AIG_TOKEN=
 
 # Optional local overrides of the [vars] defaults in wrangler.toml.
 # SUMMARY_MODEL=claude-haiku-4-5-20251001

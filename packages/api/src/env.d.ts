@@ -35,7 +35,12 @@ declare global {
     ASSETS: Fetcher;
     SUMMARY_MODEL: string;
     DAILY_SUMMARY_LIMIT: number;
-    ANTHROPIC_API_KEY: string;
+    // LLM credentials/routing: pick one mode. Direct: ANTHROPIC_API_KEY only.
+    // AI Gateway: AI_GATEWAY_URL (+ CF_AIG_TOKEN for an authenticated
+    // gateway). Both are secrets (`wrangler secret put`), never [vars].
+    ANTHROPIC_API_KEY?: string;
+    AI_GATEWAY_URL?: string;
+    CF_AIG_TOKEN?: string;
   }
 }
 
