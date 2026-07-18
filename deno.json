@@ -9,11 +9,16 @@
   },
   "imports": {
     "hono": "npm:hono@^4.6.0",
-    "esbuild": "npm:esbuild@^0.24.0"
+    "esbuild": "npm:esbuild@^0.24.0",
+    "linkedom": "npm:linkedom@^0.18.13",
+    "@mozilla/readability": "npm:@mozilla/readability@^0.6.0",
+    "@std/assert": "jsr:@std/assert@^1.0.0",
+    "@clipfeed/shared/types": "./packages/shared/src/types.ts"
   },
   "nodeModulesDir": "auto",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    "lib": ["deno.window", "dom", "dom.iterable"]
   },
   "fmt": {
     "lineWidth": 100

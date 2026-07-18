@@ -1,6 +1,6 @@
 name = "clipfeed"
 main = "dist/api/index.js"
-compatibility_date = "2024-09-23"
+compatibility_date = "2026-07-01"
 
 [vars]
 SUMMARY_MODEL = "claude-haiku-4-5-20251001"
