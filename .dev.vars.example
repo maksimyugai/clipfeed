@@ -1,0 +1,11 @@
+# Copy this file to .dev.vars and fill in your own values for local
+# development (`.dev.vars` is gitignored — never commit real secrets).
+#
+# In production, set secrets with `wrangler secret put <NAME>` instead.
+
+# Required. Get a key at https://console.anthropic.com/
+ANTHROPIC_API_KEY=
+
+# Optional local overrides of the [vars] defaults in wrangler.toml.
+# SUMMARY_MODEL=claude-haiku-4-5-20251001
+# DAILY_SUMMARY_LIMIT=50

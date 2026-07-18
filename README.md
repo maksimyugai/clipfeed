@@ -42,5 +42,22 @@ Apply migrations locally with:
 deno run -A npm:wrangler d1 migrations apply DB --local
 ```
 
-`wrangler.toml` currently has a placeholder `database_id` and KV `id` — real resource provisioning
-happens outside this task.
+`wrangler.toml` currently has a placeholder `database_id` and KV `id`. A `deno task setup` script
+(arriving in a later task) will create these resources in your own Cloudflare account and fill them
+in — see "Deploy your own (fork)" below.
+
+## Deploy your own (fork)
+
+ClipFeed is designed to be forked and run under your own Cloudflare account — nothing in this repo
+is tied to a specific account, domain, or Access team. Full setup automation is still in progress;
+the intended steps are:
+
+1. Fork the repo.
+2. Run `deno task setup` (coming in a later task) to create your D1 database and KV namespace and
+   fill in `wrangler.toml`.
+3. Set the `ANTHROPIC_API_KEY` secret: `deno run -A npm:wrangler secret put ANTHROPIC_API_KEY`.
+4. `deno task deploy`.
+5. Configure Cloudflare Access on your Worker (later task) to restrict who can reach it.
+
+See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
+the forkability policy new changes must follow.

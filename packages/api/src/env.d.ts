@@ -20,6 +20,8 @@ declare global {
     DB: D1Database;
     CACHE: KVNamespace;
     ASSETS: Fetcher;
+    SUMMARY_MODEL: string;
+    DAILY_SUMMARY_LIMIT: number;
   }
 }
 
