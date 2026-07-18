@@ -1,0 +1,17 @@
+name = "clipfeed"
+main = "dist/api/index.js"
+compatibility_date = "2024-09-23"
+
+[assets]
+directory = "./dist/web"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clipfeed"
+database_id = "PLACEHOLDER"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "PLACEHOLDER"

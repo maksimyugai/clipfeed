@@ -1,0 +1,22 @@
+{
+  "tasks": {
+    "dev": "deno run -A scripts/build.ts && deno run -A npm:wrangler dev",
+    "build": "deno run -A scripts/build.ts",
+    "deploy": "deno task build && deno run -A npm:wrangler deploy",
+    "test": "deno test -A",
+    "fmt": "deno fmt",
+    "lint": "deno lint"
+  },
+  "imports": {
+    "hono": "npm:hono@^4.6.0",
+    "esbuild": "npm:esbuild@^0.24.0"
+  },
+  "nodeModulesDir": "auto",
+  "compilerOptions": {
+    "strict": true
+  },
+  "fmt": {
+    "lineWidth": 100
+  },
+  "allowScripts": ["npm:sharp", "npm:workerd"]
+}
