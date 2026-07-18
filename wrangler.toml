@@ -17,9 +17,9 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "clipfeed"
-database_id = "PLACEHOLDER"
+database_id = "44591469-9b64-48e4-8799-0330f5f8382e"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "CACHE"
-id = "PLACEHOLDER"
+id = "8e4fddfbda204322a609830cc771124f"
