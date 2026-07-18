@@ -39,4 +39,9 @@ jobs:
 
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
+        env:
+          # Required so the action can call the GitHub API to resolve the PR's
+          # commit range; the default per-run token already has read access,
+          # no separate secret needed.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # No GITLEAKS_LICENSE needed — that's only required for private repos.
