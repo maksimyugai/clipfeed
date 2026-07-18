@@ -1,0 +1,78 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.9.1"
+
+      - name: Format check
+        run: deno fmt --check
+
+      - name: Lint
+        run: deno lint
+
+      - name: Test
+        run: deno task test
+
+      - name: Build
+        run: deno task build
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    # A fork's repo has no Cloudflare secrets configured — every step below
+    # is individually gated on this so the job finishes green (steps show as
+    # skipped) instead of red. Job-level `if:` can't read this same job's own
+    # `env:` block (env scoping only applies to steps), so the check has to
+    # live at the step level, not the job level.
+    env:
+      HAS_DEPLOY_SECRETS: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+    steps:
+      - name: Check for deploy secrets
+        run: |
+          if [ "$HAS_DEPLOY_SECRETS" != "true" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set on this repo (expected for forks) — skipping deploy."
+          fi
+
+      - name: Checkout
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.9.1"
+
+      - name: Build
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        run: deno task build
+
+      - name: Apply D1 migrations
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.107.0"
+          command: d1 migrations apply DB --remote
+
+      - name: Deploy
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.107.0"
+          command: deploy
