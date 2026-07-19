@@ -611,11 +611,18 @@ Deno.test("POST /api/admin/articles/:id/resummarize: ready -> resummarize -> rea
   const { ctx, settle } = makeExecutionContext();
 
   let articleFetchCount = 0;
+  function isAnthropicUrl(input: string | URL | Request): boolean {
+    try {
+      const url = input instanceof Request ? new URL(input.url) : new URL(input);
+      return url.protocol === "https:" && url.hostname === "api.anthropic.com";
+    } catch {
+      return false;
+    }
+  }
   function stubFetchCounting(anthropicText: string): () => void {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = ((input: string | URL | Request) => {
-      const url = input.toString();
-      if (url.startsWith("https://api.anthropic.com")) {
+      if (isAnthropicUrl(input)) {
         return Promise.resolve(
           new Response(
             JSON.stringify({ content: [{ type: "text", text: anthropicText }] }),
