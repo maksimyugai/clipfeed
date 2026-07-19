@@ -1,6 +1,7 @@
 import "./env.d.ts";
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { accessAuth, type AppEnv } from "./access-middleware.ts";
 import {
   deleteArticle,
   findArticleIdByUrl,
@@ -19,15 +20,17 @@ import {
   validatePatchArticleRequest,
 } from "./validation.ts";
 
-type AppEnv = { Bindings: Env };
-
 const app = new Hono<AppEnv>();
+
+// Auth: Cloudflare Access JWT, verified on every route below except
+// /api/health — see access-middleware.ts. No-ops (open) until
+// ACCESS_TEAM_DOMAIN + ACCESS_AUD are both configured.
+app.use("*", accessAuth());
 
 app.get("/api/health", (c) => {
   return c.json({ ok: true, ts: new Date().toISOString() });
 });
 
-// Auth: none yet — Cloudflare Access JWT enforcement lands in Task 3.
 // Reads the request body once, enforcing the overall size cap before
 // attempting to parse it as JSON.
 async function readJsonBody(
