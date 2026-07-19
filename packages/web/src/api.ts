@@ -112,3 +112,13 @@ export function retryArticle(id: string): Promise<CreateArticleResponse> {
     method: "POST",
   });
 }
+
+// Re-runs only the summarization step against the stored full_text (or the
+// full pipeline if there isn't one) — see the API's
+// POST /api/admin/articles/:id/resummarize for the distinction from retry.
+export function resummarizeArticle(id: string): Promise<CreateArticleResponse> {
+  return request<CreateArticleResponse>(
+    `/api/admin/articles/${encodeURIComponent(id)}/resummarize`,
+    { method: "POST" },
+  );
+}

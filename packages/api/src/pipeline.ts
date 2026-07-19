@@ -188,3 +188,61 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
     await markArticleFailed(env.DB, input.id, reason);
   }
 }
+
+export interface ResummarizeInput {
+  id: string;
+  title: string;
+  author: string | null;
+  fullText: string;
+  requestTags: string[];
+}
+
+// Re-runs ONLY the summarize -> persist stages against already-stored
+// full_text — no fetch/extract, so it's cheaper and deterministic relative
+// to a full re-run (see POST /api/admin/articles/:id/resummarize, which
+// falls back to runArticlePipeline() instead when there's no stored text
+// to summarize). Same terminal-state guarantee as runArticlePipeline: any
+// caught exception ends the row 'failed' with an 'internal: <stage>:
+// <message>' reason instead of leaving it 'pending'.
+export async function runResummarization(env: Env, input: ResummarizeInput): Promise<void> {
+  let stage = "budget";
+  try {
+    const mode = selectProviderMode({
+      aiGatewayUrl: env.AI_GATEWAY_URL,
+      cfAigToken: env.CF_AIG_TOKEN,
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+    });
+    const text = mode === "workers-ai"
+      ? input.fullText.slice(0, MAX_TEXT_CHARS_WORKERS_AI)
+      : input.fullText;
+
+    const withinBudget = await tryConsumeSummaryBudget(env.CACHE, env.DAILY_SUMMARY_LIMIT);
+    if (!withinBudget) {
+      await markArticleFailed(env.DB, input.id, "daily-limit");
+      return;
+    }
+
+    stage = "summarize";
+    const summarizeStart = performance.now();
+    const summary = await runSummarizationForMode(mode, env, input.title, text);
+    logStage(input.id, stage, summarizeStart, { mode, text_chars: text.length });
+
+    stage = "persist";
+    const persistStart = performance.now();
+    await markArticleReady(env.DB, input.id, {
+      full_text: text,
+      title: input.title,
+      author: input.author,
+      lang_original: summary.lang_original,
+      summary_ru: renderSummaryMarkdown(summary.tldr_ru, summary.bullets_ru),
+      summary_en: renderSummaryMarkdown(summary.tldr_en, summary.bullets_en),
+      summary_json: summary,
+      tags: mergeTags(input.requestTags, summary.tags),
+    });
+    logStage(input.id, stage, persistStart);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const reason = `internal: ${stage}: ${message}`.slice(0, 200);
+    await markArticleFailed(env.DB, input.id, reason);
+  }
+}

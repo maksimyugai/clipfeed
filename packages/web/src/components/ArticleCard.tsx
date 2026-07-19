@@ -94,6 +94,7 @@ export interface ArticleCardProps {
   onArchiveToggle: (id: string, archived: boolean) => void;
   onDelete: (id: string) => void;
   onRetry: (id: string) => void;
+  onResummarize: (id: string) => void;
   onArticleUpdate: (article: ArticleListItem) => void;
   isOwner: boolean;
 }
@@ -111,6 +112,7 @@ export function ArticleCard(props: ArticleCardProps) {
     onArchiveToggle,
     onDelete,
     onRetry,
+    onResummarize,
     onArticleUpdate,
     isOwner,
   } = props;
@@ -138,9 +140,20 @@ export function ArticleCard(props: ArticleCardProps) {
         <h3 class="card-title">{article.title}</h3>
         <p class="error-text">{dict.errorPrefix}: {article.error ?? "—"}</p>
         {isOwner && (
-          <button type="button" class="retry-button" onClick={() => onRetry(article.id)}>
-            {dict.retryButton}
-          </button>
+          <div class="card-failed-actions">
+            <button type="button" class="retry-button" onClick={() => onRetry(article.id)}>
+              {dict.retryButton}
+            </button>
+            <button
+              type="button"
+              class="delete-button-outline"
+              onClick={() => {
+                if (confirm(dict.deleteConfirm)) onDelete(article.id);
+              }}
+            >
+              {dict.deleteAction}
+            </button>
+          </div>
         )}
       </article>
     );
@@ -223,6 +236,16 @@ export function ArticleCard(props: ArticleCardProps) {
               {dict.summaryAddedVia} {viaLabel(dict, article.added_via)}
             </p>
             <div class="card-footer-actions">
+              {isOwner && (
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label={dict.resummarizeAction}
+                  onClick={() => onResummarize(article.id)}
+                >
+                  🔁
+                </button>
+              )}
               {isOwner && (
                 <button
                   type="button"

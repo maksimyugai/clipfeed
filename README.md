@@ -129,8 +129,19 @@ ClipFeed follows a **public-read / owner-write** model: the instance is meant to
 `GET /api/health`, `GET /api/config`, `GET /api/articles`, `GET /api/articles/:id`, and the SPA
 shell/static assets are all open, no login required — that's intentional, not a gap. Every
 _mutation_ — `POST /api/admin/articles`, `POST /api/admin/articles/:id/retry`,
-`PATCH /api/admin/articles/:id`, `DELETE /api/admin/articles/:id` — plus `GET /api/admin/me` and
-`GET /api/admin/login` live under `/api/admin/*` and require a verified Cloudflare Access identity.
+`POST /api/admin/articles/:id/resummarize`, `PATCH /api/admin/articles/:id`,
+`DELETE /api/admin/articles/:id` — plus `GET /api/admin/me` and `GET /api/admin/login` live under
+`/api/admin/*` and require a verified Cloudflare Access identity.
+
+**Retry vs. re-summarize:** these look similar but do different things. `retry` is for a
+stuck/failed pipeline run — it re-fetches the article from scratch (or accepts fresh HTML from the
+extension) and only works on a non-`ready` article. `resummarize` re-runs just the summarization
+step against the already-extracted text stored on the article, skipping the fetch/extract stages
+entirely when that text is available — cheaper, and deterministic input for comparing prompt/model
+changes on an article you already have. It works on both `ready` (the normal case — get a fresh
+summary without re-fetching) and `failed` (a superset of what retry can do, when there's stored text
+to work from) articles, and only falls back to a full pipeline run when there's nothing stored yet
+to summarize.
 
 **This fails closed:** until `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are both set, every request to
 `/api/admin/*` gets `401 {"error":"auth_not_configured"}` — including yours. Unlike the read side,
@@ -153,8 +164,8 @@ prefix, and the rest of the domain — including the SPA itself — stays outsid
 
 2. **Policy 1 (you):** Allow → Include → Emails → your email address. Login is via a one-time PIN or
    whatever identity provider you've configured for your Zero Trust team — this is what the SPA's
-   "sign in" link takes you through, landing back on the feed with the add/archive/delete/retry
-   controls now visible.
+   "sign in" link takes you through, landing back on the feed with the
+   add/archive/delete/retry/resummarize controls now visible.
 3. **Policy 2 (for the Chrome extension/bots):** Allow → Include → Service Auth → create a Service
    Token, e.g. named `clipfeed-extension`. Save its Client ID and Client Secret somewhere safe —
    they're entered into the extension's Options page (see "Chrome extension" below) and aren't shown
@@ -174,7 +185,7 @@ prefix, and the rest of the domain — including the SPA itself — stays outsid
      stays open.
    - `curl https://<your-worker>/api/admin/me` (no headers) → `401 {"error":"unauthorized"}`.
    - Open `https://<your-worker>/` in a browser, click "sign in" → Access login → redirected back to
-     the feed, now showing the add/archive/delete/retry controls.
+     the feed, now showing the add/archive/delete/retry/resummarize controls.
    - `curl -H "CF-Access-Client-Id: <id>" -H "CF-Access-Client-Secret: <secret>" https://<your-worker>/api/admin/me`
      (a Service Token from policy 2) → `200 {"sub": "...", "email": "..."}`.
 

@@ -14,7 +14,7 @@ import {
   sweepStalePending,
   toPublicArticle,
 } from "./db.ts";
-import { runArticlePipeline } from "./pipeline.ts";
+import { runArticlePipeline, runResummarization } from "./pipeline.ts";
 import {
   MAX_BODY_BYTES,
   sourceFromUrl,
@@ -232,6 +232,44 @@ app.post("/api/admin/articles/:id/retry", async (c) => {
       requestTitle: article.title,
       requestTags: article.tags,
     }),
+  );
+
+  return c.json({ id, status: "pending" }, 202);
+});
+
+// Re-runs only the summary — distinct from retry above, which is for a
+// stuck/failed pipeline run and re-fetches from scratch. Allowed for
+// 'ready' (the normal case) and 'failed' (a superset of what retry can do,
+// when there's already stored text to work from). Skips fetch/extract
+// entirely when full_text is already stored — cheaper and deterministic —
+// and only falls back to the full pipeline when there's nothing to
+// summarize yet.
+app.post("/api/admin/articles/:id/resummarize", async (c) => {
+  const id = c.req.param("id");
+  const article = await getArticleById(c.env.DB, id);
+  if (!article) return c.json({ error: "not found" }, 404);
+  if (article.status !== "ready" && article.status !== "failed") {
+    return c.json({ error: "article must be ready or failed to resummarize" }, 409);
+  }
+
+  await markArticlePending(c.env.DB, id);
+
+  const hasFullText = article.full_text !== null && article.full_text.trim().length > 0;
+  c.executionCtx.waitUntil(
+    hasFullText
+      ? runResummarization(c.env, {
+        id,
+        title: article.title,
+        author: article.author,
+        fullText: article.full_text as string,
+        requestTags: article.tags,
+      })
+      : runArticlePipeline(c.env, {
+        id,
+        url: article.url,
+        requestTitle: article.title,
+        requestTags: article.tags,
+      }),
   );
 
   return c.json({ id, status: "pending" }, 202);

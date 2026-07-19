@@ -9,6 +9,7 @@ import {
   getAdminMe,
   listArticles,
   patchArticle,
+  resummarizeArticle,
   retryArticle,
 } from "./api.ts";
 import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
@@ -204,6 +205,17 @@ export function App() {
     }
   };
 
+  const handleResummarize = async (id: string) => {
+    try {
+      await resummarizeArticle(id);
+      setArticles((current) =>
+        current.map((a) => (a.id === id ? { ...a, status: "pending", error: null } : a))
+      );
+    } catch (err) {
+      showError(err);
+    }
+  };
+
   const handleArticleUpdate = (updated: ArticleListItem) => {
     setArticles((current) => current.map((a) => (a.id === updated.id ? updated : a)));
   };
@@ -268,6 +280,7 @@ export function App() {
             onArchiveToggle={handleArchiveToggle}
             onDelete={handleDelete}
             onRetry={handleRetry}
+            onResummarize={handleResummarize}
             onArticleUpdate={handleArticleUpdate}
             hasMore={nextCursor !== null}
             onShowMore={handleShowMore}
