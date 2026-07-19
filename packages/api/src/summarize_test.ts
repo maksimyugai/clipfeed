@@ -447,6 +447,6 @@ Deno.test("summarizeArticleWithWorkersAi: a hard binding failure surfaces as a w
   await assertRejects(
     () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
     Error,
-    "workers ai error: binding call failed: model not found",
+    "workers ai error: Error: binding call failed: model not found",
   );
 });

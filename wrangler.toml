@@ -8,6 +8,7 @@ DAILY_SUMMARY_LIMIT = 50
 WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 TURNSTILE_SITE_KEY = "0x4AAAAAAD5FSIrh2Xu_PuNh"
 PUBLIC_BASE_URL = ""
+PENDING_TIMEOUT_MIN = 10
 
 [ai]
 binding = "AI"

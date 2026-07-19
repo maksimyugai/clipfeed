@@ -98,25 +98,81 @@ export async function runSummarization(
   return await runSummarizationForMode(mode, env, title, text);
 }
 
-// Runs the full extract -> summarize -> persist pipeline for one article.
-// Called from ctx.executionCtx.waitUntil() — never throws, always leaves the
-// row in 'ready' or 'failed'.
+// Llama's context window is meaningfully smaller than what gateway/direct
+// Claude models accept — cap Workers AI's input text further than extract.ts's
+// general MAX_TEXT_CHARS to avoid an oversized-input failure on that path.
+const MAX_TEXT_CHARS_WORKERS_AI = 16_000;
+
+function byteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+// Structured, category-level stage log — duration and byte/char counts only,
+// never article content or credentials. One line per pipeline stage so a
+// stuck/slow run can be diagnosed from logs alone.
+function logStage(
+  id: string,
+  stage: string,
+  startedAt: number,
+  extra: Record<string, unknown> = {},
+): void {
+  console.log(JSON.stringify({
+    event: "pipeline_stage",
+    id,
+    stage,
+    duration_ms: Math.round(performance.now() - startedAt),
+    ...extra,
+  }));
+}
+
+// Runs the full fetch -> extract -> summarize -> persist pipeline for one
+// article. Called from ctx.executionCtx.waitUntil() — the top-level
+// try/catch below guarantees a terminal 'ready'/'failed' status for any
+// error that reaches JS as an exception. It cannot guarantee this against a
+// Workers CPU-time kill, which terminates the isolate without ever raising a
+// catchable exception — see sweepStalePending() in db.ts for that backstop.
 export async function runArticlePipeline(env: Env, input: PipelineInput): Promise<void> {
+  let stage = "fetch";
   try {
+    const fetchStart = performance.now();
     const html = input.html ?? await safeFetchText(input.url);
+    const htmlBytes = byteLength(html);
+    logStage(input.id, stage, fetchStart, { html_bytes: htmlBytes });
+
+    stage = "extract";
+    const extractStart = performance.now();
     const extracted = extractArticle(html, input.requestTitle);
     const title = extracted.title ?? input.requestTitle ?? input.url;
+    logStage(input.id, stage, extractStart, {
+      html_bytes: htmlBytes,
+      text_chars: extracted.textContent.length,
+    });
 
+    const mode = selectProviderMode({
+      aiGatewayUrl: env.AI_GATEWAY_URL,
+      cfAigToken: env.CF_AIG_TOKEN,
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+    });
+    const text = mode === "workers-ai"
+      ? extracted.textContent.slice(0, MAX_TEXT_CHARS_WORKERS_AI)
+      : extracted.textContent;
+
+    stage = "budget";
     const withinBudget = await tryConsumeSummaryBudget(env.CACHE, env.DAILY_SUMMARY_LIMIT);
     if (!withinBudget) {
       await markArticleFailed(env.DB, input.id, "daily-limit");
       return;
     }
 
-    const summary = await runSummarization(env, title, extracted.textContent);
+    stage = "summarize";
+    const summarizeStart = performance.now();
+    const summary = await runSummarizationForMode(mode, env, title, text);
+    logStage(input.id, stage, summarizeStart, { mode, text_chars: text.length });
 
+    stage = "persist";
+    const persistStart = performance.now();
     await markArticleReady(env.DB, input.id, {
-      full_text: extracted.textContent,
+      full_text: text,
       title,
       author: extracted.byline,
       lang_original: summary.lang_original,
@@ -125,8 +181,10 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
       summary_json: summary,
       tags: mergeTags(input.requestTags, summary.tags),
     });
+    logStage(input.id, stage, persistStart);
   } catch (err) {
-    const reason = err instanceof Error ? err.message : "unknown error";
-    await markArticleFailed(env.DB, input.id, reason.slice(0, 500));
+    const message = err instanceof Error ? err.message : String(err);
+    const reason = `internal: ${stage}: ${message}`.slice(0, 200);
+    await markArticleFailed(env.DB, input.id, reason);
   }
 }

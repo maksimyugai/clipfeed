@@ -71,6 +71,17 @@ export class FakeD1 implements D1Database {
       return;
     }
 
+    if (sql.startsWith("UPDATE articles SET status = 'failed', error = 'timeout")) {
+      const cutoff = values[0] as string;
+      for (const row of this.rows) {
+        if (row.status === "pending" && (row.added_at as string) < cutoff) {
+          row.status = "failed";
+          row.error = "timeout: processing did not complete";
+        }
+      }
+      return;
+    }
+
     if (sql.startsWith("UPDATE articles")) {
       const id = values[values.length - 1] as string;
       const row = this.rows.find((r) => r.id === id);

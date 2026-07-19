@@ -22,6 +22,7 @@
 # SUMMARY_MODEL=claude-haiku-4-5-20251001
 # WORKERS_AI_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
 # DAILY_SUMMARY_LIMIT=50
+# PENDING_TIMEOUT_MIN=10
 
 # Cloudflare Access protection (see README "Protecting your instance").
 # Optional — auth middleware only activates once BOTH are set. Without them

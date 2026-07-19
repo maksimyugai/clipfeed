@@ -11,6 +11,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     SUMMARY_MODEL: "test-model",
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
+    PENDING_TIMEOUT_MIN: 10,
     PUBLIC_BASE_URL: "",
     ...overrides,
   };

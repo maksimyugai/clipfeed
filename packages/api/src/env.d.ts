@@ -51,6 +51,10 @@ declare global {
     SUMMARY_MODEL: string;
     WORKERS_AI_MODEL: string;
     DAILY_SUMMARY_LIMIT: number;
+    // Stale-pending sweeper (see sweepStalePending in db.ts): a 'pending' row
+    // older than this many minutes is lazily flipped to 'failed' on the next
+    // GET /api/articles. Backstop for a Workers CPU-time kill mid-pipeline.
+    PENDING_TIMEOUT_MIN: number;
     // LLM credentials/routing: pick one mode, in priority order —
     // AI Gateway (AI_GATEWAY_URL [+ CF_AIG_TOKEN]) > direct (ANTHROPIC_API_KEY)
     // > Workers AI (no config needed, the AI binding above, free-tier
