@@ -42,3 +42,20 @@ migrations_dir = "migrations"
 [[kv_namespaces]]
 binding = "CACHE"
 id = "8e4fddfbda204322a609830cc771124f"
+
+# invocation_logs writes one line per request; lower head_sampling_rate if
+# public traffic grows.
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
