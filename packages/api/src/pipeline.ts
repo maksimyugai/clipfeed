@@ -25,16 +25,45 @@ export function mergeTags(requestTags: string[], modelTags: string[]): string[] 
   return Array.from(new Set(merged));
 }
 
-// Provider selection, in priority order: AI Gateway > direct Anthropic >
-// Workers AI. Workers AI needs no configuration at all (the AI binding is
-// always present), so it's the zero-config default when neither of the
-// other two is set up.
-export async function runSummarization(
+export type ProviderMode = "gateway" | "direct" | "workers-ai";
+
+export interface ProviderModeConfig {
+  aiGatewayUrl?: string;
+  cfAigToken?: string;
+  anthropicApiKey?: string;
+}
+
+function isSet(value: string | undefined): boolean {
+  return (value ?? "").trim().length > 0;
+}
+
+// A mode is only eligible when its configuration is COMPLETE — a partial
+// config (e.g. AI_GATEWAY_URL with no credential, or a bare CF_AIG_TOKEN
+// with no URL) must never be treated as "configured", since that produces a
+// silent 401 instead of a working fallback. Priority: gateway > direct >
+// Workers AI (which needs no configuration at all, so it's always eligible
+// as the final fallback).
+export function selectProviderMode(config: ProviderModeConfig): ProviderMode {
+  const gatewayUrl = isSet(config.aiGatewayUrl);
+  const gatewayToken = isSet(config.cfAigToken);
+  const apiKey = isSet(config.anthropicApiKey);
+
+  if (gatewayUrl && (gatewayToken || apiKey)) {
+    return "gateway";
+  }
+  if (apiKey) {
+    return "direct";
+  }
+  return "workers-ai";
+}
+
+async function runSummarizationForMode(
+  mode: ProviderMode,
   env: Env,
   title: string,
   text: string,
 ): Promise<SummaryJson> {
-  if (env.AI_GATEWAY_URL) {
+  if (mode === "gateway") {
     return await summarizeArticle(
       {
         apiKey: env.ANTHROPIC_API_KEY,
@@ -46,7 +75,7 @@ export async function runSummarization(
       text,
     );
   }
-  if (env.ANTHROPIC_API_KEY) {
+  if (mode === "direct") {
     return await summarizeArticle(
       { apiKey: env.ANTHROPIC_API_KEY, model: env.SUMMARY_MODEL },
       title,
@@ -54,6 +83,19 @@ export async function runSummarization(
     );
   }
   return await summarizeArticleWithWorkersAi(env.AI, env.WORKERS_AI_MODEL, title, text);
+}
+
+export async function runSummarization(
+  env: Env,
+  title: string,
+  text: string,
+): Promise<SummaryJson> {
+  const mode = selectProviderMode({
+    aiGatewayUrl: env.AI_GATEWAY_URL,
+    cfAigToken: env.CF_AIG_TOKEN,
+    anthropicApiKey: env.ANTHROPIC_API_KEY,
+  });
+  return await runSummarizationForMode(mode, env, title, text);
 }
 
 // Runs the full extract -> summarize -> persist pipeline for one article.

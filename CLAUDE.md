@@ -37,3 +37,5 @@ assumes a fixed backend.
 5. LLM output is untrusted: schema-validate before persisting.
 6. New endpoints must state their auth expectation (Cloudflare Access JWT — enforced from Task 3
    onward).
+7. gitleaks runs only against git-tracked content and git history — never scan untracked local files
+   (e.g. `.dev.vars`) and never echo scanner findings' matched secret values into logs or reports.

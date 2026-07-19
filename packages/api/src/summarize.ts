@@ -160,6 +160,13 @@ function describeError(status: number, bodyText: string, isGateway: boolean): st
   return `anthropic api error: ${status}`;
 }
 
+// Same "gateway vs direct" prefix describeError() uses, for the error paths
+// below that aren't tied to a specific HTTP status — keeps the stored error
+// column identifying which mode failed regardless of failure shape.
+function anthropicErrorPrefix(config: AnthropicConfig): string {
+  return config.aiGatewayUrl ? "ai gateway error" : "anthropic api error";
+}
+
 async function callAnthropic(config: AnthropicConfig, userMessage: string): Promise<string> {
   const { url, headers } = buildAnthropicRequest(config);
   const res = await fetch(url, {
@@ -180,7 +187,7 @@ async function callAnthropic(config: AnthropicConfig, userMessage: string): Prom
   const data = await res.json() as AnthropicMessageResponse;
   const text = data.content?.find((block) => block.type === "text")?.text;
   if (!text) {
-    throw new Error("anthropic response had no text content");
+    throw new Error(`${anthropicErrorPrefix(config)}: response had no text content`);
   }
   return text;
 }
@@ -201,7 +208,9 @@ export async function summarizeArticle(
   );
   if (secondParsed) return secondParsed;
 
-  throw new Error("model output did not match the required schema after retry");
+  throw new Error(
+    `${anthropicErrorPrefix(config)}: model output did not match the required schema after retry`,
+  );
 }
 
 // --- Workers AI mode: zero-config, free-tier default via the native AI
