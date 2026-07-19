@@ -5,6 +5,7 @@
     "build:extension": "deno run -A scripts/build.ts --extension-only",
     "zip:extension": "deno run -A scripts/zip-extension.ts",
     "setup": "deno run -A scripts/setup.ts",
+    "telegram:setup": "deno run -A scripts/telegram-setup.ts",
     "deploy": "deno task build && deno run -A npm:wrangler deploy",
     "test": "deno test -A",
     "fmt": "deno fmt",

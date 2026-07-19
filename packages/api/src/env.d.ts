@@ -33,6 +33,16 @@ declare global {
     run(model: string, input: unknown): Promise<unknown>;
   }
 
+  interface ExecutionContext {
+    waitUntil(promise: Promise<unknown>): void;
+    passThroughOnException(): void;
+  }
+
+  interface ScheduledController {
+    cron: string;
+    scheduledTime: number;
+  }
+
   interface Env {
     DB: D1Database;
     CACHE: KVNamespace;
@@ -61,6 +71,19 @@ declare global {
     // bypass Turnstile entirely.
     TURNSTILE_SITE_KEY?: string;
     TURNSTILE_SECRET_KEY?: string;
+    // Telegram bot (capture + morning digest): optional, active only when
+    // all three are set (trimmed non-empty). The webhook is a public path
+    // (Telegram can't present an Access identity) — its own auth is the
+    // TELEGRAM_WEBHOOK_SECRET header instead. The bot serves exactly one
+    // chat: TELEGRAM_OWNER_CHAT_ID.
+    TELEGRAM_BOT_TOKEN?: string;
+    TELEGRAM_WEBHOOK_SECRET?: string;
+    TELEGRAM_OWNER_CHAT_ID?: string;
+    // Public origin of the deployed instance (e.g. "https://example.com"),
+    // used only to build links in Telegram messages (the morning digest
+    // footer, the "saved" reply). [vars], default "" — when empty those
+    // links are simply omitted, never a broken/placeholder URL.
+    PUBLIC_BASE_URL: string;
   }
 }
 

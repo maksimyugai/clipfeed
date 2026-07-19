@@ -289,3 +289,31 @@ export async function deleteArticle(db: D1Database, id: string): Promise<boolean
   await db.prepare("DELETE FROM articles WHERE id = ?").bind(id).run();
   return true;
 }
+
+export interface DigestArticleInput {
+  title_ru: string;
+  tldr_ru: string;
+}
+
+// Articles ready within the given window (see the Telegram morning
+// digest) — only the two summary fields the digest formatter actually
+// uses; a 'ready' row without a parseable summary_json (shouldn't happen
+// in practice, since markArticleReady always sets it) is skipped rather
+// than surfaced as a broken bullet.
+export async function listRecentReadyArticles(
+  db: D1Database,
+  sinceIso: string,
+): Promise<DigestArticleInput[]> {
+  const result = await db.prepare(
+    "SELECT summary_json FROM articles WHERE status = 'ready' AND added_at >= ? ORDER BY added_at DESC",
+  ).bind(sinceIso).all<{ summary_json: string | null }>();
+
+  const articles: DigestArticleInput[] = [];
+  for (const row of result.results ?? []) {
+    const summary = parseSummaryJsonColumn(row.summary_json);
+    if (summary) {
+      articles.push({ title_ru: summary.title_ru, tldr_ru: summary.tldr_ru });
+    }
+  }
+  return articles;
+}

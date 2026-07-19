@@ -1,6 +1,6 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
-import app from "./index.ts";
+import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
@@ -90,6 +90,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     SUMMARY_MODEL: "test-model",
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
+    PUBLIC_BASE_URL: "",
     ANTHROPIC_API_KEY: "test-key",
     ...overrides,
   };

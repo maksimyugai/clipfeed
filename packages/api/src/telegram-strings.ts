@@ -1,0 +1,42 @@
+// User-facing bot replies — the owner's language, Russian. Kept in this one
+// module so every other Telegram-related file can stay English-only for
+// its code and comments.
+
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+
+function truncateToTelegramLimit(text: string): string {
+  return text.length > TELEGRAM_MESSAGE_LIMIT
+    ? `${text.slice(0, TELEGRAM_MESSAGE_LIMIT - 1)}…`
+    : text;
+}
+
+export const NON_OWNER_REPLY = "Это персональный бот.";
+
+export const HELP_TEXT =
+  "Отправь ссылку — сохраню её в ленту.\n\n/digest — прислать выжимку за сутки.";
+
+export const SAVING_TEXT = "Сохраняю…";
+
+export const ALREADY_SAVED_TEXT = "Уже сохранено";
+
+export const NO_DIGEST_ARTICLES_TEXT = "За последние сутки новых статей нет.";
+
+export function readySuccessText(
+  titleRu: string,
+  tldrRu: string,
+  feedUrl: string | null,
+): string {
+  const lines = [`✓ ${titleRu}`, "", tldrRu];
+  if (feedUrl) {
+    lines.push("", feedUrl);
+  }
+  return truncateToTelegramLimit(lines.join("\n"));
+}
+
+export function failedText(reason: string): string {
+  return truncateToTelegramLimit(`✗ Не получилось: ${reason}. Retry: открой ленту.`);
+}
+
+export function digestHeader(articleCount: number): string {
+  return `ClipFeed — за сутки: ${articleCount} статей`;
+}

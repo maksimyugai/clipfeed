@@ -1,7 +1,7 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
-import app from "./index.ts";
+import { app } from "./index.ts";
 import type { AppEnv } from "./access-middleware.ts";
 import { turnstileGuard } from "./turnstile-middleware.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
@@ -28,6 +28,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     SUMMARY_MODEL: "test-model",
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
+    PUBLIC_BASE_URL: "",
     TURNSTILE_SITE_KEY: "test-site-key",
     TURNSTILE_SECRET_KEY: "test-secret-key",
     ...overrides,

@@ -44,3 +44,26 @@
 #   always blocks:  site 2x00000000000000000000AB  secret 2x0000000000000000000000000000000AA
 # TURNSTILE_SITE_KEY=1x00000000000000000000AA
 # TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+
+# Telegram bot (see README "Telegram bot"). Optional — active only once all
+# three are set. The webhook is a public path (Telegram can't present an
+# Access identity) protected by its own secret header instead; the bot
+# serves exactly one chat and refuses everyone else.
+#
+# TELEGRAM_BOT_TOKEN: message @BotFather on Telegram, /newbot, follow the
+# prompts — it replies with a token shaped like "123456:ABC-DEF...".
+# TELEGRAM_WEBHOOK_SECRET: any random string you generate yourself, e.g.
+# `openssl rand -hex 32` — Telegram echoes it back on every webhook call so
+# the Worker can verify a request actually came from Telegram.
+# TELEGRAM_OWNER_CHAT_ID: your numeric Telegram chat id — easiest way to get
+# it is `deno task telegram:setup --get-chat-id` after messaging your new
+# bot once (see README).
+# TELEGRAM_BOT_TOKEN=
+# TELEGRAM_WEBHOOK_SECRET=
+# TELEGRAM_OWNER_CHAT_ID=
+
+# Public origin of this deployed instance, e.g. https://example.com — used
+# only to build links in Telegram messages (digest footer, "saved" reply).
+# [vars] default "" (no scheme/domain baked in, per the forkability policy);
+# links are simply omitted from bot messages when this is empty.
+# PUBLIC_BASE_URL=

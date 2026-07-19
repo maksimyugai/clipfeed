@@ -33,6 +33,7 @@ function makeEnv(overrides: Partial<Env>): Env {
     SUMMARY_MODEL: "test-anthropic-model",
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
+    PUBLIC_BASE_URL: "",
     ...overrides,
   };
 }
