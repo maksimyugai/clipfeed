@@ -12,6 +12,9 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    INTEREST_TOPICS: "testing",
+    AGENT_HOUR_UTC: "5",
+    DIGEST_HOUR_UTC: "6",
     PUBLIC_BASE_URL: "",
     ...overrides,
   };

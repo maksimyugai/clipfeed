@@ -1,0 +1,28 @@
+[
+  { "id": "hn", "type": "hackernews" },
+  {
+    "id": "arstechnica",
+    "type": "rss",
+    "url": "https://feeds.arstechnica.com/arstechnica/index"
+  },
+  {
+    "id": "theverge",
+    "type": "rss",
+    "url": "https://www.theverge.com/rss/index.xml"
+  },
+  {
+    "id": "simonwillison",
+    "type": "rss",
+    "url": "https://simonwillison.net/atom/everything/"
+  },
+  {
+    "id": "cloudflare",
+    "type": "rss",
+    "url": "https://blog.cloudflare.com/rss/"
+  },
+  {
+    "id": "mittr",
+    "type": "rss",
+    "url": "https://www.technologyreview.com/feed/"
+  }
+]

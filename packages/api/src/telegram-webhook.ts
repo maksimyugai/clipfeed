@@ -12,6 +12,7 @@ import {
 import { extractFirstUrl } from "./telegram-url.ts";
 import { buildDigestMessages } from "./telegram-digest.ts";
 import {
+  AGENT_STARTED_TEXT,
   ALREADY_SAVED_TEXT,
   failedText,
   HELP_TEXT,
@@ -29,6 +30,7 @@ import {
 } from "./db.ts";
 import { runArticlePipeline } from "./pipeline.ts";
 import { sourceFromUrl } from "./validation.ts";
+import { runAgentJob } from "./agent.ts";
 
 const SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token";
 const DIGEST_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -149,6 +151,12 @@ async function handleOwnerMessage(
 
   if (text === "/digest") {
     await buildAndSendDigest(c.env, config, NO_DIGEST_ARTICLES_TEXT);
+    return c.json({ ok: true });
+  }
+
+  if (text === "/scrape") {
+    c.executionCtx.waitUntil(runAgentJob(c.env));
+    await sendMessage(config.botToken, config.ownerChatId, AGENT_STARTED_TEXT).catch(() => {});
     return c.json({ ok: true });
   }
 

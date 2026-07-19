@@ -24,6 +24,15 @@
 # DAILY_SUMMARY_LIMIT=50
 # PENDING_TIMEOUT_MIN=10
 
+# Daily scraping agent (see README "Daily scraping agent"; sources live in
+# packages/api/sources.json, not here). INTEREST_TOPICS steers the ranking
+# call's taste — free text, edit to match what you actually want surfaced.
+# AGENT_HOUR_UTC/DIGEST_HOUR_UTC are UTC hours (0-23); clearing either to an
+# empty string disables that job.
+# INTEREST_TOPICS=AI/LLMs and their engineering, software development, Cloudflare and edge computing, programming languages, security, notable science/tech news
+# AGENT_HOUR_UTC=5
+# DIGEST_HOUR_UTC=6
+
 # Cloudflare Access protection (see README "Protecting your instance").
 # Optional — auth middleware only activates once BOTH are set. Without them
 # a deployed instance is PUBLIC. Set via `wrangler secret put` in production;

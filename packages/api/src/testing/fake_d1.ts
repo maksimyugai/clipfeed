@@ -158,6 +158,11 @@ export class FakeD1 implements D1Database {
       return row ? [{ id: row.id }] : [];
     }
 
+    if (sql.startsWith("SELECT url FROM articles WHERE url IN")) {
+      const urlSet = new Set(values as string[]);
+      return this.rows.filter((r) => urlSet.has(r.url as string)).map((r) => ({ url: r.url }));
+    }
+
     if (sql.startsWith("SELECT id, url, canonical_url")) {
       return this.queryList(sql, values);
     }

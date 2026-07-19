@@ -88,6 +88,16 @@ declare global {
     // footer, the "saved" reply). [vars], default "" — when empty those
     // links are simply omitted, never a broken/placeholder URL.
     PUBLIC_BASE_URL: string;
+    // Daily scraping agent (see agent.ts, README "Daily scraping agent").
+    // INTEREST_TOPICS steers the ranking call's taste — owner-editable
+    // free text, no particular format required.
+    INTEREST_TOPICS: string;
+    // Hour-dispatch scheduling for the agent/digest cron (see scheduled.ts):
+    // [vars] strings (not numbers) so a forker can disable either job by
+    // clearing it to "" — an empty or non-numeric/out-of-range value means
+    // that job never fires. Both are UTC hours (0-23).
+    AGENT_HOUR_UTC: string;
+    DIGEST_HOUR_UTC: string;
   }
 }
 

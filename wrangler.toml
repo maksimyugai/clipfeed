@@ -9,16 +9,25 @@ WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 TURNSTILE_SITE_KEY = "0x4AAAAAAD5FSIrh2Xu_PuNh"
 PUBLIC_BASE_URL = ""
 PENDING_TIMEOUT_MIN = 10
+INTEREST_TOPICS = "AI/LLMs and their engineering, software development, Cloudflare and edge computing, programming languages, security, notable science/tech news"
+AGENT_HOUR_UTC = "5"
+DIGEST_HOUR_UTC = "6"
 
 [ai]
 binding = "AI"
 
-# Morning digest, sent via the Telegram bot when TELEGRAM_* secrets are set
-# (see README "Telegram bot") — 03:00 UTC by default; edit the cron
-# expression below to change the time (it's always UTC, unaffected by your
-# own timezone).
+# Single hourly cron, dispatched by UTC hour to whichever of the two daily
+# jobs below is configured for it (see packages/api/src/scheduled.ts) — an
+# empty or invalid AGENT_HOUR_UTC/DIGEST_HOUR_UTC disables that job:
+#   - AGENT_HOUR_UTC (default 5): the scraping agent (see README "Daily
+#     scraping agent").
+#   - DIGEST_HOUR_UTC (default 6, after the agent so its picks are already
+#     in by digest time — though the digest covers the last 24h regardless
+#     of order, so either order works): the Telegram morning digest, sent
+#     when TELEGRAM_* secrets are set (see README "Telegram bot").
+# Both are always UTC, unaffected by your own timezone.
 [triggers]
-crons = ["0 3 * * *"]
+crons = ["0 * * * *"]
 
 [assets]
 directory = "./dist/web"

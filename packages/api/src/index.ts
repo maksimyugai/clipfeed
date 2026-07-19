@@ -22,7 +22,9 @@ import {
   validateHtml,
   validatePatchArticleRequest,
 } from "./validation.ts";
-import { handleTelegramWebhook, sendMorningDigest } from "./telegram-webhook.ts";
+import { handleTelegramWebhook } from "./telegram-webhook.ts";
+import { runAgentJob } from "./agent.ts";
+import { handleScheduled } from "./scheduled.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -235,6 +237,14 @@ app.post("/api/admin/articles/:id/retry", async (c) => {
   return c.json({ id, status: "pending" }, 202);
 });
 
+// Manual trigger for the daily scraping agent — same job the hourly
+// AGENT_HOUR_UTC dispatch runs, useful for testing without waiting for the
+// clock. See agent.ts.
+app.post("/api/admin/agent/run", (c) => {
+  c.executionCtx.waitUntil(runAgentJob(c.env));
+  return c.json({ ok: true }, 202);
+});
+
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 // Named export for tests, which call `app.request(...)` directly — the
@@ -244,13 +254,13 @@ export { app };
 
 export default {
   fetch: app.fetch,
-  // Morning digest (see wrangler.toml [triggers]); no-ops when the
-  // Telegram feature isn't configured — see sendMorningDigest.
+  // Single hourly cron (see wrangler.toml [triggers]) dispatched by UTC
+  // hour to the agent/digest jobs — see scheduled.ts.
   scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: Env,
     ctx: ExecutionContext,
   ): void {
-    ctx.waitUntil(sendMorningDigest(env));
+    ctx.waitUntil(handleScheduled(env, controller.scheduledTime));
   },
 };
