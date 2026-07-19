@@ -1,0 +1,78 @@
+/* Small, deliberately duplicated subset of packages/web/src/styles.css's theme
+   tokens — the extension bundles independently from the SPA, so this is a
+   standalone copy rather than a cross-package import. Uses
+   prefers-color-scheme (not the SPA's manual [data-theme] toggle), since the
+   popup/options pages have no theme switcher of their own. */
+
+:root {
+  --bg: #faf9fc;
+  --card: #ffffff;
+  --txt: #211f2b;
+  --sub: #5f5c6e;
+  --mut: #8a879a;
+  --line: #eae7f0;
+  --tag-bg: #eeedfe;
+  --tag-tx: #534ab7;
+  --acc: #7f77dd;
+
+  --grad-brand: linear-gradient(90deg, #7f77dd, #d4537e);
+  --grad-action: linear-gradient(135deg, #7f77dd, #534ab7);
+
+  --ok: #2fa36b;
+  --ok-bg: #e8f6ee;
+  --err: #d64545;
+  --err-bg: #fbeaea;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #191722;
+    --card: #201d2b;
+    --txt: #ebe9f2;
+    --sub: #a6a3b5;
+    --mut: #8a879a;
+    --line: #2c2938;
+    --tag-bg: #26215c;
+    --tag-tx: #cecbf6;
+    --acc: #afa9ec;
+
+    --grad-brand: linear-gradient(90deg, #afa9ec, #ed93b1);
+
+    --ok-bg: #17301f;
+    --err-bg: #331c1c;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--txt);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font-family: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
