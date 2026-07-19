@@ -22,3 +22,10 @@
 # SUMMARY_MODEL=claude-haiku-4-5-20251001
 # WORKERS_AI_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
 # DAILY_SUMMARY_LIMIT=50
+
+# Cloudflare Access protection (see README "Protecting your instance").
+# Optional — auth middleware only activates once BOTH are set. Without them
+# a deployed instance is PUBLIC. Set via `wrangler secret put` in production;
+# fine to set here for local testing against a real Access app.
+# ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+# ACCESS_AUD=

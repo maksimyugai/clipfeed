@@ -104,9 +104,49 @@ is tied to a specific account, domain, or Access team.
      ```
 4. `deno task deploy`.
 5. Your Worker is now live at `*.workers.dev` and **unprotected** — anyone with the URL can call its
-   API (including the summarization endpoint, which spends your LLM budget). Cloudflare Access in
-   front of it is required before real use; wiring it up is automated in a later task. Until then,
-   treat the deployed URL as effectively public.
+   API (including the summarization endpoint, which spends your LLM budget). See "Protecting your
+   instance" below to lock it down with Cloudflare Access before real use.
 
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
+
+## Protecting your instance
+
+By default a deployed ClipFeed instance is **public** — anyone with the URL can read, add, and
+delete articles. The Worker itself verifies a Cloudflare Access JWT on every request (except
+`GET /api/health`, kept open for monitoring); Access issues that JWT after your own login policy, so
+setup happens in the Cloudflare dashboard, not in code:
+
+1. **Zero Trust → Access → Applications → Add an application → Self-hosted.** Set the application
+   domain to your Worker's public hostname.
+
+   > If Access cannot be attached to your `*.workers.dev` hostname in your dashboard, attach the
+   > Worker to a custom domain on your zone (Workers → Settings → Domains & Routes) and protect that
+   > hostname instead; then treat direct `*.workers.dev` access as blocked by this middleware's 401.
+
+2. **Policy 1 (you):** Allow → Include → Emails → your email address. Login is via a one-time PIN or
+   whatever identity provider you've configured for your Zero Trust team.
+3. **Policy 2 (for the future extension/bots):** Allow → Include → Service Auth → create a Service
+   Token, e.g. named `clipfeed-extension`. Save its Client ID and Client Secret somewhere safe —
+   they're needed for Task 6 (the Chrome extension) and aren't shown again after creation.
+4. Copy your **team domain** (e.g. `myteam.cloudflareaccess.com`) and the application's **Audience
+   (AUD) tag** from the Access application's Overview tab, then set them on the Worker:
+   ```
+   deno run -A npm:wrangler secret put ACCESS_TEAM_DOMAIN
+   deno run -A npm:wrangler secret put ACCESS_AUD
+   ```
+   (Secrets are recommended; plain `[vars]` work too since neither value is sensitive on its own —
+   but per the forkability policy, never commit a real value as a default in `wrangler.toml`.)
+5. **Verify:**
+   - Opening the app in a browser now shows the Access login instead of the feed.
+   - `curl https://<your-worker>/api/articles` (no headers) → `401`.
+   - `curl -H "CF-Access-Client-Id: <id>" -H "CF-Access-Client-Secret: <secret>" https://<your-worker>/api/articles`
+     (a Service Token from policy 2) → `200`.
+
+**Both `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` must be set for auth to activate.** With only one set,
+or neither, the Worker logs a warning once per isolate ("Access auth disabled — set
+ACCESS_TEAM_DOMAIN and ACCESS_AUD") and serves openly — this is the zero-config fork/dev bootstrap
+state, not a failure mode. Once both are set, every tool you use to smoke-test the deployed Worker
+(`curl`, browser, scripts) needs either a logged-in Access session cookie or
+`CF-Access-Client-Id`/`CF-Access-Client-Secret` headers from a Service Token — plain requests will
+get a `401`.
