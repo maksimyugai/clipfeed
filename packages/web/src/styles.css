@@ -686,6 +686,11 @@ ul {
   margin: 0 0 12px;
 }
 
+.card-failed-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .retry-button {
   border: 1px solid var(--acc);
   color: var(--acc);
@@ -698,6 +703,21 @@ ul {
 
 .retry-button:hover {
   background: var(--tag-bg);
+}
+
+.delete-button-outline {
+  border: 1px solid var(--line);
+  color: var(--sub);
+  background: transparent;
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.delete-button-outline:hover {
+  border-color: var(--mut);
+  color: var(--txt);
 }
 
 /* --- Modal --- */

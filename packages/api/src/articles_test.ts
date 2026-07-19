@@ -7,13 +7,27 @@ const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";
 const JWKS_CACHE_KEY = `access:jwks:${TEAM_DOMAIN}`;
 
+// Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
+// 20-220 chars and not duplicating the tldr, 1-6 tags) — see summarize.ts.
+// Keeps the "Кратко."/"Short summary." lead-ins and "technology" tag the
+// assertions below check for.
 const VALID_SUMMARY = {
   title_ru: "Заголовок",
   title_en: "Example Title",
-  tldr_ru: "Кратко.",
-  tldr_en: "Short summary.",
-  bullets_ru: ["П1", "П2", "П3"],
-  bullets_en: ["Point 1", "Point 2", "Point 3"],
+  tldr_ru:
+    "Кратко. Компания повысила стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик.",
+  tldr_en:
+    "Short summary. The company raised its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs.",
+  bullets_ru: [
+    "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
+    "Годовые подписчики сохранят текущую цену до продления.",
+    "Компания откладывала повышение полтора года.",
+  ],
+  bullets_en: [
+    "Point 1 covers pricing.",
+    "Point 2 covers rollout timing.",
+    "Point 3 covers scope.",
+  ],
   tags: ["technology"],
   lang_original: "en",
 };
@@ -21,6 +35,29 @@ const VALID_SUMMARY = {
 const ARTICLE_HTML = "<html><head><title>Example</title></head><body><article><h1>Example</h1>" +
   "<p>Hello world, this is the first paragraph of example content.</p>" +
   "<p>Here is a second paragraph with more detail to summarize.</p></article></body></html>";
+
+// A second, distinct compliant summary — used to prove a resummarize call
+// actually produced NEW content, not just re-persisted the old one.
+const RESUMMARIZED_SUMMARY = {
+  title_ru: "Обновлённый заголовок",
+  title_en: "Updated Title",
+  tldr_ru:
+    "Обновлённый пересказ. После повторного анализа компания уточнила детали повышения цены подписки и сроки перехода на новый тариф.",
+  tldr_en:
+    "Updated summary. After a fresh pass, the company clarified the pricing change details and the rollout timeline for the new tier.",
+  bullets_ru: [
+    "Уточнена дата вступления изменений в силу.",
+    "Добавлены детали о переходном периоде для действующих клиентов.",
+    "Обновлён список затронутых регионов.",
+  ],
+  bullets_en: [
+    "The effective date was clarified.",
+    "Added detail on the transition period for existing customers.",
+    "Updated the list of affected regions.",
+  ],
+  tags: ["technology", "pricing"],
+  lang_original: "en",
+};
 
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
@@ -567,4 +604,183 @@ Deno.test("POST /api/admin/articles/:id/retry: re-runs the pipeline for a failed
   } finally {
     restoreFetch();
   }
+});
+
+Deno.test("POST /api/admin/articles/:id/resummarize: ready -> resummarize -> ready with NEW summary content, skipping re-fetch of the article", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx, settle } = makeExecutionContext();
+
+  let articleFetchCount = 0;
+  function isAnthropicUrl(input: string | URL | Request): boolean {
+    try {
+      const url = input instanceof Request ? new URL(input.url) : new URL(input);
+      return url.protocol === "https:" && url.hostname === "api.anthropic.com";
+    } catch {
+      return false;
+    }
+  }
+  function stubFetchCounting(anthropicText: string): () => void {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((input: string | URL | Request) => {
+      if (isAnthropicUrl(input)) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ content: [{ type: "text", text: anthropicText }] }),
+            { status: 200 },
+          ),
+        );
+      }
+      articleFetchCount += 1;
+      return Promise.resolve(
+        new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }),
+      );
+    }) as typeof fetch;
+    return () => {
+      globalThis.fetch = originalFetch;
+    };
+  }
+
+  let restoreFetch = stubFetchCounting(JSON.stringify(VALID_SUMMARY));
+  const created = await (
+    await app.request(
+      "/api/admin/articles",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders },
+        body: JSON.stringify({ url: "https://example.com/resummarize-me" }),
+      },
+      env,
+      ctx,
+    )
+  ).json();
+  await settle();
+  restoreFetch();
+  assertEquals(articleFetchCount, 1);
+
+  restoreFetch = stubFetchCounting(JSON.stringify(RESUMMARIZED_SUMMARY));
+  try {
+    const res = await app.request(
+      `/api/admin/articles/${created.id}/resummarize`,
+      { method: "POST", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(res.status, 202);
+    const body = await res.json();
+    assertEquals(body.status, "pending");
+    await settle();
+
+    // The article's own HTML was never re-fetched — only the anthropic call
+    // happened, proving fetch/extract were skipped in favor of the stored
+    // full_text.
+    assertEquals(articleFetchCount, 1);
+
+    const updated = await (
+      await app.request(`/api/admin/articles/${created.id}`, { headers: authHeaders }, env, ctx)
+    ).json();
+    assertEquals(updated.status, "ready");
+    assertEquals(updated.summary_ru.includes("Обновлённый пересказ"), true);
+    assertEquals(updated.summary_json.title_en, "Updated Title");
+    // full_text (extracted once, up front) is preserved across resummarize.
+    assertEquals(updated.full_text.length > 0, true);
+  } finally {
+    restoreFetch();
+  }
+});
+
+Deno.test("POST /api/admin/articles/:id/resummarize: a failed article with no stored full_text falls back to the full pipeline", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx, settle } = makeExecutionContext();
+
+  // Fails before extraction ever runs (network error), so full_text stays
+  // null — the row never reaches markArticleReady.
+  let restoreFetch = stubFetch();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.reject(new Error("network down"))) as typeof fetch;
+  const created = await (
+    await app.request(
+      "/api/admin/articles",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders },
+        body: JSON.stringify({ url: "https://example.com/never-fetched" }),
+      },
+      env,
+      ctx,
+    )
+  ).json();
+  await settle();
+  globalThis.fetch = originalFetch;
+
+  const failed = await (
+    await app.request(`/api/admin/articles/${created.id}`, { headers: authHeaders }, env, ctx)
+  ).json();
+  assertEquals(failed.status, "failed");
+  assertEquals(failed.full_text, null);
+
+  restoreFetch = stubFetch();
+  try {
+    const res = await app.request(
+      `/api/admin/articles/${created.id}/resummarize`,
+      { method: "POST", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(res.status, 202);
+    await settle();
+
+    const ready = await (
+      await app.request(`/api/admin/articles/${created.id}`, { headers: authHeaders }, env, ctx)
+    ).json();
+    assertEquals(ready.status, "ready");
+    assertEquals(ready.full_text.length > 0, true);
+  } finally {
+    restoreFetch();
+  }
+});
+
+Deno.test("POST /api/admin/articles/:id/resummarize: 404 for a missing id, 409 for a pending article", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx } = makeExecutionContext();
+
+  const missing = await app.request(
+    "/api/admin/articles/does-not-exist/resummarize",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(missing.status, 404);
+
+  // Inserted directly (not via the real pipeline) so the row is
+  // deterministically 'pending' — going through a real POST here would race
+  // the mocked pipeline's completion against this test's own assertions.
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push({
+    id: "still-pending-1",
+    url: "https://example.com/still-pending",
+    canonical_url: null,
+    title: "Pending",
+    source: "example.com",
+    author: null,
+    published_at: null,
+    added_at: new Date().toISOString(),
+    added_via: "manual",
+    lang_original: null,
+    full_text: null,
+    summary_ru: null,
+    summary_en: null,
+    summary_json: null,
+    tags: "[]",
+    status: "pending",
+    archived: 0,
+    error: null,
+  });
+
+  const res = await app.request(
+    "/api/admin/articles/still-pending-1/resummarize",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 409);
 });

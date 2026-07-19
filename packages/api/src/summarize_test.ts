@@ -3,12 +3,16 @@ import { assertEquals, assertRejects } from "@std/assert";
 import {
   buildAnthropicRequest,
   callLlm,
+  FEW_SHOT_EXAMPLE_SUMMARY,
   parseSummaryJson,
   parseWorkersAiResult,
   renderSummaryMarkdown,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
+  validateSummary,
+  withTimeout,
 } from "./summarize.ts";
+import type { SummaryJson } from "@clipfeed/shared/types";
 
 function makeStubAi(handler: (model: string, input: Record<string, unknown>) => unknown): Ai {
   return {
@@ -18,13 +22,27 @@ function makeStubAi(handler: (model: string, input: Record<string, unknown>) => 
   };
 }
 
+// Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
+// 20-220 chars and not duplicating the tldr, 1-6 tags) so it round-trips
+// through both the shape-only parsers and the full summarizeArticle*
+// validate-and-retry path used throughout this file.
 const VALID_SUMMARY = {
-  title_ru: "Заголовок",
-  title_en: "Title",
-  tldr_ru: "Кратко.",
-  tldr_en: "Short.",
-  bullets_ru: ["Пункт 1", "Пункт 2", "Пункт 3"],
-  bullets_en: ["Point 1", "Point 2", "Point 3"],
+  title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
+  title_en: "Company Raises Subscription Price 60% Starting September 1",
+  tldr_ru:
+    "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы. Изменение затронет около 2 миллионов подписчиков сервиса.",
+  tldr_en:
+    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server costs. The change affects roughly 2 million subscribers.",
+  bullets_ru: [
+    "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
+    "Годовые подписчики сохранят текущую цену до продления.",
+    "Компания откладывала повышение полтора года.",
+  ],
+  bullets_en: [
+    "Price rises from $5 to $8 per month, a 60% increase.",
+    "Existing annual-plan subscribers keep their price until renewal.",
+    "The company delayed the increase for a year and a half.",
+  ],
   tags: ["технологии", "google"],
   lang_original: "en",
 };
@@ -248,7 +266,7 @@ Deno.test("summarizeArticle: fails after two broken responses", async () => {
     await assertRejects(
       () => summarizeArticle({ apiKey: "test-key", model: "test-model" }, "Title", "Body text"),
       Error,
-      "anthropic api error: model output did not match the required schema after retry",
+      "summary validation: response did not match the required JSON schema",
     );
     assertEquals(calls, 2);
   } finally {
@@ -256,7 +274,7 @@ Deno.test("summarizeArticle: fails after two broken responses", async () => {
   }
 });
 
-Deno.test("summarizeArticle: retry-exhausted error is 'ai gateway error' prefixed in gateway mode", async () => {
+Deno.test("summarizeArticle: retry-exhausted schema failure is reported the same way regardless of mode (gateway)", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (() =>
     Promise.resolve(
@@ -279,7 +297,7 @@ Deno.test("summarizeArticle: retry-exhausted error is 'ai gateway error' prefixe
           "Body text",
         ),
       Error,
-      "ai gateway error: model output did not match the required schema after retry",
+      "summary validation: response did not match the required JSON schema",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -333,13 +351,24 @@ Deno.test("summarizeArticle: missing text content is prefixed per mode (gateway)
 
 // --- Workers AI mode ---
 
+// Also meets validateSummary's content bar — see VALID_SUMMARY above for why.
 const VALID_SUMMARY_2 = {
-  title_ru: "Заголовок 2",
-  title_en: "Title 2",
-  tldr_ru: "Кратко 2.",
-  tldr_en: "Short 2.",
-  bullets_ru: ["А", "Б", "В"],
-  bullets_en: ["A", "B", "C"],
+  title_ru: "Разработчики выпустили новую версию с поддержкой офлайн-режима",
+  title_en: "Developers Ship New Version With Offline Mode Support",
+  tldr_ru:
+    "Команда выпустила версию 4.0 с поддержкой офлайн-режима, позволяющей работать без подключения к интернету. Синхронизация данных происходит автоматически при восстановлении сети.",
+  tldr_en:
+    "The team shipped version 4.0 with offline mode support, letting users work without an internet connection. Data syncs automatically once the connection is restored.",
+  bullets_ru: [
+    "Кеш ограничен 500 МБ на устройство.",
+    "Конфликты правок разрешаются в пользу последней сохранённой версии.",
+    "Обновление доступно всем пользователям бесплатно.",
+  ],
+  bullets_en: [
+    "The local cache is capped at 500 MB per device.",
+    "Edit conflicts resolve in favor of the most recently saved version.",
+    "The update is available to all users at no cost.",
+  ],
   tags: ["новости"],
   lang_original: "ru",
 };
@@ -425,7 +454,7 @@ Deno.test("summarizeArticleWithWorkersAi: retries once on broken output, then su
   assertEquals(calls, 2);
 });
 
-Deno.test("summarizeArticleWithWorkersAi: fails after two broken responses with a workers-ai-prefixed error", async () => {
+Deno.test("summarizeArticleWithWorkersAi: fails after two broken responses with a schema violation", async () => {
   let calls = 0;
   const ai = makeStubAi(() => {
     calls += 1;
@@ -435,7 +464,7 @@ Deno.test("summarizeArticleWithWorkersAi: fails after two broken responses with 
   await assertRejects(
     () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
     Error,
-    "workers ai error:",
+    "summary validation: response did not match the required JSON schema",
   );
   assertEquals(calls, 2);
 });
@@ -565,4 +594,393 @@ Deno.test("callLlm: workers-ai binding failure surfaces as a workers-ai-prefixed
     Error,
     "workers ai error: Error: boom",
   );
+});
+
+// --- withTimeout: the core timing/racing mechanism, unit-tested directly
+// with small ms values so the suite doesn't have to wait out the real
+// 90s LLM_CALL_TIMEOUT_MS to exercise it. ---
+
+function neverResolves<T>(): Promise<T> {
+  return new Promise<T>(() => {});
+}
+
+Deno.test("withTimeout: resolves with the inner promise's value when it settles first", async () => {
+  const result = await withTimeout(Promise.resolve("done"), 50, "should not fire");
+  assertEquals(result, "done");
+});
+
+Deno.test("withTimeout: rejects with the inner promise's error when it rejects first", async () => {
+  await assertRejects(
+    () => withTimeout(Promise.reject(new Error("inner failure")), 50, "should not fire"),
+    Error,
+    "inner failure",
+  );
+});
+
+Deno.test("withTimeout: rejects with the given message once ms elapses without the inner promise settling", async () => {
+  await assertRejects(
+    () => withTimeout(neverResolves(), 10, "timed out after 10ms"),
+    Error,
+    "timed out after 10ms",
+  );
+});
+
+Deno.test("withTimeout: a fast inner promise wins even when the race is close", async () => {
+  const fast = new Promise<string>((resolve) => setTimeout(() => resolve("fast"), 5));
+  const result = await withTimeout(fast, 200, "should not fire");
+  assertEquals(result, "fast");
+});
+
+// --- Timeout wiring at each call site — simulate what a real timeout
+// produces (an AbortError for fetch, the withTimeout message for the AI
+// binding) without waiting out the real 45s. ---
+
+Deno.test("callAnthropic (via summarizeArticle): an aborted fetch is reported as a timeout, per-mode prefixed", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    const err = new Error("The operation was aborted");
+    err.name = "AbortError";
+    return Promise.reject(err);
+  }) as typeof fetch;
+
+  try {
+    await assertRejects(
+      () => summarizeArticle({ apiKey: "sk-direct", model: "test-model" }, "Title", "Body"),
+      Error,
+      "anthropic api error: timed out after 90000ms",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callAnthropic (via summarizeArticle): gateway mode prefixes the timeout as 'ai gateway error'", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    const err = new Error("The operation was aborted");
+    err.name = "AbortError";
+    return Promise.reject(err);
+  }) as typeof fetch;
+
+  try {
+    await assertRejects(
+      () =>
+        summarizeArticle(
+          {
+            aiGatewayUrl: "https://gateway.ai.cloudflare.com/v1/acct/clipfeed/anthropic",
+            model: "test-model",
+          },
+          "Title",
+          "Body",
+        ),
+      Error,
+      "ai gateway error: timed out after 90000ms",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callAnthropic: a non-abort fetch error is not mislabeled as a timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.reject(new Error("DNS resolution failed"))) as typeof fetch;
+
+  try {
+    await assertRejects(
+      () => summarizeArticle({ apiKey: "sk-direct", model: "test-model" }, "Title", "Body"),
+      Error,
+      "DNS resolution failed",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runWorkersAi (via summarizeArticleWithWorkersAi): a timeout-shaped rejection is reported as a workers-ai-prefixed timeout", async () => {
+  // Stubs what withTimeout(ai.run(...), 90000, "timed out after 90000ms")
+  // rejects with once the race actually loses (see the withTimeout tests
+  // above for proof the race itself works) — checks that the resulting
+  // message threads through runWorkersAi's error-wrapping the same way any
+  // other ai.run() failure does, without waiting out the real 45s.
+  const ai = makeStubAi(() => {
+    throw new Error("timed out after 90000ms");
+  });
+
+  await assertRejects(
+    () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
+    Error,
+    "workers ai error: Error: timed out after 90000ms",
+  );
+});
+
+// --- validateSummary: the content-quality bar applied after shape parsing ---
+
+function makeValidSummary(overrides: Partial<SummaryJson> = {}): SummaryJson {
+  return {
+    title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
+    title_en: "Company Raises Subscription Price 60% Starting September 1",
+    tldr_ru:
+      "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы. Изменение затронет около 2 миллионов подписчиков сервиса.",
+    tldr_en:
+      "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server costs. The change affects roughly 2 million subscribers.",
+    bullets_ru: [
+      "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
+      "Годовые подписчики сохранят текущую цену до продления.",
+      "Компания откладывала повышение полтора года.",
+    ],
+    bullets_en: [
+      "Price rises from $5 to $8 per month, a 60% increase.",
+      "Existing annual-plan subscribers keep their price until renewal.",
+      "The company delayed the increase for a year and a half.",
+    ],
+    tags: ["technology", "pricing"],
+    lang_original: "en",
+    ...overrides,
+  };
+}
+
+Deno.test("validateSummary: a well-formed summary passes with no violations", () => {
+  const result = validateSummary(makeValidSummary());
+  assertEquals(result.ok, true);
+});
+
+Deno.test("validateSummary: null (shape failure) is reported as a single schema violation", () => {
+  const result = validateSummary(null);
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations, ["response did not match the required JSON schema"]);
+  }
+});
+
+Deno.test("validateSummary: empty title is a violation", () => {
+  const result = validateSummary(makeValidSummary({ title_ru: "" }));
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.violations.some((v) => v.includes("title_ru")), true);
+});
+
+Deno.test("validateSummary: title over 120 chars is a violation", () => {
+  const result = validateSummary(makeValidSummary({ title_en: "x".repeat(121) }));
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("title_en") && v.includes("120")),
+      true,
+    );
+  }
+});
+
+Deno.test("validateSummary: title at exactly 120 chars is fine (boundary)", () => {
+  const result = validateSummary(makeValidSummary({ title_en: "x".repeat(120) }));
+  assertEquals(result.ok, true);
+});
+
+Deno.test("validateSummary: tldr under 120 chars is a violation", () => {
+  const result = validateSummary(makeValidSummary({ tldr_ru: "Слишком коротко." }));
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("tldr_ru") && v.includes("120")),
+      true,
+    );
+  }
+});
+
+Deno.test("validateSummary: tldr at exactly 120 chars is fine (boundary)", () => {
+  const result = validateSummary(makeValidSummary({ tldr_en: "x".repeat(120) }));
+  assertEquals(result.ok, true);
+});
+
+Deno.test("validateSummary: fewer than 3 bullets is a violation", () => {
+  const result = validateSummary(
+    makeValidSummary({ bullets_ru: ["Один пункт длиннее двадцати символов."] }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations.some((v) => v.includes("bullets_ru") && v.includes("3")), true);
+  }
+});
+
+Deno.test("validateSummary: more than 6 bullets is a violation", () => {
+  const bullets = Array.from(
+    { length: 7 },
+    (_, i) => `Пункт номер ${i} с достаточной длиной текста.`,
+  );
+  const result = validateSummary(makeValidSummary({ bullets_ru: bullets }));
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations.some((v) => v.includes("bullets_ru") && v.includes("6")), true);
+  }
+});
+
+Deno.test("validateSummary: exactly 3 and exactly 6 bullets are both fine (boundaries)", () => {
+  const three = validateSummary(
+    makeValidSummary({
+      bullets_en: [
+        "First concrete fact goes here now.",
+        "Second concrete fact goes here now.",
+        "Third concrete fact goes here now.",
+      ],
+    }),
+  );
+  assertEquals(three.ok, true);
+
+  const six = validateSummary(
+    makeValidSummary({
+      bullets_en: Array.from({ length: 6 }, (_, i) => `Concrete fact number ${i} in the list.`),
+    }),
+  );
+  assertEquals(six.ok, true);
+});
+
+Deno.test("validateSummary: a bullet under 20 chars is a violation", () => {
+  const result = validateSummary(
+    makeValidSummary({
+      bullets_en: [
+        "Too short.",
+        "Second concrete fact goes here now.",
+        "Third concrete fact goes here now.",
+      ],
+    }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("20")),
+      true,
+    );
+  }
+});
+
+Deno.test("validateSummary: a bullet over 220 chars is a violation", () => {
+  const result = validateSummary(
+    makeValidSummary({
+      bullets_en: [
+        "x".repeat(221),
+        "Second concrete fact goes here now.",
+        "Third concrete fact goes here now.",
+      ],
+    }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("220")),
+      true,
+    );
+  }
+});
+
+Deno.test("validateSummary: a bullet duplicating the tldr (>=80% word overlap) is a violation", () => {
+  const tldr =
+    "The company is raising its subscription price from five dollars to eight dollars a month starting soon.";
+  const duplicateBullet =
+    "The company is raising its subscription price from five dollars to eight.";
+  const result = validateSummary(
+    makeValidSummary({
+      tldr_en: tldr,
+      bullets_en: [
+        duplicateBullet,
+        "Second concrete fact goes here now.",
+        "Third concrete fact goes here now.",
+      ],
+    }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("duplicates")),
+      true,
+    );
+  }
+});
+
+Deno.test("validateSummary: a bullet sharing only a few words with the tldr is NOT flagged as a duplicate", () => {
+  const result = validateSummary(makeValidSummary());
+  assertEquals(result.ok, true);
+});
+
+Deno.test("validateSummary: zero tags is a violation", () => {
+  const result = validateSummary(makeValidSummary({ tags: [] }));
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.violations.some((v) => v.includes("tags")), true);
+});
+
+Deno.test("validateSummary: more than 6 tags is a violation", () => {
+  const result = validateSummary(makeValidSummary({ tags: ["a", "b", "c", "d", "e", "f", "g"] }));
+  assertEquals(result.ok, false);
+  if (!result.ok) assertEquals(result.violations.some((v) => v.includes("tags")), true);
+});
+
+Deno.test("validateSummary: 1 and 6 tags are both fine (boundaries)", () => {
+  assertEquals(validateSummary(makeValidSummary({ tags: ["one"] })).ok, true);
+  assertEquals(
+    validateSummary(makeValidSummary({ tags: ["a", "b", "c", "d", "e", "f"] })).ok,
+    true,
+  );
+});
+
+Deno.test("validateSummary: minTldrChars option lowers the bar (mode-aware threshold)", () => {
+  const shortTldrSummary = makeValidSummary({
+    tldr_ru: "Компания подняла цену подписки с $5 до $8 в этом месяце.", // ~58 chars
+    tldr_en: "The company raised its subscription price from $5 to $8.", // ~59 chars
+  });
+  assertEquals(validateSummary(shortTldrSummary).ok, false);
+  assertEquals(validateSummary(shortTldrSummary, { minTldrChars: 50 }).ok, true);
+});
+
+Deno.test("validateSummary: multiple simultaneous violations are all reported, not just the first", () => {
+  const result = validateSummary(
+    makeValidSummary({ title_ru: "", tags: [], bullets_en: ["short"] }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations.length >= 3, true);
+  }
+});
+
+Deno.test("validateSummary: the prompt's own few-shot example passes validation (guards against prompt/validator drift)", () => {
+  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY);
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
+// --- Corrective retry: the second attempt gets the specific violations ---
+
+Deno.test("summarizeArticle: a content-quality failure retries with the violations named, not the generic message", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedSecondBody: { messages: { content: string }[] } | undefined;
+  let calls = 0;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    if (calls === 1) {
+      const tooShort = { ...makeValidSummary(), tldr_ru: "Коротко.", tldr_en: "Short." };
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(tooShort) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    capturedSecondBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const result = await summarizeArticle(
+      { apiKey: "sk-direct", model: "test-model" },
+      "Title",
+      "Body",
+    );
+    assertEquals(result, makeValidSummary());
+    assertEquals(calls, 2);
+    const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
+    assertEquals(secondMessage.includes("tldr_ru must be at least 120 characters"), true);
+    assertEquals(secondMessage.includes("tldr_en must be at least 120 characters"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

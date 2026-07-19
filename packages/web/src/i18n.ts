@@ -38,6 +38,7 @@ export interface Dictionary {
   deleteAction: string;
   collapseAction: string;
   deleteConfirm: string;
+  resummarizeAction: string;
   pickOfDay: string;
   viaManual: string;
   viaExtension: string;
@@ -88,6 +89,7 @@ const ru: Dictionary = {
   deleteAction: "Удалить",
   collapseAction: "Свернуть",
   deleteConfirm: "Удалить статью?",
+  resummarizeAction: "Пересжать",
   pickOfDay: "выбор дня",
   viaManual: "вручную",
   viaExtension: "расширением",
@@ -138,6 +140,7 @@ const en: Dictionary = {
   deleteAction: "Delete",
   collapseAction: "Collapse",
   deleteConfirm: "Delete this article?",
+  resummarizeAction: "Re-summarize",
   pickOfDay: "pick of the day",
   viaManual: "manually",
   viaExtension: "via extension",

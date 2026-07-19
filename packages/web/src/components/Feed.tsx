@@ -13,6 +13,7 @@ export interface FeedProps {
   onArchiveToggle: (id: string, archived: boolean) => void;
   onDelete: (id: string) => void;
   onRetry: (id: string) => void;
+  onResummarize: (id: string) => void;
   onArticleUpdate: (article: ArticleListItem) => void;
   hasMore: boolean;
   onShowMore: () => void;
@@ -55,6 +56,7 @@ export function Feed(props: FeedProps) {
             onArchiveToggle={props.onArchiveToggle}
             onDelete={props.onDelete}
             onRetry={props.onRetry}
+            onResummarize={props.onResummarize}
             onArticleUpdate={props.onArticleUpdate}
             isOwner={isOwner}
           />
