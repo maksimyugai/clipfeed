@@ -1,3 +1,5 @@
+import type { AddedVia } from "@clipfeed/shared/types";
+
 export type Lang = "ru" | "en";
 
 export interface Dictionary {
@@ -40,6 +42,7 @@ export interface Dictionary {
   viaManual: string;
   viaExtension: string;
   viaAgent: string;
+  viaTelegram: string;
   toastErrorPrefix: string;
   turnstileRequiredError: string;
   turnstileFailedError: string;
@@ -89,6 +92,7 @@ const ru: Dictionary = {
   viaManual: "вручную",
   viaExtension: "расширением",
   viaAgent: "агентом",
+  viaTelegram: "из телеграма",
   toastErrorPrefix: "Ошибка",
   turnstileRequiredError: "Требуется проверка — попробуйте ещё раз.",
   turnstileFailedError: "Проверка не пройдена — попробуйте ещё раз.",
@@ -138,6 +142,7 @@ const en: Dictionary = {
   viaManual: "manually",
   viaExtension: "via extension",
   viaAgent: "by the agent",
+  viaTelegram: "via telegram",
   toastErrorPrefix: "Error",
   turnstileRequiredError: "Verification required — please try again.",
   turnstileFailedError: "Verification failed — please try again.",
@@ -166,8 +171,9 @@ export function writeStoredLang(storage: Pick<Storage, "setItem">, lang: Lang): 
   storage.setItem(LANG_STORAGE_KEY, lang);
 }
 
-export function viaLabel(dict: Dictionary, addedVia: "manual" | "extension" | "agent"): string {
+export function viaLabel(dict: Dictionary, addedVia: AddedVia): string {
   if (addedVia === "extension") return dict.viaExtension;
   if (addedVia === "agent") return dict.viaAgent;
+  if (addedVia === "telegram") return dict.viaTelegram;
   return dict.viaManual;
 }

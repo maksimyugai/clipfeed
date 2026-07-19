@@ -1,5 +1,5 @@
 export type ArticleStatus = "pending" | "ready" | "failed";
-export type AddedVia = "extension" | "manual" | "agent";
+export type AddedVia = "extension" | "manual" | "agent" | "telegram";
 
 export interface SummaryJson {
   title_ru: string;

@@ -6,7 +6,7 @@ export const MAX_TITLE_CHARS = 500;
 export const MAX_TAGS = 10;
 export const MAX_TAG_CHARS = 50;
 
-const VALID_ADDED_VIA: readonly AddedVia[] = ["extension", "manual", "agent"];
+const VALID_ADDED_VIA: readonly AddedVia[] = ["extension", "manual", "agent", "telegram"];
 
 export interface ValidationError {
   status: 400 | 413;
@@ -90,7 +90,10 @@ export function validateCreateArticleRequest(
     if (typeof obj.added_via !== "string" || !VALID_ADDED_VIA.includes(obj.added_via as AddedVia)) {
       return {
         ok: false,
-        error: { status: 400, error: "added_via must be one of extension, manual, agent" },
+        error: {
+          status: 400,
+          error: "added_via must be one of extension, manual, agent, telegram",
+        },
       };
     }
     addedVia = obj.added_via as AddedVia;

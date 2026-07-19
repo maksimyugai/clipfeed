@@ -114,6 +114,10 @@ is tied to a specific account, domain, or Access team.
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
 
+Two more optional pieces, once the above is working: "Protecting your instance" below (required
+before real use — reads are public by design, but writes need this) and "Telegram bot" further down
+(an optional capture path + daily digest, off by default).
+
 ## Protecting your instance
 
 ClipFeed follows a **public-read / owner-write** model: the instance is meant to be a public page.
@@ -191,6 +195,95 @@ link" form that intentionally doesn't require sign-in. Re-enabling it for such a
 there's nothing to configure here — `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` can be left unset,
 or you can remove `TURNSTILE_SECRET_KEY` if it's already set on a prior deploy (the site key alone,
 with no secret, is inert — `readTurnstileConfig()` requires both).
+
+## Telegram bot
+
+Optional capture path + a daily digest, entirely separate from the extension/SPA. Send the bot a
+link and it saves the article the same way the web UI does; `/digest` (or a 03:00 UTC cron by
+default) sends a plain-text summary of everything that finished processing in the last 24h. The bot
+is **private** — it answers exactly one chat (yours) and politely refuses everyone else.
+
+### How auth works here (read this before wiring it up)
+
+The Telegram Bot API delivers updates to your Worker via an HTTP webhook, and Telegram has no way to
+attach a Cloudflare Access identity to that request — so `POST /api/telegram/webhook` is
+**intentionally public**, sitting outside `/api/admin/*` alongside the other public routes (see
+"Protecting your instance" above for the overall model). Its own auth is a shared secret Telegram
+echoes back on every call, in the `X-Telegram-Bot-Api-Secret-Token` header, checked with a
+constant-time comparison. On top of that, the bot only ever acts on messages from the one chat id
+you configure — every other chat gets a one-line refusal and nothing else happens. The endpoint 404s
+outright (doesn't even reveal it exists) unless all three secrets below are set.
+
+### Configuration
+
+Three secrets, active only when **all three** are set (see `.dev.vars.example` for where to get each
+value):
+
+- `TELEGRAM_BOT_TOKEN` — from [@BotFather](https://t.me/BotFather) (`/newbot`).
+- `TELEGRAM_WEBHOOK_SECRET` — any random string; `deno task telegram:setup` can generate one for
+  you.
+- `TELEGRAM_OWNER_CHAT_ID` — your numeric chat id; see "Finding your chat id" below.
+
+Plus one `[vars]`, optional: `PUBLIC_BASE_URL` (e.g. `https://example.com`) — used only to build the
+feed link in bot messages (the digest footer, the "saved" reply). Left as `""` by default; bot
+messages simply omit the link when it's empty.
+
+### Setup
+
+1. Talk to [@BotFather](https://t.me/BotFather), `/newbot`, follow the prompts — it gives you a bot
+   token shaped like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`.
+2. `deno task deploy` first, if you haven't already — the webhook needs a live URL to register
+   against.
+3. Set the three secrets:
+   ```
+   deno run -A npm:wrangler secret put TELEGRAM_BOT_TOKEN
+   deno run -A npm:wrangler secret put TELEGRAM_WEBHOOK_SECRET
+   deno run -A npm:wrangler secret put TELEGRAM_OWNER_CHAT_ID
+   ```
+   (Optionally also `deno run -A npm:wrangler secret put PUBLIC_BASE_URL`, or add it to
+   `wrangler.toml`'s `[vars]` — it's not sensitive.)
+4. Register the webhook with Telegram:
+   ```
+   deno task telegram:setup
+   ```
+   Prompts for the bot token, a webhook secret (press Enter to have it generate one — copy that
+   value into step 3's `TELEGRAM_WEBHOOK_SECRET` if you do), and your deployed instance's public
+   base URL; then calls Telegram's `setWebhook` and prints `getWebhookInfo` so you can confirm it
+   took. (Deno's `prompt()` needs a real terminal — `--token=`/`--secret=`/`--base-url=` flags are
+   also accepted for non-interactive use, but note those land in shell history, so prefer the
+   prompts for a one-off run.)
+5. Message your bot: `/start` for help, paste a link to save it, `/digest` for an on-demand summary.
+
+**Finding your chat id:** message your bot at least once (anything — even just `/start`), then run:
+
+```
+deno task telegram:setup --get-chat-id
+```
+
+It calls `getUpdates` and prints every chat id seen in recent messages — use the one for your own
+private chat.
+
+### The morning digest (cron)
+
+`wrangler.toml`'s `[triggers]` section runs the digest at `03:00 UTC` daily:
+
+```
+[triggers]
+crons = ["0 3 * * *"]
+```
+
+Edit that cron expression to change the time — it's always **UTC**, regardless of your own timezone.
+`deno task deploy` (and the CD workflow on merge to `main`) applies `wrangler.toml`'s triggers
+automatically; no separate registration step like the webhook needs. If there's nothing new to
+report, the cron digest sends **nothing** — unlike `/digest`, which always replies (with a "nothing
+new" message) since you asked for it directly.
+
+### Privacy
+
+This is a single-owner bot by design: article titles, summaries, and links are never sent to any
+chat other than the one in `TELEGRAM_OWNER_CHAT_ID`. Saving via Telegram reuses the exact same
+extract → summarize → persist pipeline as every other capture path (including the daily cost guard)
+— nothing Telegram-specific is duplicated.
 
 ## Chrome extension
 

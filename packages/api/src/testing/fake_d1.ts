@@ -151,6 +151,17 @@ export class FakeD1 implements D1Database {
       return this.queryList(sql, values);
     }
 
+    if (
+      sql ===
+        "SELECT summary_json FROM articles WHERE status = 'ready' AND added_at >= ? ORDER BY added_at DESC"
+    ) {
+      const since = values[0] as string;
+      return this.rows
+        .filter((r) => r.status === "ready" && (r.added_at as string) >= since)
+        .sort((a, b) => (b.added_at as string).localeCompare(a.added_at as string))
+        .map((r) => ({ summary_json: r.summary_json }));
+    }
+
     throw new Error(`FakeD1: unsupported query: ${sql}`);
   }
 

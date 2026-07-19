@@ -7,9 +7,17 @@ SUMMARY_MODEL = "claude-haiku-4-5-20251001"
 DAILY_SUMMARY_LIMIT = 50
 WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 TURNSTILE_SITE_KEY = "0x4AAAAAAD5FSIrh2Xu_PuNh"
+PUBLIC_BASE_URL = ""
 
 [ai]
 binding = "AI"
+
+# Morning digest, sent via the Telegram bot when TELEGRAM_* secrets are set
+# (see README "Telegram bot") — 03:00 UTC by default; edit the cron
+# expression below to change the time (it's always UTC, unaffected by your
+# own timezone).
+[triggers]
+crons = ["0 3 * * *"]
 
 [assets]
 directory = "./dist/web"

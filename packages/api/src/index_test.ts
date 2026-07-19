@@ -1,4 +1,4 @@
-import app from "./index.ts";
+import { app } from "./index.ts";
 
 Deno.test("GET /api/health returns ok", async () => {
   const res = await app.request("/api/health");

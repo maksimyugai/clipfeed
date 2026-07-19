@@ -21,6 +21,7 @@ import {
   validateHtml,
   validatePatchArticleRequest,
 } from "./validation.ts";
+import { handleTelegramWebhook, sendMorningDigest } from "./telegram-webhook.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -40,6 +41,13 @@ app.get("/api/config", (c) => {
 app.get("/api/health", (c) => {
   return c.json({ ok: true, ts: new Date().toISOString() });
 });
+
+// Public by design, same as the routes above — Telegram delivers updates
+// via webhook and can't present a Cloudflare Access identity, so this
+// path authenticates itself via the X-Telegram-Bot-Api-Secret-Token
+// header instead (see telegram-webhook.ts). 404s when the feature isn't
+// configured, so its existence isn't even observable otherwise.
+app.post("/api/telegram/webhook", handleTelegramWebhook);
 
 // Reads the request body once, enforcing the overall size cap before
 // attempting to parse it as JSON.
@@ -225,4 +233,20 @@ app.post("/api/admin/articles/:id/retry", async (c) => {
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+// Named export for tests, which call `app.request(...)` directly — the
+// default export below is the Workers-runtime handler shape
+// ({fetch, scheduled}), which doesn't have that method.
+export { app };
+
+export default {
+  fetch: app.fetch,
+  // Morning digest (see wrangler.toml [triggers]); no-ops when the
+  // Telegram feature isn't configured — see sendMorningDigest.
+  scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ): void {
+    ctx.waitUntil(sendMorningDigest(env));
+  },
+};

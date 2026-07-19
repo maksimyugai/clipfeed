@@ -61,7 +61,9 @@ Deno.test("viaLabel: maps each added_via value per language", () => {
   assertEquals(viaLabel(dictionaries.ru, "manual"), "вручную");
   assertEquals(viaLabel(dictionaries.ru, "extension"), "расширением");
   assertEquals(viaLabel(dictionaries.ru, "agent"), "агентом");
+  assertEquals(viaLabel(dictionaries.ru, "telegram"), "из телеграма");
   assertEquals(viaLabel(dictionaries.en, "manual"), "manually");
   assertEquals(viaLabel(dictionaries.en, "extension"), "via extension");
   assertEquals(viaLabel(dictionaries.en, "agent"), "by the agent");
+  assertEquals(viaLabel(dictionaries.en, "telegram"), "via telegram");
 });
