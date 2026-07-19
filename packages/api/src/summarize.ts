@@ -284,7 +284,7 @@ async function runWorkersAi(ai: Ai, model: string, userMessage: string): Promise
     try {
       return await ai.run(model, workersAiInput(userMessage, false));
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       throw new Error(`workers ai error: ${reason}`);
     }
   }

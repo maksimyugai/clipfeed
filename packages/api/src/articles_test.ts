@@ -95,6 +95,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     SUMMARY_MODEL: "test-model",
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
+    PENDING_TIMEOUT_MIN: 10,
     PUBLIC_BASE_URL: "",
     ANTHROPIC_API_KEY: "test-key",
     ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -383,6 +384,62 @@ Deno.test("GET /api/articles: cursor pagination walks the full list (public, no 
   } finally {
     restoreFetch();
   }
+});
+
+Deno.test("GET /api/articles: sweeps a stale pending row to failed before listing (env.PENDING_TIMEOUT_MIN honored)", async () => {
+  const { env, ctx } = { env: makeEnv({ PENDING_TIMEOUT_MIN: 10 }), ...makeExecutionContext() };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push({
+    id: "stale-1",
+    url: "https://example.com/stale",
+    canonical_url: null,
+    title: "Stale",
+    source: "example.com",
+    author: null,
+    published_at: null,
+    added_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+    added_via: "manual",
+    lang_original: null,
+    full_text: null,
+    summary_ru: null,
+    summary_en: null,
+    summary_json: null,
+    tags: "[]",
+    status: "pending",
+    archived: 0,
+    error: null,
+  });
+  db.rows.push({
+    id: "fresh-1",
+    url: "https://example.com/fresh",
+    canonical_url: null,
+    title: "Fresh",
+    source: "example.com",
+    author: null,
+    published_at: null,
+    added_at: new Date().toISOString(),
+    added_via: "manual",
+    lang_original: null,
+    full_text: null,
+    summary_ru: null,
+    summary_en: null,
+    summary_json: null,
+    tags: "[]",
+    status: "pending",
+    archived: 0,
+    error: null,
+  });
+
+  const res = await app.request("/api/articles", {}, env, ctx);
+  const body = await res.json();
+  const items = body.items as { id: string; status: string; error: string | null }[];
+
+  assertEquals(items.find((i) => i.id === "stale-1")?.status, "failed");
+  assertEquals(
+    items.find((i) => i.id === "stale-1")?.error,
+    "timeout: processing did not complete",
+  );
+  assertEquals(items.find((i) => i.id === "fresh-1")?.status, "pending");
 });
 
 Deno.test("PATCH /api/admin/articles/:id: updates archived and tags", async () => {

@@ -11,6 +11,7 @@ import {
   listArticles,
   markArticlePending,
   patchArticle,
+  sweepStalePending,
   toPublicArticle,
 } from "./db.ts";
 import { runArticlePipeline } from "./pipeline.ts";
@@ -69,6 +70,9 @@ async function readJsonBody(
 }
 
 app.get("/api/articles", async (c) => {
+  // Lazy stale-pending sweeper — see sweepStalePending() in db.ts.
+  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN);
+
   const query = c.req.query();
   const limitRaw = query.limit ? Number(query.limit) : 20;
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 100

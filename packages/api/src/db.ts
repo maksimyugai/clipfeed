@@ -163,6 +163,24 @@ export async function markArticleFailed(db: D1Database, id: string, error: strin
     .run();
 }
 
+// Backstop for a Workers CPU-time kill, which can terminate the isolate
+// mid-pipeline without ever raising a catchable exception — see
+// runArticlePipeline() in pipeline.ts, whose own try/catch can't cover that
+// case. Lazy: no cron dependency, just one cheap UPDATE run at the start of
+// every public list fetch, so a stuck row surfaces (as 'failed', with a
+// Retry button) the next time anyone loads the feed.
+export async function sweepStalePending(
+  db: D1Database,
+  timeoutMinutes: number,
+  now: Date = new Date(),
+): Promise<void> {
+  const cutoff = new Date(now.getTime() - timeoutMinutes * 60_000).toISOString();
+  await db.prepare(
+    `UPDATE articles SET status = 'failed', error = 'timeout: processing did not complete'
+     WHERE status = 'pending' AND added_at < ?`,
+  ).bind(cutoff).run();
+}
+
 export async function markArticlePending(db: D1Database, id: string): Promise<void> {
   await db.prepare(`UPDATE articles SET status = 'pending', error = NULL WHERE id = ?`).bind(id)
     .run();

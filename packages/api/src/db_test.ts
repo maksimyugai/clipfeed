@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
-import { buildListQuery } from "./db.ts";
+import { buildListQuery, sweepStalePending } from "./db.ts";
+import { FakeD1 } from "./testing/fake_d1.ts";
 
 Deno.test("buildListQuery: no filters — base query, default limit + 1", () => {
   const { sql, binds } = buildListQuery({ limit: 20 });
@@ -57,4 +58,38 @@ Deno.test("buildListQuery: combines all filters with AND in a fixed order", () =
     1,
     6,
   ]);
+});
+
+// --- sweepStalePending ---
+
+Deno.test("sweepStalePending: flips only pending rows older than the timeout, leaves newer/non-pending rows alone", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    { id: "old-pending", status: "pending", added_at: "2025-12-31T23:49:00.000Z", error: null },
+    { id: "new-pending", status: "pending", added_at: "2026-01-01T00:08:00.000Z", error: null },
+    { id: "old-ready", status: "ready", added_at: "2025-12-31T23:00:00.000Z", error: null },
+  );
+
+  await sweepStalePending(db, 10, new Date("2026-01-01T00:10:00.000Z"));
+
+  const byId = (id: string) => db.rows.find((r) => r.id === id)!;
+  assertEquals(byId("old-pending").status, "failed");
+  assertEquals(byId("old-pending").error, "timeout: processing did not complete");
+  assertEquals(byId("new-pending").status, "pending");
+  assertEquals(byId("new-pending").error, null);
+  assertEquals(byId("old-ready").status, "ready");
+});
+
+Deno.test("sweepStalePending: timeout value is honored — a longer timeout spares the same row", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    { id: "eleven-min-old", status: "pending", added_at: "2025-12-31T23:59:00.000Z", error: null },
+  );
+  const now = new Date("2026-01-01T00:10:00.000Z");
+
+  await sweepStalePending(db, 60, now);
+  assertEquals(db.rows[0].status, "pending");
+
+  await sweepStalePending(db, 10, now);
+  assertEquals(db.rows[0].status, "failed");
 });

@@ -28,6 +28,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     SUMMARY_MODEL: "test-model",
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
+    PENDING_TIMEOUT_MIN: 10,
     PUBLIC_BASE_URL: "",
     TURNSTILE_SITE_KEY: "test-site-key",
     TURNSTILE_SECRET_KEY: "test-secret-key",
