@@ -30,11 +30,12 @@ deno task lint    # lint
 ## Project layout
 
 ```
-packages/api/src/index.ts     Hono app (JSON API + static asset fallback)
-packages/web/src/main.tsx     Preact SPA entry (-> dist/web/{app.js,app.css})
-packages/web/index.html       SPA HTML template (copied to dist/web/index.html)
-packages/shared/src/types.ts  Types shared between API and SPA
-migrations/                   D1 schema migrations
+packages/api/src/index.ts       Hono app (JSON API + static asset fallback)
+packages/web/src/main.tsx       Preact SPA entry (-> dist/web/{app.js,app.css})
+packages/web/index.html         SPA HTML template (copied to dist/web/index.html)
+packages/extension/             Chrome extension (Manifest V3, see "Chrome extension" below)
+packages/shared/src/types.ts    Types shared between API, SPA, and extension
+migrations/                     D1 schema migrations
 ```
 
 ## LLM modes
@@ -126,9 +127,10 @@ setup happens in the Cloudflare dashboard, not in code:
 
 2. **Policy 1 (you):** Allow → Include → Emails → your email address. Login is via a one-time PIN or
    whatever identity provider you've configured for your Zero Trust team.
-3. **Policy 2 (for the future extension/bots):** Allow → Include → Service Auth → create a Service
+3. **Policy 2 (for the Chrome extension/bots):** Allow → Include → Service Auth → create a Service
    Token, e.g. named `clipfeed-extension`. Save its Client ID and Client Secret somewhere safe —
-   they're needed for Task 6 (the Chrome extension) and aren't shown again after creation.
+   they're entered into the extension's Options page (see "Chrome extension" below) and aren't shown
+   again after creation.
 4. Copy your **team domain** (e.g. `myteam.cloudflareaccess.com`) and the application's **Audience
    (AUD) tag** from the Access application's Overview tab, then set them on the Worker:
    ```
@@ -150,3 +152,76 @@ state, not a failure mode. Once both are set, every tool you use to smoke-test t
 (`curl`, browser, scripts) needs either a logged-in Access session cookie or
 `CF-Access-Client-Id`/`CF-Access-Client-Secret` headers from a Service Token — plain requests will
 get a `401`.
+
+## Chrome extension
+
+`packages/extension/` is a Manifest V3 extension that saves the **current tab's rendered HTML** (not
+just its URL) to your ClipFeed instance in one click — this bypasses anti-bot walls that a
+server-side fetch would hit, since the page is already rendered in your browser. It's published as a
+single build with no backend baked in: every install (owner or forker) points it at their own server
+and Access service token from the extension's Options page. The extension talks to your Worker
+exactly like any other client — with `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers from
+a Service Token (see "Protecting your instance" → policy 2 above).
+
+### Build
+
+```
+deno task build:extension   # bundles packages/extension/ -> dist/extension/ (also runs as part of `deno task build`)
+deno task zip:extension     # zips dist/extension/ -> dist/clipfeed-extension.zip (Chrome Web Store upload artifact)
+```
+
+`dist/extension/` is a complete unpacked extension: `manifest.json`, `background.js` (service
+worker), `content-page.js` / `content-selection.js` (bundled with `@mozilla/readability`, injected
+on demand — there's no static `content_scripts` entry in the manifest), `popup.html`/`.js`/`.css`,
+`options.html`/`.js`/`.css`, and `icons/icon{16,32,48,128}.png` (procedurally generated at build
+time from an inline gradient + monogram — no binary image assets are committed to the repo).
+
+### Load it for development
+
+1. `deno task build:extension`.
+2. Chrome/Edge → `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select
+   `dist/extension/`.
+3. Click the ClipFeed toolbar icon → gear icon → enter your Worker's URL and a Service Token's
+   Client ID/Secret → **Save**. The extension requests a one-time, origin-scoped host permission for
+   that server (`optional_host_permissions`, granted via `chrome.permissions.request`) so a
+   store-published build never has to declare `<all_urls>` or know your origin in advance.
+4. Reopen the popup on any article page → **Save page**.
+
+Credentials are stored in `chrome.storage.local` (not `chrome.storage.sync`, so they never leave
+this browser profile) **unencrypted** — anyone with local access to this Chrome profile can read
+them. Treat that the same as any other locally-cached credential: if the machine is compromised,
+revoke and reissue the Service Token in Zero Trust (Access → Service Auth) rather than trying to
+"rotate" client-side.
+
+### Manual verification status
+
+No Chrome/Chromium binary was available in the environment this extension was built in, so "Load
+unpacked" could not be exercised directly — verification here was `deno task test` (pure
+capture/payload/tag/auth-header logic, 21 tests) plus inspecting the built `dist/extension/` and
+`dist/clipfeed-extension.zip` output (valid PNG icons, no source maps, manifest paths resolve, zip
+opens with a standard `unzip`). **Owner checklist** to run once after loading the unpacked build or
+the store zip:
+
+- [ ] Toolbar icon opens the popup; before configuring, it shows "ClipFeed is not configured yet" +
+      an "Open settings" button (not a broken/blank popup).
+- [ ] Settings gear (or "Open settings") opens the Options page.
+- [ ] Options: entering a `http://` non-localhost URL is rejected before any network call.
+- [ ] Options: entering your real server URL + Service Token prompts a Chrome permission dialog for
+      that origin; declining it leaves the fields unsaved and shows a warning.
+- [ ] Options: accepting the permission prompt, with correct credentials, shows "Connected ✓" and
+      persists (reopening Options shows the same values).
+- [ ] Options: a wrong Client Secret shows a clear auth error, not a generic failure.
+- [ ] Popup on a normal article page shows the page's domain + title (2-line clamp) and an enabled
+      "Save page" button; "or save selected text" is greyed out with nothing selected.
+- [ ] Selecting text on the page, then reopening the popup, enables "or save selected text".
+- [ ] "Save page" shows a spinner, then a green "Saved — summary in ~10s" card with "Open feed" and
+      "Undo"; the toolbar badge briefly shows a green "✓".
+- [ ] "Open feed" opens the configured server's origin in a new tab.
+- [ ] "Undo" deletes the just-created article (verify it's gone from the feed) and returns to the
+      Ready state.
+- [ ] Saving the same URL twice shows "Already saved" (no duplicate article, no "Undo" button).
+- [ ] Turning the Worker's Access enforcement on and saving with a stale/wrong token shows an
+      auth-specific error message, and the badge shows a red "!" that persists until the popup is
+      reopened.
+- [ ] `chrome://extensions` service worker inspector shows no `html` payload or credential values
+      logged to the console during a save (only status/category per the security constraints).

@@ -2,6 +2,8 @@
   "tasks": {
     "dev": "deno run -A scripts/build.ts && deno run -A npm:wrangler dev",
     "build": "deno run -A scripts/build.ts",
+    "build:extension": "deno run -A scripts/build.ts --extension-only",
+    "zip:extension": "deno run -A scripts/zip-extension.ts",
     "setup": "deno run -A scripts/setup.ts",
     "deploy": "deno task build && deno run -A npm:wrangler deploy",
     "test": "deno test -A",
