@@ -58,8 +58,9 @@ alone. Any partial config (e.g. `AI_GATEWAY_URL` set with no credential, or a st
 with no URL) is treated the same as nothing configured and falls back to Workers AI, rather than
 making a request that's guaranteed to fail. This fallback is silent by design (the article still
 gets summarized) — if summaries look unexpectedly non-Claude-quality, check the `error` field on
-`GET /api/articles/:id` for past failures and your AI Gateway logs for whether requests are actually
-arriving there. See "Deploy your own (fork)" below for the exact commands.
+`GET /api/admin/articles/:id` (owner-only — the public `GET /api/articles/:id` only exposes a
+`has_error` boolean, not the raw message) for past failures, and your AI Gateway logs for whether
+requests are actually arriving there. See "Deploy your own (fork)" below for the exact commands.
 
 ## Database
 
@@ -104,96 +105,92 @@ is tied to a specific account, domain, or Access team.
      deno run -A npm:wrangler secret put ANTHROPIC_API_KEY
      ```
 4. `deno task deploy`.
-5. Your Worker is now live at `*.workers.dev` and **unprotected** — anyone with the URL can call its
-   API (including the summarization endpoint, which spends your LLM budget). See "Protecting your
-   instance" below to lock it down with Cloudflare Access, and/or "Bot protection (Turnstile)" to
-   block scripted abuse of a public instance, before real use.
+5. Your Worker is now live at `*.workers.dev`. Reads are public by design — anyone can browse the
+   feed, that's the point (see "Protecting your instance" below for the model). But every mutation
+   requires a verified Cloudflare Access identity and **fails closed** until that's set up — meaning
+   **you, the owner, can't add an article yet either.** Setting up Access (next section) is the
+   last, required step, not an optional hardening pass.
 
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
 
 ## Protecting your instance
 
-By default a deployed ClipFeed instance is **public** — anyone with the URL can read, add, and
-delete articles. The Worker itself verifies a Cloudflare Access JWT on every request (except
-`GET /api/health`, kept open for monitoring); Access issues that JWT after your own login policy, so
-setup happens in the Cloudflare dashboard, not in code:
+ClipFeed follows a **public-read / owner-write** model: the instance is meant to be a public page.
+`GET /api/health`, `GET /api/config`, `GET /api/articles`, `GET /api/articles/:id`, and the SPA
+shell/static assets are all open, no login required — that's intentional, not a gap. Every
+_mutation_ — `POST /api/admin/articles`, `POST /api/admin/articles/:id/retry`,
+`PATCH /api/admin/articles/:id`, `DELETE /api/admin/articles/:id` — plus `GET /api/admin/me` and
+`GET /api/admin/login` live under `/api/admin/*` and require a verified Cloudflare Access identity.
 
-1. **Zero Trust → Access → Applications → Add an application → Self-hosted.** Set the application
-   domain to your Worker's public hostname.
+**This fails closed:** until `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are both set, every request to
+`/api/admin/*` gets `401 {"error":"auth_not_configured"}` — including yours. Unlike the read side,
+there is no "open" bootstrap state for mutations; setting up Access below isn't optional hardening,
+it's how you (and only you) get write access to your own instance.
+
+Cloudflare Access attaches to a domain **path**, not an HTTP method, so a GET and a POST to the same
+path can't get different policies. That's the reason mutations live under a dedicated `/api/admin`
+prefix rather than sitting next to their public GET counterparts: Access protects exactly that
+prefix, and the rest of the domain — including the SPA itself — stays outside it, public.
+
+1. **Zero Trust → Access → Applications → Add an application → Self-hosted.** Set the application to
+   your Worker's public hostname **with path `api/admin`** (e.g. domain `clipfeed.example.com`, path
+   `api/admin`) — **not the bare domain.** Protecting the whole domain puts the public feed behind a
+   login wall too, which defeats the point of this model.
 
    > If Access cannot be attached to your `*.workers.dev` hostname in your dashboard, attach the
-   > Worker to a custom domain on your zone (Workers → Settings → Domains & Routes) and protect that
-   > hostname instead; then treat direct `*.workers.dev` access as blocked by this middleware's 401.
+   > Worker to a custom domain on your zone (Workers → Settings → Domains & Routes) and protect
+   > `<your-domain>/api/admin` on that instead.
 
 2. **Policy 1 (you):** Allow → Include → Emails → your email address. Login is via a one-time PIN or
-   whatever identity provider you've configured for your Zero Trust team.
+   whatever identity provider you've configured for your Zero Trust team — this is what the SPA's
+   "sign in" link takes you through, landing back on the feed with the add/archive/delete/retry
+   controls now visible.
 3. **Policy 2 (for the Chrome extension/bots):** Allow → Include → Service Auth → create a Service
    Token, e.g. named `clipfeed-extension`. Save its Client ID and Client Secret somewhere safe —
    they're entered into the extension's Options page (see "Chrome extension" below) and aren't shown
    again after creation.
-4. Copy your **team domain** (e.g. `myteam.cloudflareaccess.com`) and the application's **Audience
-   (AUD) tag** from the Access application's Overview tab, then set them on the Worker:
+4. Copy your **team domain** and the application's **Audience (AUD) tag** from the Access
+   application's Overview tab, then set them on the Worker:
    ```
    deno run -A npm:wrangler secret put ACCESS_TEAM_DOMAIN
    deno run -A npm:wrangler secret put ACCESS_AUD
    ```
-   (Secrets are recommended; plain `[vars]` work too since neither value is sensitive on its own —
-   but per the forkability policy, never commit a real value as a default in `wrangler.toml`.)
+   **`ACCESS_TEAM_DOMAIN` is a bare hostname — e.g. `myteam.cloudflareaccess.com` — no `https://`
+   scheme, no trailing slash.** Pasting it with a scheme (as some dashboard views show it) passes
+   `wrangler secret put` without error but silently fails JWT issuer verification on every request;
+   this has bitten a real deploy before, worth double-checking.
 5. **Verify:**
-   - Opening the app in a browser now shows the Access login instead of the feed.
-   - `curl https://<your-worker>/api/articles` (no headers) → `401`.
-   - `curl -H "CF-Access-Client-Id: <id>" -H "CF-Access-Client-Secret: <secret>" https://<your-worker>/api/articles`
-     (a Service Token from policy 2) → `200`.
+   - `curl https://<your-worker>/api/articles` (no headers, no login) → `200` — the public feed
+     stays open.
+   - `curl https://<your-worker>/api/admin/me` (no headers) → `401 {"error":"unauthorized"}`.
+   - Open `https://<your-worker>/` in a browser, click "sign in" → Access login → redirected back to
+     the feed, now showing the add/archive/delete/retry controls.
+   - `curl -H "CF-Access-Client-Id: <id>" -H "CF-Access-Client-Secret: <secret>" https://<your-worker>/api/admin/me`
+     (a Service Token from policy 2) → `200 {"sub": "...", "email": "..."}`.
 
-**Both `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` must be set for auth to activate.** With only one set,
-or neither, the Worker logs a warning once per isolate ("Access auth disabled — set
-ACCESS_TEAM_DOMAIN and ACCESS_AUD") and serves openly — this is the zero-config fork/dev bootstrap
-state, not a failure mode. Once both are set, every tool you use to smoke-test the deployed Worker
-(`curl`, browser, scripts) needs either a logged-in Access session cookie or
-`CF-Access-Client-Id`/`CF-Access-Client-Secret` headers from a Service Token — plain requests will
-get a `401`.
+**Both `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` must be set for `/api/admin/*` to work at all** — with
+only one set, or neither, every admin route returns `401 auth_not_configured` (fail closed) while
+the public feed keeps working exactly as before.
 
-## Bot protection (Turnstile)
+## Bot protection (Turnstile) — currently dormant
 
-Access answers "who are you"; Turnstile answers "are you a browser with a human at the wheel" — the
-two are complementary, not redundant. Turnstile protects the **mutating** endpoints
-(`POST /api/articles`, `POST /api/articles/:id/retry`, `PATCH /api/articles/:id`,
-`DELETE /api/articles/:id`) so a public instance can't have its LLM budget or data abused by scripts
-hitting the API directly, even if you never turn Access on.
+Turnstile support was built for an earlier model where mutations were reachable without signing in,
+and it protected them from scripted abuse. That model is gone: **every mutation now requires a
+verified Cloudflare Access identity** (see "Protecting your instance" above), so there's no
+anonymous-mutation surface left for Turnstile to guard. `turnstileGuard()`
+(`packages/api/src/turnstile-middleware.ts`) is fully implemented and tested but isn't mounted on
+any route in `index.ts`. `GET /api/config` still reports the configured site key if you've set one,
+and the SPA still fetches it on boot — but nothing ever asks it to acquire a token, since no route
+returns `turnstile_required` anymore.
 
-**The bypass rule:** any request that already carries a verified Access identity (a logged-in
-session or a Service Token) skips Turnstile entirely — a Service Token is proof of "human enough" on
-its own, and non-browser clients like the Chrome extension physically cannot render a Turnstile
-widget, so they must never be asked to. **Practical consequence: with Turnstile active, non-browser
-clients (the Chrome extension, scripts, future bots) MUST authenticate via an Access Service Token**
-(see "Protecting your instance" → policy 2 above) — there's no other way for them to get past a
-mutating endpoint once Turnstile is on.
-
-Setup, in the Cloudflare dashboard:
-
-1. **Turnstile → Add widget.** Widget mode: **Invisible** (or Managed — either works; the SPA
-   requests `appearance: "interaction-only"`, so a visible challenge only appears if Cloudflare's
-   own risk scoring decides one is needed).
-2. **Domains:** add your Worker's public hostname(s), and `localhost` if you want to test the real
-   widget locally (Cloudflare's dashboard accepts `localhost` as a domain for this purpose).
-3. Copy the **Site Key** (public, safe to ship to the browser) and **Secret Key** (server-only),
-   then set them on the Worker:
-   ```
-   deno run -A npm:wrangler secret put TURNSTILE_SITE_KEY
-   deno run -A npm:wrangler secret put TURNSTILE_SECRET_KEY
-   ```
-   (`TURNSTILE_SITE_KEY` isn't sensitive on its own — plain `[vars]` works too, same as
-   `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` — but per the forkability policy, never commit a real value as
-   a default in `wrangler.toml`.)
-4. **Verify:** `GET /api/config` should now return `{"turnstile_site_key": "<your site key>"}`
-   instead of `null`; a `POST /api/articles` with no `cf-turnstile-response` header and no Access
-   identity should now return `403 {"error":"turnstile_required"}` instead of succeeding.
-
-**Both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` must be set for enforcement to activate** —
-with only one set, or neither, mutating endpoints behave exactly as before this feature (no widget,
-no checks). For local dev without setting up a real widget, Cloudflare publishes fixed test keys
-that always pass or always block verification — see `.dev.vars.example` for the exact values.
+The module, its tests, and the `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` config plumbing (see
+`.dev.vars.example`) are left in place for a future genuinely-public write path — e.g. a "suggest a
+link" form that intentionally doesn't require sign-in. Re-enabling it for such a route is a one-line
+`turnstileGuard()` addition; see the middleware's own doc comment. If you don't plan to add one,
+there's nothing to configure here — `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` can be left unset,
+or you can remove `TURNSTILE_SECRET_KEY` if it's already set on a prior deploy (the site key alone,
+with no secret, is inert — `readTurnstileConfig()` requires both).
 
 ## Chrome extension
 
@@ -262,8 +259,9 @@ the store zip:
 - [ ] "Undo" deletes the just-created article (verify it's gone from the feed) and returns to the
       Ready state.
 - [ ] Saving the same URL twice shows "Already saved" (no duplicate article, no "Undo" button).
-- [ ] Turning the Worker's Access enforcement on and saving with a stale/wrong token shows an
-      auth-specific error message, and the badge shows a red "!" that persists until the popup is
-      reopened.
+- [ ] Saving with a stale/wrong Service Token shows an auth-specific error message, and the badge
+      shows a red "!" that persists until the popup is reopened. (Access is mandatory now — every
+      `/api/admin/*` mutation, including the extension's saves, requires a valid Service Token; see
+      "Protecting your instance".)
 - [ ] `chrome://extensions` service worker inspector shows no `html` payload or credential values
       logged to the console during a save (only status/category per the security constraints).

@@ -45,6 +45,8 @@ export interface Dictionary {
   turnstileFailedError: string;
   turnstileUnavailableError: string;
   turnstileClientError: string;
+  signIn: string;
+  visitorFeedHint: string;
 }
 
 const ru: Dictionary = {
@@ -92,6 +94,8 @@ const ru: Dictionary = {
   turnstileFailedError: "Проверка не пройдена — попробуйте ещё раз.",
   turnstileUnavailableError: "Сервис проверки временно недоступен — попробуйте чуть позже.",
   turnstileClientError: "Не удалось выполнить проверку — попробуйте ещё раз.",
+  signIn: "войти",
+  visitorFeedHint: "Публичная лента ClipFeed",
 };
 
 const en: Dictionary = {
@@ -140,6 +144,8 @@ const en: Dictionary = {
   turnstileUnavailableError:
     "Verification service is temporarily unavailable — please try again shortly.",
   turnstileClientError: "Could not complete the verification check — please try again.",
+  signIn: "sign in",
+  visitorFeedHint: "Public ClipFeed feed",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };

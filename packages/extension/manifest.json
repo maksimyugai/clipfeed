@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ClipFeed",
   "description": "Save the current tab (or a text selection) to your personal ClipFeed article digest with one click.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

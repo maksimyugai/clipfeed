@@ -10,11 +10,21 @@ export interface HeaderProps {
   searchValue: string;
   onSearchChange: (value: string) => void;
   onAddClick: () => void;
+  isOwner: boolean;
 }
 
 export function Header(
-  { dict, lang, onLangChange, theme, onThemeToggle, searchValue, onSearchChange, onAddClick }:
-    HeaderProps,
+  {
+    dict,
+    lang,
+    onLangChange,
+    theme,
+    onThemeToggle,
+    searchValue,
+    onSearchChange,
+    onAddClick,
+    isOwner,
+  }: HeaderProps,
 ) {
   return (
     <header class="app-header">
@@ -60,14 +70,23 @@ export function Header(
           {theme === "dark" ? "☀" : "☾"}
         </button>
 
-        <button
-          type="button"
-          class="add-button"
-          aria-label={dict.addButtonAria}
-          onClick={onAddClick}
-        >
-          +
-        </button>
+        {isOwner
+          ? (
+            <button
+              type="button"
+              class="add-button"
+              aria-label={dict.addButtonAria}
+              onClick={onAddClick}
+            >
+              +
+            </button>
+          )
+          : (
+            // Top-level navigation (not a fetch/SPA route) — the browser
+            // needs to complete Cloudflare Access's own hosted-login
+            // redirect dance, which fetch() can't do.
+            <a class="sign-in-link" href="/api/admin/login">{dict.signIn}</a>
+          )}
       </div>
     </header>
   );

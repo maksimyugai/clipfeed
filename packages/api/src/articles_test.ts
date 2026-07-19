@@ -3,6 +3,10 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import app from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 
+const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
+const AUD = "test-aud-tag";
+const JWKS_CACHE_KEY = `access:jwks:${TEAM_DOMAIN}`;
+
 const VALID_SUMMARY = {
   title_ru: "Заголовок",
   title_en: "Example Title",
@@ -17,6 +21,57 @@ const VALID_SUMMARY = {
 const ARTICLE_HTML = "<html><head><title>Example</title></head><body><article><h1>Example</h1>" +
   "<p>Hello world, this is the first paragraph of example content.</p>" +
   "<p>Here is a second paragraph with more detail to summarize.</p></article></body></html>";
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlEncodeString(s: string): string {
+  return base64UrlEncode(new TextEncoder().encode(s));
+}
+
+async function generateKeyPair(): Promise<CryptoKeyPair> {
+  return await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  ) as CryptoKeyPair;
+}
+
+async function exportJwk(publicKey: CryptoKey, kid: string): Promise<Record<string, unknown>> {
+  const jwk = await crypto.subtle.exportKey("jwk", publicKey) as Record<string, unknown>;
+  return { ...jwk, kid, alg: "RS256", use: "sig" };
+}
+
+async function signJwt(privateKey: CryptoKey, kid: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "RS256", typ: "JWT", kid };
+  const payload = {
+    sub: "owner-1",
+    email: "owner@example.com",
+    aud: [AUD],
+    iss: `https://${TEAM_DOMAIN}`,
+    iat: now - 10,
+    exp: now + 3600,
+    nbf: now - 10,
+  };
+  const headerB64 = base64UrlEncodeString(JSON.stringify(header));
+  const payloadB64 = base64UrlEncodeString(JSON.stringify(payload));
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    privateKey,
+    new TextEncoder().encode(signingInput),
+  );
+  return `${signingInput}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   const kv = new Map<string, string>();
@@ -41,8 +96,24 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     ANTHROPIC_API_KEY: "test-key",
+    ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+    ACCESS_AUD: AUD,
     ...overrides,
   };
+}
+
+// All mutating routes moved under /api/admin/* and now require a verified
+// Access identity — every test in this file exercises the owner flow, so
+// build one configured env + a valid token's auth header up front.
+async function makeOwnerContext(
+  overrides: Partial<Env> = {},
+): Promise<{ env: Env; authHeaders: Record<string, string> }> {
+  const { publicKey, privateKey } = await generateKeyPair();
+  const jwk = await exportJwk(publicKey, "kid-1");
+  const env = makeEnv(overrides);
+  await env.CACHE.put(JWKS_CACHE_KEY, JSON.stringify({ keys: [jwk] }));
+  const token = await signJwt(privateKey, "kid-1");
+  return { env, authHeaders: { "Cf-Access-Jwt-Assertion": token } };
 }
 
 function makeExecutionContext() {
@@ -85,17 +156,17 @@ function stubFetch(opts: { anthropicText?: string; anthropicStatus?: number } = 
   };
 }
 
-Deno.test("POST /api/articles: 202 immediately, then row becomes ready with summaries", async () => {
+Deno.test("POST /api/admin/articles: 202 immediately, then row becomes ready with summaries", async () => {
   const restoreFetch = stubFetch();
-  const env = makeEnv();
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();
 
   try {
     const res = await app.request(
-      "/api/articles",
+      "/api/admin/articles",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders },
         body: JSON.stringify({ url: "https://example.com/article", tags: ["reading"] }),
       },
       env,
@@ -108,7 +179,12 @@ Deno.test("POST /api/articles: 202 immediately, then row becomes ready with summ
 
     await settle();
 
-    const getRes = await app.request(`/api/articles/${created.id}`, {}, env, ctx);
+    const getRes = await app.request(
+      `/api/admin/articles/${created.id}`,
+      { headers: authHeaders },
+      env,
+      ctx,
+    );
     assertEquals(getRes.status, 200);
     const article = await getRes.json();
     assertEquals(article.status, "ready");
@@ -124,17 +200,17 @@ Deno.test("POST /api/articles: 202 immediately, then row becomes ready with summ
   }
 });
 
-Deno.test("POST /api/articles: rejects duplicate url with 409 and the existing id", async () => {
+Deno.test("POST /api/admin/articles: rejects duplicate url with 409 and the existing id", async () => {
   const restoreFetch = stubFetch();
-  const env = makeEnv();
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();
 
   try {
     const first = await app.request(
-      "/api/articles",
+      "/api/admin/articles",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders },
         body: JSON.stringify({ url: "https://example.com/dup" }),
       },
       env,
@@ -144,10 +220,10 @@ Deno.test("POST /api/articles: rejects duplicate url with 409 and the existing i
     await settle();
 
     const second = await app.request(
-      "/api/articles",
+      "/api/admin/articles",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders },
         body: JSON.stringify({ url: "https://example.com/dup" }),
       },
       env,
@@ -161,16 +237,16 @@ Deno.test("POST /api/articles: rejects duplicate url with 409 and the existing i
   }
 });
 
-Deno.test("POST /api/articles: rejects oversized html with 413", async () => {
-  const env = makeEnv();
+Deno.test("POST /api/admin/articles: rejects oversized html with 413", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx } = makeExecutionContext();
   const oversizedHtml = "a".repeat(2 * 1024 * 1024 + 1);
 
   const res = await app.request(
-    "/api/articles",
+    "/api/admin/articles",
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ url: "https://example.com/big", html: oversizedHtml }),
     },
     env,
@@ -179,8 +255,8 @@ Deno.test("POST /api/articles: rejects oversized html with 413", async () => {
   assertEquals(res.status, 413);
 });
 
-Deno.test("POST /api/articles: rejects a request body over the overall size cap", async () => {
-  const env = makeEnv();
+Deno.test("POST /api/admin/articles: rejects a request body over the overall size cap", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx } = makeExecutionContext();
   const hugeBody = JSON.stringify({
     url: "https://example.com/huge",
@@ -188,23 +264,27 @@ Deno.test("POST /api/articles: rejects a request body over the overall size cap"
   });
 
   const res = await app.request(
-    "/api/articles",
-    { method: "POST", headers: { "content-type": "application/json" }, body: hugeBody },
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: hugeBody,
+    },
     env,
     ctx,
   );
   assertEquals(res.status, 413);
 });
 
-Deno.test("POST /api/articles: rejects non-http(s) url with 400", async () => {
-  const env = makeEnv();
+Deno.test("POST /api/admin/articles: rejects non-http(s) url with 400", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx } = makeExecutionContext();
 
   const res = await app.request(
-    "/api/articles",
+    "/api/admin/articles",
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders },
       body: JSON.stringify({ url: "ftp://example.com/file" }),
     },
     env,
@@ -213,17 +293,34 @@ Deno.test("POST /api/articles: rejects non-http(s) url with 400", async () => {
   assertEquals(res.status, 400);
 });
 
-Deno.test("POST /api/articles: over the daily limit fails the pipeline with 'daily-limit'", async () => {
+Deno.test("POST /api/admin/articles: rejects the request with 401 when no Access token is sent", async () => {
+  const { env } = await makeOwnerContext();
+  const { ctx } = makeExecutionContext();
+
+  const res = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/no-auth" }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 401);
+});
+
+Deno.test("POST /api/admin/articles: over the daily limit fails the pipeline with 'daily-limit'", async () => {
   const restoreFetch = stubFetch();
-  const env = makeEnv({ DAILY_SUMMARY_LIMIT: 0 });
+  const { env, authHeaders } = await makeOwnerContext({ DAILY_SUMMARY_LIMIT: 0 });
   const { ctx, settle } = makeExecutionContext();
 
   try {
     const res = await app.request(
-      "/api/articles",
+      "/api/admin/articles",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders },
         body: JSON.stringify({ url: "https://example.org/limited" }),
       },
       env,
@@ -234,7 +331,12 @@ Deno.test("POST /api/articles: over the daily limit fails the pipeline with 'dai
 
     await settle();
 
-    const getRes = await app.request(`/api/articles/${id}`, {}, env, ctx);
+    const getRes = await app.request(
+      `/api/admin/articles/${id}`,
+      { headers: authHeaders },
+      env,
+      ctx,
+    );
     const article = await getRes.json();
     assertEquals(article.status, "failed");
     assertEquals(article.error, "daily-limit");
@@ -243,18 +345,18 @@ Deno.test("POST /api/articles: over the daily limit fails the pipeline with 'dai
   }
 });
 
-Deno.test("GET /api/articles: cursor pagination walks the full list", async () => {
+Deno.test("GET /api/articles: cursor pagination walks the full list (public, no auth needed)", async () => {
   const restoreFetch = stubFetch();
-  const env = makeEnv();
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();
 
   try {
     for (const path of ["/a", "/b", "/c"]) {
       const res = await app.request(
-        "/api/articles",
+        "/api/admin/articles",
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...authHeaders },
           body: JSON.stringify({ url: `https://example.com${path}` }),
         },
         env,
@@ -282,18 +384,18 @@ Deno.test("GET /api/articles: cursor pagination walks the full list", async () =
   }
 });
 
-Deno.test("PATCH /api/articles/:id: updates archived and tags", async () => {
+Deno.test("PATCH /api/admin/articles/:id: updates archived and tags", async () => {
   const restoreFetch = stubFetch();
-  const env = makeEnv();
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();
 
   try {
     const created = await (
       await app.request(
-        "/api/articles",
+        "/api/admin/articles",
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...authHeaders },
           body: JSON.stringify({ url: "https://example.com/patchme" }),
         },
         env,
@@ -304,10 +406,10 @@ Deno.test("PATCH /api/articles/:id: updates archived and tags", async () => {
 
     const patched = await (
       await app.request(
-        `/api/articles/${created.id}`,
+        `/api/admin/articles/${created.id}`,
         {
           method: "PATCH",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...authHeaders },
           body: JSON.stringify({ archived: true, tags: ["saved"] }),
         },
         env,
@@ -321,18 +423,18 @@ Deno.test("PATCH /api/articles/:id: updates archived and tags", async () => {
   }
 });
 
-Deno.test("DELETE /api/articles/:id: 204 then 404 on subsequent get", async () => {
+Deno.test("DELETE /api/admin/articles/:id: 204 then 404 on subsequent admin get", async () => {
   const restoreFetch = stubFetch();
-  const env = makeEnv();
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();
 
   try {
     const created = await (
       await app.request(
-        "/api/articles",
+        "/api/admin/articles",
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...authHeaders },
           body: JSON.stringify({ url: "https://example.com/deleteme" }),
         },
         env,
@@ -342,31 +444,36 @@ Deno.test("DELETE /api/articles/:id: 204 then 404 on subsequent get", async () =
     await settle();
 
     const deleteRes = await app.request(
-      `/api/articles/${created.id}`,
-      { method: "DELETE" },
+      `/api/admin/articles/${created.id}`,
+      { method: "DELETE", headers: authHeaders },
       env,
       ctx,
     );
     assertEquals(deleteRes.status, 204);
 
-    const getRes = await app.request(`/api/articles/${created.id}`, {}, env, ctx);
+    const getRes = await app.request(
+      `/api/admin/articles/${created.id}`,
+      { headers: authHeaders },
+      env,
+      ctx,
+    );
     assertEquals(getRes.status, 404);
   } finally {
     restoreFetch();
   }
 });
 
-Deno.test("POST /api/articles/:id/retry: re-runs the pipeline for a failed article", async () => {
-  const env = makeEnv();
+Deno.test("POST /api/admin/articles/:id/retry: re-runs the pipeline for a failed article", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();
 
   let restoreFetch = stubFetch({ anthropicStatus: 500 });
   const created = await (
     await app.request(
-      "/api/articles",
+      "/api/admin/articles",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders },
         body: JSON.stringify({ url: "https://example.com/retry-me" }),
       },
       env,
@@ -376,21 +483,25 @@ Deno.test("POST /api/articles/:id/retry: re-runs the pipeline for a failed artic
   await settle();
   restoreFetch();
 
-  const failed = await (await app.request(`/api/articles/${created.id}`, {}, env, ctx)).json();
+  const failed = await (
+    await app.request(`/api/admin/articles/${created.id}`, { headers: authHeaders }, env, ctx)
+  ).json();
   assertEquals(failed.status, "failed");
 
   restoreFetch = stubFetch();
   try {
     const retryRes = await app.request(
-      `/api/articles/${created.id}/retry`,
-      { method: "POST" },
+      `/api/admin/articles/${created.id}/retry`,
+      { method: "POST", headers: authHeaders },
       env,
       ctx,
     );
     assertEquals(retryRes.status, 202);
     await settle();
 
-    const ready = await (await app.request(`/api/articles/${created.id}`, {}, env, ctx)).json();
+    const ready = await (
+      await app.request(`/api/admin/articles/${created.id}`, { headers: authHeaders }, env, ctx)
+    ).json();
     assertEquals(ready.status, "ready");
   } finally {
     restoreFetch();

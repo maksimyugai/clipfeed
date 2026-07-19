@@ -19,10 +19,11 @@ export interface FeedProps {
   loadingMore: boolean;
   archivedView: boolean;
   pickOfDayId: string | null;
+  isOwner: boolean;
 }
 
 export function Feed(props: FeedProps) {
-  const { dict, articles, hasMore, onShowMore, loadingMore, archivedView } = props;
+  const { dict, articles, hasMore, onShowMore, loadingMore, archivedView, isOwner } = props;
 
   if (articles.length === 0) {
     return (
@@ -30,7 +31,9 @@ export function Feed(props: FeedProps) {
         <p class="empty-state-title">
           {archivedView ? dict.emptyArchiveTitle : dict.emptyFeedTitle}
         </p>
-        {!archivedView && <p class="empty-state-hint">{dict.emptyFeedHint}</p>}
+        {!archivedView && (
+          <p class="empty-state-hint">{isOwner ? dict.emptyFeedHint : dict.visitorFeedHint}</p>
+        )}
       </div>
     );
   }
@@ -53,6 +56,7 @@ export function Feed(props: FeedProps) {
             onDelete={props.onDelete}
             onRetry={props.onRetry}
             onArticleUpdate={props.onArticleUpdate}
+            isOwner={isOwner}
           />
         ))}
       </div>

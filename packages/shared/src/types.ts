@@ -38,6 +38,14 @@ export interface Article {
 
 export type ArticleListItem = Omit<Article, "full_text">;
 
+// GET /api/articles/:id (public) shape: excludes full_text (the article's
+// full extracted text — publicly re-serving that would be a reprint, not a
+// summary-with-link) and the raw error string (may carry internal detail
+// like upstream URLs/stack fragments); has_error is enough for a public
+// reader to know a retry is pending. The full row (both fields included)
+// is only available to the owner, via GET /api/admin/articles/:id.
+export type PublicArticle = Omit<Article, "full_text" | "error"> & { has_error: boolean };
+
 export interface CreateArticleRequest {
   url: string;
   html?: string;
