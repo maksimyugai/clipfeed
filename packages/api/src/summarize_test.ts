@@ -2,6 +2,7 @@ import "./env.d.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   buildAnthropicRequest,
+  callLlm,
   parseSummaryJson,
   parseWorkersAiResult,
   renderSummaryMarkdown,
@@ -448,5 +449,120 @@ Deno.test("summarizeArticleWithWorkersAi: a hard binding failure surfaces as a w
     () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
     Error,
     "workers ai error: Error: binding call failed: model not found",
+  );
+});
+
+// --- callLlm: shared transport used by both summarization and ranking ---
+
+function makeLlmEnv(overrides: Partial<Env> = {}): Env {
+  return {
+    DB: {} as D1Database,
+    CACHE: {} as KVNamespace,
+    ASSETS: {} as Fetcher,
+    AI: {
+      run(): Promise<unknown> {
+        throw new Error("AI.run should not be called for this branch");
+      },
+    },
+    SUMMARY_MODEL: "test-model",
+    WORKERS_AI_MODEL: "test-workers-ai-model",
+    DAILY_SUMMARY_LIMIT: 50,
+    PENDING_TIMEOUT_MIN: 10,
+    INTEREST_TOPICS: "testing",
+    AGENT_HOUR_UTC: "5",
+    DIGEST_HOUR_UTC: "6",
+    PUBLIC_BASE_URL: "",
+    ...overrides,
+  };
+}
+
+Deno.test("callLlm: gateway mode posts system/user/max_tokens to the gateway URL, returns raw text", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedBody: Record<string, unknown> = {};
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    capturedUrl = input.toString();
+    capturedBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(JSON.stringify({ content: [{ type: "text", text: '["a","b"]' }] }), {
+        status: 200,
+      }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const env = makeLlmEnv({
+      AI_GATEWAY_URL: "https://gateway.ai.cloudflare.com/v1/acct/clipfeed/anthropic",
+      CF_AIG_TOKEN: "gw-token",
+    });
+    const text = await callLlm("gateway", env, "sys prompt", "user prompt", 200);
+    assertEquals(text, '["a","b"]');
+    assertEquals(
+      capturedUrl,
+      "https://gateway.ai.cloudflare.com/v1/acct/clipfeed/anthropic/v1/messages",
+    );
+    assertEquals(capturedBody.system, "sys prompt");
+    assertEquals(capturedBody.max_tokens, 200);
+    assertEquals(capturedBody.messages, [{ role: "user", content: "user prompt" }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callLlm: direct mode posts to api.anthropic.com", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  globalThis.fetch = ((input: string | URL | Request) => {
+    capturedUrl = input.toString();
+    return Promise.resolve(
+      new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }] }), { status: 200 }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const env = makeLlmEnv({ ANTHROPIC_API_KEY: "sk-direct" });
+    const text = await callLlm("direct", env, "sys", "user", 200);
+    assertEquals(text, "ok");
+    assertEquals(capturedUrl, "https://api.anthropic.com/v1/messages");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("callLlm: workers-ai mode calls env.AI.run with messages+max_tokens (no response_format), returns raw text", async () => {
+  let capturedInput: Record<string, unknown> = {};
+  const env = makeLlmEnv({
+    AI: {
+      run(model: string, input: unknown): Promise<unknown> {
+        capturedInput = input as Record<string, unknown>;
+        assertEquals(model, "test-workers-ai-model");
+        return Promise.resolve({ response: '["x"]' });
+      },
+    },
+  });
+
+  const text = await callLlm("workers-ai", env, "sys", "user", 200);
+  assertEquals(text, '["x"]');
+  assertEquals(capturedInput.max_tokens, 200);
+  assertEquals("response_format" in capturedInput, false);
+  assertEquals(capturedInput.messages, [
+    { role: "system", content: "sys" },
+    { role: "user", content: "user" },
+  ]);
+});
+
+Deno.test("callLlm: workers-ai binding failure surfaces as a workers-ai-prefixed error", async () => {
+  const env = makeLlmEnv({
+    AI: {
+      run(): Promise<unknown> {
+        throw new Error("boom");
+      },
+    },
+  });
+
+  await assertRejects(
+    () => callLlm("workers-ai", env, "sys", "user", 200),
+    Error,
+    "workers ai error: Error: boom",
   );
 });

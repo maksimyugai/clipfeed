@@ -114,6 +114,11 @@ is tied to a specific account, domain, or Access team.
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
 
+Note the daily scraping agent (see "Daily scraping agent" below) runs **on by default** once
+deployed — it uses the committed `packages/api/sources.json` list and `INTEREST_TOPICS` default, and
+fires daily via the hourly cron (`AGENT_HOUR_UTC`, default `5`). Clear `AGENT_HOUR_UTC` to `""` if
+you'd rather opt in later once Access/LLM mode are set up the way you want.
+
 Two more optional pieces, once the above is working: "Protecting your instance" below (required
 before real use — reads are public by design, but writes need this) and "Telegram bot" further down
 (an optional capture path + daily digest, off by default).
@@ -199,9 +204,11 @@ with no secret, is inert — `readTurnstileConfig()` requires both).
 ## Telegram bot
 
 Optional capture path + a daily digest, entirely separate from the extension/SPA. Send the bot a
-link and it saves the article the same way the web UI does; `/digest` (or a 03:00 UTC cron by
-default) sends a plain-text summary of everything that finished processing in the last 24h. The bot
-is **private** — it answers exactly one chat (yours) and politely refuses everyone else.
+link and it saves the article the same way the web UI does; `/digest` (or a daily cron, `06:00 UTC`
+by default — see "The morning digest (cron)" below) sends a plain-text summary of everything that
+finished processing in the last 24h; `/scrape` runs the daily scraping agent (see "Daily scraping
+agent" below) on demand instead of waiting for its own cron hour. The bot is **private** — it
+answers exactly one chat (yours) and politely refuses everyone else.
 
 ### How auth works here (read this before wiring it up)
 
@@ -252,7 +259,8 @@ messages simply omit the link when it's empty.
    took. (Deno's `prompt()` needs a real terminal — `--token=`/`--secret=`/`--base-url=` flags are
    also accepted for non-interactive use, but note those land in shell history, so prefer the
    prompts for a one-off run.)
-5. Message your bot: `/start` for help, paste a link to save it, `/digest` for an on-demand summary.
+5. Message your bot: `/start` for help, paste a link to save it, `/digest` for an on-demand summary,
+   `/scrape` to run the daily scraping agent right now.
 
 **Finding your chat id:** message your bot at least once (anything — even just `/start`), then run:
 
@@ -265,18 +273,30 @@ private chat.
 
 ### The morning digest (cron)
 
-`wrangler.toml`'s `[triggers]` section runs the digest at `03:00 UTC` daily:
+`wrangler.toml`'s `[triggers]` section runs a single **hourly** cron, dispatched by UTC hour to
+whichever daily jobs are configured for that hour (see "Daily scraping agent" below for the other
+job it dispatches):
 
 ```
 [triggers]
-crons = ["0 3 * * *"]
+crons = ["0 * * * *"]
 ```
 
-Edit that cron expression to change the time — it's always **UTC**, regardless of your own timezone.
-`deno task deploy` (and the CD workflow on merge to `main`) applies `wrangler.toml`'s triggers
-automatically; no separate registration step like the webhook needs. If there's nothing new to
-report, the cron digest sends **nothing** — unlike `/digest`, which always replies (with a "nothing
-new" message) since you asked for it directly.
+Two `[vars]` control the schedule — both plain UTC hours (`0`–`23`) as strings, both optional:
+
+- `DIGEST_HOUR_UTC` (default `6`) — when the morning digest fires.
+- `AGENT_HOUR_UTC` (default `5`) — when the scraping agent fires, one hour before the digest by
+  default so a run's picks are already summarized by the time the digest goes out. This isn't a hard
+  requirement, though: the digest covers "everything ready in the last 24h" regardless of ordering,
+  so either hour can safely come first.
+
+Clear either var to an empty string (or set something out of range) to disable that job entirely —
+it just never fires, same as leaving the whole Telegram feature unconfigured disables the digest
+altogether. Edit the hours to whatever suits you; they're always **UTC**, regardless of your own
+timezone. `deno task deploy` (and the CD workflow on merge to `main`) applies `wrangler.toml`'s
+triggers automatically; no separate registration step like the webhook needs. If there's nothing new
+to report, the cron digest sends **nothing** — unlike `/digest`, which always replies (with a
+"nothing new" message) since you asked for it directly.
 
 ### Privacy
 
@@ -284,6 +304,63 @@ This is a single-owner bot by design: article titles, summaries, and links are n
 chat other than the one in `TELEGRAM_OWNER_CHAT_ID`. Saving via Telegram reuses the exact same
 extract → summarize → persist pipeline as every other capture path (including the daily cost guard)
 — nothing Telegram-specific is duplicated.
+
+## Daily scraping agent
+
+Once a day, the agent reads a small set of trusted sources, ranks the last 24h of candidates against
+your interests with one cheap LLM call, and runs the top 5 through the normal extract → summarize →
+persist pipeline — same as any other capture path, just self-initiated (`added_via: "agent"`). The
+SPA already highlights the newest agent-added article from today with a "pick of the day" badge; no
+separate review step exists — a pick that turns out uninteresting is just another card you can
+archive.
+
+### Sources (`packages/api/sources.json`)
+
+Fork-editable, not a `[vars]` setting — it's a small JSON array committed to the repo, since a list
+of feed URLs isn't really a secret or a per-deployment credential:
+
+```json
+[
+  { "id": "hn", "type": "hackernews" },
+  { "id": "arstechnica", "type": "rss", "url": "https://feeds.arstechnica.com/arstechnica/index" }
+]
+```
+
+- `id` — short slug, used to tag saved articles (`tags: [id]`) and in logs. Renaming an existing
+  entry's `id` is safe; it just starts a fresh tag going forward.
+- `type` — `"rss"` (RSS2 or Atom, auto-detected) or `"hackernews"` (Hacker News top stories via the
+  public Firebase API — no `url` needed).
+- `url` — required for `"rss"` sources.
+
+Add, remove, or repoint entries freely; a feed that starts returning errors is logged and skipped
+for that run, never breaks the others. There's no dedicated test-a-feed command — the quickest way
+to check a new URL works is `POST /api/admin/agent/run` (see below) and watch the logs.
+
+### Interests (`INTEREST_TOPICS`)
+
+One `[vars]` string — free text describing what you want surfaced, sent straight into the ranking
+prompt:
+
+```
+INTEREST_TOPICS = "AI/LLMs and their engineering, software development, Cloudflare and edge computing, programming languages, security, notable science/tech news"
+```
+
+Edit it in `wrangler.toml` (or override locally via `.dev.vars`) to match your own taste — there's
+no required format, just describe what you'd want picked.
+
+### Schedule and manual trigger
+
+Runs on `AGENT_HOUR_UTC` (default `5`) via the same hourly cron the Telegram digest uses — see "The
+morning digest (cron)" above for both vars and how to disable either job. Two ways to run it on
+demand instead of waiting for the clock:
+
+- `POST /api/admin/agent/run` — Access-protected, returns `202` immediately and runs the job in the
+  background.
+- The Telegram `/scrape` command, if the bot is configured — replies "Запустил агента" immediately,
+  same background job.
+
+Re-running the same day is safe: candidates already saved (matched by URL) are excluded from the
+pool, so nothing gets duplicated.
 
 ## Chrome extension
 

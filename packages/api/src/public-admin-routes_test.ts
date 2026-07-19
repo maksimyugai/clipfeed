@@ -92,6 +92,9 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
     PUBLIC_BASE_URL: "",
+    INTEREST_TOPICS: "testing",
+    AGENT_HOUR_UTC: "5",
+    DIGEST_HOUR_UTC: "6",
     ANTHROPIC_API_KEY: "test-key",
     ...overrides,
   };
@@ -175,6 +178,7 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
     ["PATCH", "/api/admin/articles/some-id"],
     ["DELETE", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles/some-id/retry"],
+    ["POST", "/api/admin/agent/run"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -194,12 +198,42 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     ["PATCH", "/api/admin/articles/some-id"],
     ["DELETE", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles/some-id/retry"],
+    ["POST", "/api/admin/agent/run"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
     assertEquals(res.status, 401, `${method} ${path}`);
     const body = await res.json();
     assertEquals(body.error, "unauthorized", `${method} ${path}`);
+  }
+});
+
+Deno.test("POST /api/admin/agent/run: 202 for the owner, runs the agent job via waitUntil", async () => {
+  const originalFetch = globalThis.fetch;
+  // All six real sources.json URLs fail — the job still completes cleanly
+  // with zero picks, since fetchAllCandidates isolates per-source errors.
+  globalThis.fetch = (() => Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch;
+  try {
+    const { env, authHeaders } = await makeOwnerContext();
+    const { ctx, settle } = makeExecutionContext();
+
+    const res = await app.request(
+      "/api/admin/agent/run",
+      { method: "POST", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(res.status, 202);
+    const body = await res.json();
+    assertEquals(body.ok, true);
+
+    await settle();
+    // No candidates -> no rows written; the important assertion is that
+    // waitUntil resolved without throwing.
+    const db = env.DB as unknown as FakeD1;
+    assertEquals(db.rows.filter((r) => r.added_via === "agent").length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

@@ -13,13 +13,15 @@ function truncateToTelegramLimit(text: string): string {
 export const NON_OWNER_REPLY = "Это персональный бот.";
 
 export const HELP_TEXT =
-  "Отправь ссылку — сохраню её в ленту.\n\n/digest — прислать выжимку за сутки.";
+  "Отправь ссылку — сохраню её в ленту.\n\n/digest — прислать выжимку за сутки.\n/scrape — запустить агента прямо сейчас.";
 
 export const SAVING_TEXT = "Сохраняю…";
 
 export const ALREADY_SAVED_TEXT = "Уже сохранено";
 
 export const NO_DIGEST_ARTICLES_TEXT = "За последние сутки новых статей нет.";
+
+export const AGENT_STARTED_TEXT = "Запустил агента";
 
 export function readySuccessText(
   titleRu: string,

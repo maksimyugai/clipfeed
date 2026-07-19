@@ -42,6 +42,9 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
     PUBLIC_BASE_URL: "",
+    INTEREST_TOPICS: "testing",
+    AGENT_HOUR_UTC: "5",
+    DIGEST_HOUR_UTC: "6",
     ANTHROPIC_API_KEY: "test-key",
     TELEGRAM_BOT_TOKEN: "123:abc",
     TELEGRAM_WEBHOOK_SECRET: WEBHOOK_SECRET,
@@ -394,6 +397,47 @@ Deno.test("webhook: /digest sends a digest message once an article is ready", as
       (stub.telegramCalls[0].body.text as string).startsWith("ClipFeed — за сутки: 1 статей"),
       true,
     );
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("webhook: /scrape replies 'Запустил агента' immediately and runs the agent job via waitUntil", async () => {
+  const stub = stubFetch();
+  try {
+    const env = makeEnv();
+    const { ctx, settle } = makeExecutionContext();
+
+    const res = await webhookRequest(env, ctx, messageUpdate({ text: "/scrape" }));
+    assertEquals(res.status, 200);
+    assertEquals(stub.telegramCalls.length, 1);
+    assertEquals(stub.telegramCalls[0].method, "sendMessage");
+    assertEquals(stub.telegramCalls[0].body.text, "Запустил агента");
+
+    // The reply is sent before the agent job settles — waitUntil is what
+    // actually runs it. Awaiting settle() here just proves it completes
+    // without throwing (all six real sources.json sources see the generic
+    // ARTICLE_HTML fallback from stubFetch, so the job legitimately finds
+    // zero real candidates and still finishes cleanly).
+    await settle();
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("webhook: a non-owner chat never triggers /scrape", async () => {
+  const stub = stubFetch();
+  try {
+    const env = makeEnv();
+    const { ctx } = makeExecutionContext();
+    const res = await webhookRequest(
+      env,
+      ctx,
+      messageUpdate({ text: "/scrape", chat: { id: Number(OTHER_CHAT_ID), type: "private" } }),
+    );
+    assertEquals(res.status, 200);
+    assertEquals(stub.telegramCalls.length, 1);
+    assertEquals(stub.telegramCalls[0].body.text, "Это персональный бот.");
   } finally {
     stub.restore();
   }

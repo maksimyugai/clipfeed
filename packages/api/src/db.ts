@@ -96,6 +96,18 @@ export async function findArticleIdByUrl(db: D1Database, url: string): Promise<s
   return row?.id ?? null;
 }
 
+// Batch existence check used by the scraper agent's pool-building step to
+// drop candidates that are already saved — exact url match, same lookup
+// shape as findArticleIdByUrl above, just for many URLs in one query.
+export async function findExistingUrls(db: D1Database, urls: string[]): Promise<Set<string>> {
+  if (urls.length === 0) return new Set();
+  const placeholders = urls.map(() => "?").join(", ");
+  const result = await db.prepare(`SELECT url FROM articles WHERE url IN (${placeholders})`)
+    .bind(...urls)
+    .all<{ url: string }>();
+  return new Set((result.results ?? []).map((row) => row.url));
+}
+
 export interface InsertArticleInput {
   id: string;
   url: string;

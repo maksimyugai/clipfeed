@@ -62,7 +62,9 @@ function correctiveMessage(firstMessage: string): string {
 Your previous response could not be parsed as the exact JSON object requested. Respond again with ONLY that JSON object and nothing else.`;
 }
 
-function stripJsonFences(raw: string): string {
+// Exported so other one-shot LLM callers (e.g. the ranking module) can reuse
+// the same defensive fence-stripping instead of duplicating it.
+export function stripJsonFences(raw: string): string {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return fenced ? fenced[1].trim() : trimmed;
@@ -167,15 +169,20 @@ function anthropicErrorPrefix(config: AnthropicConfig): string {
   return config.aiGatewayUrl ? "ai gateway error" : "anthropic api error";
 }
 
-async function callAnthropic(config: AnthropicConfig, userMessage: string): Promise<string> {
+async function callAnthropic(
+  config: AnthropicConfig,
+  systemPrompt: string,
+  userMessage: string,
+  maxTokens: number,
+): Promise<string> {
   const { url, headers } = buildAnthropicRequest(config);
   const res = await fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify({
       model: config.model,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
+      max_tokens: maxTokens,
+      system: systemPrompt,
       messages: [{ role: "user", content: userMessage }],
     }),
   });
@@ -200,11 +207,13 @@ export async function summarizeArticle(
   text: string,
 ): Promise<SummaryJson> {
   const firstMessage = buildUserMessage(title, text);
-  const firstParsed = parseSummaryJson(await callAnthropic(config, firstMessage));
+  const firstParsed = parseSummaryJson(
+    await callAnthropic(config, SYSTEM_PROMPT, firstMessage, MAX_TOKENS),
+  );
   if (firstParsed) return firstParsed;
 
   const secondParsed = parseSummaryJson(
-    await callAnthropic(config, correctiveMessage(firstMessage)),
+    await callAnthropic(config, SYSTEM_PROMPT, correctiveMessage(firstMessage), MAX_TOKENS),
   );
   if (secondParsed) return secondParsed;
 
@@ -306,4 +315,56 @@ export async function summarizeArticleWithWorkersAi(
   if (secondParsed) return secondParsed;
 
   throw new Error("workers ai error: model output did not match the required schema after retry");
+}
+
+// --- Shared low-level transport, for callers that need one (system, user)
+// -> raw text exchange across all three provider modes without the
+// summarization-specific JSON-schema/retry machinery above (e.g. the
+// scraper agent's ranking call). No response parsing or retry here — that's
+// the caller's responsibility. ---
+
+export type LlmMode = "gateway" | "direct" | "workers-ai";
+
+function extractWorkersAiText(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (typeof result === "object" && result !== null && "response" in result) {
+    const response = (result as { response: unknown }).response;
+    if (typeof response === "string") return response;
+  }
+  throw new Error("workers ai error: unexpected response shape");
+}
+
+export async function callLlm(
+  mode: LlmMode,
+  env: Env,
+  systemPrompt: string,
+  userMessage: string,
+  maxTokens: number,
+): Promise<string> {
+  if (mode === "workers-ai") {
+    try {
+      const result = await env.AI.run(env.WORKERS_AI_MODEL, {
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        max_tokens: maxTokens,
+      });
+      return extractWorkersAiText(result);
+    } catch (err) {
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      throw new Error(`workers ai error: ${reason}`);
+    }
+  }
+
+  const config: AnthropicConfig = mode === "gateway"
+    ? {
+      apiKey: env.ANTHROPIC_API_KEY,
+      aiGatewayUrl: env.AI_GATEWAY_URL,
+      aiGatewayToken: env.CF_AIG_TOKEN,
+      model: env.SUMMARY_MODEL,
+    }
+    : { apiKey: env.ANTHROPIC_API_KEY, model: env.SUMMARY_MODEL };
+
+  return await callAnthropic(config, systemPrompt, userMessage, maxTokens);
 }
