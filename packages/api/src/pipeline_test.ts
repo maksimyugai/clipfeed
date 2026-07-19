@@ -2,13 +2,25 @@ import "./env.d.ts";
 import { assert, assertEquals } from "@std/assert";
 import { runArticlePipeline, runSummarization, selectProviderMode } from "./pipeline.ts";
 
+// Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
+// 20-220 chars and not duplicating the tldr, 1-6 tags) — see summarize.ts.
 const VALID_SUMMARY = {
-  title_ru: "Заголовок",
-  title_en: "Title",
-  tldr_ru: "Кратко.",
-  tldr_en: "Short.",
-  bullets_ru: ["Пункт 1"],
-  bullets_en: ["Point 1"],
+  title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
+  title_en: "Company Raises Subscription Price 60% Starting September 1",
+  tldr_ru:
+    "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы. Изменение затронет около 2 миллионов подписчиков сервиса.",
+  tldr_en:
+    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server costs. The change affects roughly 2 million subscribers.",
+  bullets_ru: [
+    "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
+    "Годовые подписчики сохранят текущую цену до продления.",
+    "Компания откладывала повышение полтора года.",
+  ],
+  bullets_en: [
+    "Price rises from $5 to $8 per month, a 60% increase.",
+    "Existing annual-plan subscribers keep their price until renewal.",
+    "The company delayed the increase for a year and a half.",
+  ],
   tags: ["tag"],
   lang_original: "en",
 };

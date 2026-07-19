@@ -8,13 +8,26 @@ const OWNER_CHAT_ID = "999";
 const OTHER_CHAT_ID = "555";
 const WEBHOOK_SECRET = "test-webhook-secret";
 
+// Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
+// 20-220 chars and not duplicating the tldr, 1-6 tags) — see summarize.ts.
+// Keeps the "Кратко об этом." lead-in the assertion below checks for.
 const VALID_SUMMARY = {
   title_ru: "Заголовок",
   title_en: "Example Title",
-  tldr_ru: "Кратко об этом. Ещё немного.",
-  tldr_en: "Short summary.",
-  bullets_ru: ["П1"],
-  bullets_en: ["Point 1"],
+  tldr_ru:
+    "Кратко об этом. Компания повысила стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы.",
+  tldr_en:
+    "Short summary. The company raised its subscription price from $5 to $8 a month starting September 1, citing rising server costs.",
+  bullets_ru: [
+    "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
+    "Годовые подписчики сохранят текущую цену до продления.",
+    "Компания откладывала повышение полтора года.",
+  ],
+  bullets_en: [
+    "Point 1 covers pricing.",
+    "Point 2 covers rollout timing.",
+    "Point 3 covers scope.",
+  ],
   tags: ["technology"],
   lang_original: "en",
 };
