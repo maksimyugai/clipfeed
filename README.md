@@ -19,7 +19,7 @@ bundling is done with esbuild invoked from Deno.
 
 ```
 deno task dev     # build, then run wrangler dev with local D1/KV
-deno task build   # esbuild-bundle the API and copy web assets into dist/
+deno task build   # esbuild-bundle the API and the Preact SPA into dist/
 deno task setup   # one-time: create/reuse your D1 + KV resources, apply migrations
 deno task deploy  # build, then wrangler deploy
 deno task test    # run the test suite
@@ -31,8 +31,9 @@ deno task lint    # lint
 
 ```
 packages/api/src/index.ts     Hono app (JSON API + static asset fallback)
-packages/web/                 Placeholder SPA static assets
-packages/shared/src/types.ts  Types shared between API and (future) SPA
+packages/web/src/main.tsx     Preact SPA entry (-> dist/web/{app.js,app.css})
+packages/web/index.html       SPA HTML template (copied to dist/web/index.html)
+packages/shared/src/types.ts  Types shared between API and SPA
 migrations/                   D1 schema migrations
 ```
 
