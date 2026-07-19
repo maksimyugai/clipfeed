@@ -49,6 +49,11 @@ declare global {
     ANTHROPIC_API_KEY?: string;
     AI_GATEWAY_URL?: string;
     CF_AIG_TOKEN?: string;
+    // Cloudflare Access protection: optional, var or secret. Auth middleware
+    // activates only when BOTH are set (trimmed non-empty) — otherwise the
+    // Worker serves openly (fork/dev bootstrap mode).
+    ACCESS_TEAM_DOMAIN?: string;
+    ACCESS_AUD?: string;
   }
 }
 
