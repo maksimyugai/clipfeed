@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { buildArticlesUrl } from "./api.ts";
+import { buildArticlesUrl, buildMutationHeaders } from "./api.ts";
 
 Deno.test("buildArticlesUrl: no params yields the bare endpoint", () => {
   assertEquals(buildArticlesUrl({}), "/api/articles");
@@ -54,4 +54,20 @@ Deno.test("buildArticlesUrl: combines cursor + tag + source + q + archived, limi
 
 Deno.test("buildArticlesUrl: empty-string filters are omitted, not sent as blank params", () => {
   assertEquals(buildArticlesUrl({ tag: "", source: "", q: "" }), "/api/articles");
+});
+
+Deno.test("buildMutationHeaders: attaches cf-turnstile-response when a token is given (active)", () => {
+  assertEquals(buildMutationHeaders("some-token"), { "cf-turnstile-response": "some-token" });
+});
+
+Deno.test("buildMutationHeaders: no header when the token is null (inactive)", () => {
+  assertEquals(buildMutationHeaders(null), {});
+});
+
+Deno.test("buildMutationHeaders: no header when the token is undefined (call site omitted it)", () => {
+  assertEquals(buildMutationHeaders(undefined), {});
+});
+
+Deno.test("buildMutationHeaders: no header for an empty-string token", () => {
+  assertEquals(buildMutationHeaders(""), {});
 });

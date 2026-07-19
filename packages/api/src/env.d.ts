@@ -54,6 +54,13 @@ declare global {
     // Worker serves openly (fork/dev bootstrap mode).
     ACCESS_TEAM_DOMAIN?: string;
     ACCESS_AUD?: string;
+    // Cloudflare Turnstile bot protection for mutating endpoints: optional,
+    // active only when BOTH are set (trimmed non-empty). Site key is public
+    // by nature ([vars] default ""); secret key must be a real secret.
+    // Requests carrying a verified Access identity (see accessSub above)
+    // bypass Turnstile entirely.
+    TURNSTILE_SITE_KEY?: string;
+    TURNSTILE_SECRET_KEY?: string;
   }
 }
 

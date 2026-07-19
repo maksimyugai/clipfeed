@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import type { AddedVia, ArticleListItem } from "@clipfeed/shared/types";
-import { dictionaries, type Lang, readStoredLang, writeStoredLang } from "./i18n.ts";
+import {
+  dictionaries,
+  type Dictionary,
+  type Lang,
+  readStoredLang,
+  writeStoredLang,
+} from "./i18n.ts";
 import { useTheme } from "./theme.ts";
 import {
   ApiError,
@@ -10,6 +16,7 @@ import {
   patchArticle,
   retryArticle,
 } from "./api.ts";
+import { getTurnstileToken, loadTurnstileSiteKey, TURNSTILE_CLIENT_ERROR } from "./turnstile.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
@@ -20,6 +27,16 @@ import { Toast } from "./components/Toast.tsx";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PAGE_LIMIT = 20;
+
+// Maps the server's turnstile_* error codes (and the client-side token
+// acquisition failure sentinel) to a human message — every other ApiError
+// message is shown as-is, unchanged from before this feature.
+const TURNSTILE_ERROR_KEYS: Record<string, keyof Dictionary> = {
+  turnstile_required: "turnstileRequiredError",
+  turnstile_failed: "turnstileFailedError",
+  turnstile_unavailable: "turnstileUnavailableError",
+  [TURNSTILE_CLIENT_ERROR]: "turnstileClientError",
+};
 
 function computeTagFacets(articles: ArticleListItem[]) {
   const counts = new Map<string, number>();
@@ -61,6 +78,7 @@ export function App() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
 
   const setLang = (next: Lang) => {
     setLangState(next);
@@ -69,7 +87,20 @@ export function App() {
 
   const showError = (err: unknown) => {
     const message = err instanceof ApiError || err instanceof Error ? err.message : String(err);
-    setToastMessage(`${dict.toastErrorPrefix}: ${message}`);
+    const dictKey = TURNSTILE_ERROR_KEYS[message];
+    setToastMessage(`${dict.toastErrorPrefix}: ${dictKey ? dict[dictKey] : message}`);
+  };
+
+  // Fetched once, before any identity exists — /api/config is public.
+  useEffect(() => {
+    loadTurnstileSiteKey().then(setTurnstileSiteKey);
+  }, []);
+
+  // Returns null (no header attached) when Turnstile isn't configured on
+  // the server; otherwise acquires a fresh, single-use token first.
+  const acquireTurnstileToken = async (): Promise<string | null> => {
+    if (!turnstileSiteKey) return null;
+    return await getTurnstileToken(turnstileSiteKey);
   };
 
   // Debounce the raw search input into the value that actually drives fetches.
@@ -125,7 +156,8 @@ export function App() {
 
   const handleAdd = async (url: string, tags: string[]) => {
     try {
-      const created = await createArticle({ url, tags, added_via: "manual" as AddedVia });
+      const token = await acquireTurnstileToken();
+      const created = await createArticle({ url, tags, added_via: "manual" as AddedVia }, token);
       setArticles((current) => [
         {
           id: created.id,
@@ -156,7 +188,8 @@ export function App() {
 
   const handleArchiveToggle = async (id: string, archived: boolean) => {
     try {
-      const updated = await patchArticle(id, { archived });
+      const token = await acquireTurnstileToken();
+      const updated = await patchArticle(id, { archived }, token);
       if (archived !== archivedView) {
         setArticles((current) => current.filter((a) => a.id !== id));
       } else {
@@ -169,7 +202,8 @@ export function App() {
 
   const handleDelete = async (id: string) => {
     try {
-      await deleteArticle(id);
+      const token = await acquireTurnstileToken();
+      await deleteArticle(id, token);
       setArticles((current) => current.filter((a) => a.id !== id));
     } catch (err) {
       showError(err);
@@ -178,7 +212,8 @@ export function App() {
 
   const handleRetry = async (id: string) => {
     try {
-      await retryArticle(id);
+      const token = await acquireTurnstileToken();
+      await retryArticle(id, token);
       setArticles((current) =>
         current.map((a) => (a.id === id ? { ...a, status: "pending", error: null } : a))
       );

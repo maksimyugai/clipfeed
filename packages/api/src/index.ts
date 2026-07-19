@@ -2,6 +2,7 @@ import "./env.d.ts";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { accessAuth, type AppEnv } from "./access-middleware.ts";
+import { readTurnstileConfig, turnstileGuard } from "./turnstile-middleware.ts";
 import {
   deleteArticle,
   findArticleIdByUrl,
@@ -22,9 +23,17 @@ import {
 
 const app = new Hono<AppEnv>();
 
+// Public, same as /api/health: registered before the accessAuth wildcard
+// below so it's reachable with no identity at all — the SPA needs the
+// Turnstile site key before it has any Access session to present.
+app.get("/api/config", (c) => {
+  const config = readTurnstileConfig(c.env);
+  return c.json({ turnstile_site_key: config?.siteKey ?? null });
+});
+
 // Auth: Cloudflare Access JWT, verified on every route below except
-// /api/health — see access-middleware.ts. No-ops (open) until
-// ACCESS_TEAM_DOMAIN + ACCESS_AUD are both configured.
+// /api/health and /api/config — see access-middleware.ts. No-ops (open)
+// until ACCESS_TEAM_DOMAIN + ACCESS_AUD are both configured.
 app.use("*", accessAuth());
 
 app.get("/api/health", (c) => {
@@ -50,7 +59,7 @@ async function readJsonBody(
   }
 }
 
-app.post("/api/articles", async (c) => {
+app.post("/api/articles", turnstileGuard(), async (c) => {
   const bodyResult = await readJsonBody(c);
   if (!bodyResult.ok) return bodyResult.response;
 
@@ -119,7 +128,7 @@ app.get("/api/articles/:id", async (c) => {
   return c.json(article);
 });
 
-app.patch("/api/articles/:id", async (c) => {
+app.patch("/api/articles/:id", turnstileGuard(), async (c) => {
   const bodyResult = await readJsonBody(c);
   if (!bodyResult.ok) return bodyResult.response;
 
@@ -133,13 +142,13 @@ app.patch("/api/articles/:id", async (c) => {
   return c.json(updated);
 });
 
-app.delete("/api/articles/:id", async (c) => {
+app.delete("/api/articles/:id", turnstileGuard(), async (c) => {
   const deleted = await deleteArticle(c.env.DB, c.req.param("id"));
   if (!deleted) return c.json({ error: "not found" }, 404);
   return c.body(null, 204);
 });
 
-app.post("/api/articles/:id/retry", async (c) => {
+app.post("/api/articles/:id/retry", turnstileGuard(), async (c) => {
   const id = c.req.param("id");
   const article = await getArticleById(c.env.DB, id);
   if (!article) return c.json({ error: "not found" }, 404);
