@@ -50,9 +50,14 @@ ClipFeed picks a summarization backend at request time, in this priority order:
    `AI_GATEWAY_URL` (+ `CF_AIG_TOKEN` for an authenticated gateway).
 3. **Direct Anthropic** — calls `api.anthropic.com` straight. Set secret `ANTHROPIC_API_KEY`.
 
-Setting `AI_GATEWAY_URL` moves you to mode 2 regardless of whether `ANTHROPIC_API_KEY` is also set;
-setting only `ANTHROPIC_API_KEY` moves you to mode 3; leaving both unset stays on the free Workers
-AI default. See "Deploy your own (fork)" below for the exact commands.
+A mode is only used when its configuration is **complete** — AI Gateway needs `AI_GATEWAY_URL` _and_
+a credential (`CF_AIG_TOKEN` or `ANTHROPIC_API_KEY`); direct Anthropic needs `ANTHROPIC_API_KEY`
+alone. Any partial config (e.g. `AI_GATEWAY_URL` set with no credential, or a stray `CF_AIG_TOKEN`
+with no URL) is treated the same as nothing configured and falls back to Workers AI, rather than
+making a request that's guaranteed to fail. This fallback is silent by design (the article still
+gets summarized) — if summaries look unexpectedly non-Claude-quality, check the `error` field on
+`GET /api/articles/:id` for past failures and your AI Gateway logs for whether requests are actually
+arriving there. See "Deploy your own (fork)" below for the exact commands.
 
 ## Database
 
