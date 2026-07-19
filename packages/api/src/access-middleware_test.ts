@@ -1,5 +1,5 @@
 import "./env.d.ts";
-import { assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import app from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 
@@ -97,64 +97,53 @@ async function makeConfiguredEnv(): Promise<{ env: Env; token: string }> {
   return { env, token };
 }
 
-Deno.test("access middleware: disabled mode (vars unset) passes requests through with a one-time warning", async () => {
+Deno.test("access middleware: public reads work with zero auth, even when Access is unconfigured", async () => {
   const env = makeEnv();
-  const originalWarn = console.warn;
-  const warnings: string[] = [];
-  console.warn = (msg: unknown) => {
-    warnings.push(String(msg));
-  };
-
-  try {
-    const res = await app.request("/api/articles", {}, env, makeExecutionContext());
-    assertEquals(res.status, 200);
-    assertStringIncludes(warnings.join("\n"), "Access auth disabled");
-  } finally {
-    console.warn = originalWarn;
-  }
-});
-
-Deno.test("access middleware: /api/health stays open even when Access is configured and no token is sent", async () => {
-  const { env } = await makeConfiguredEnv();
-  const res = await app.request("/api/health", {}, env, makeExecutionContext());
+  const res = await app.request("/api/articles", {}, env, makeExecutionContext());
   assertEquals(res.status, 200);
-  const body = await res.json();
-  assertEquals(body.ok, true);
 });
 
-Deno.test("access middleware: configured + no token -> 401 JSON for /api/*", async () => {
+Deno.test("access middleware: public reads work with zero auth, even when Access IS configured", async () => {
   const { env } = await makeConfiguredEnv();
   const res = await app.request("/api/articles", {}, env, makeExecutionContext());
+  assertEquals(res.status, 200);
+});
+
+Deno.test("access middleware: /api/admin/* fails closed (401 auth_not_configured) when Access isn't set up", async () => {
+  const env = makeEnv();
+  const res = await app.request("/api/admin/me", {}, env, makeExecutionContext());
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "auth_not_configured");
+});
+
+Deno.test("access middleware: /api/admin/* configured + no token -> 401 unauthorized", async () => {
+  const { env } = await makeConfiguredEnv();
+  const res = await app.request("/api/admin/me", {}, env, makeExecutionContext());
   assertEquals(res.status, 401);
   assertEquals(res.headers.get("content-type")?.includes("application/json"), true);
   const body = await res.json();
   assertEquals(body.error, "unauthorized");
 });
 
-Deno.test("access middleware: configured + no token -> 401 HTML for non-API (SPA) requests", async () => {
-  const { env } = await makeConfiguredEnv();
-  const res = await app.request("/", {}, env, makeExecutionContext());
-  assertEquals(res.status, 401);
-  assertEquals(res.headers.get("content-type")?.includes("text/html"), true);
-  const body = await res.text();
-  assertStringIncludes(body, "Access required");
-});
-
-Deno.test("access middleware: valid Cf-Access-Jwt-Assertion header authenticates the request", async () => {
+Deno.test("access middleware: valid Cf-Access-Jwt-Assertion header authenticates /api/admin/*", async () => {
   const { env, token } = await makeConfiguredEnv();
   const res = await app.request(
-    "/api/articles",
+    "/api/admin/me",
     { headers: { "Cf-Access-Jwt-Assertion": token } },
     env,
     makeExecutionContext(),
   );
   assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.sub, "user-123");
+  assertEquals(body.email, "person@example.com");
 });
 
-Deno.test("access middleware: valid CF_Authorization cookie authenticates the request (fallback)", async () => {
+Deno.test("access middleware: valid CF_Authorization cookie authenticates /api/admin/* (fallback)", async () => {
   const { env, token } = await makeConfiguredEnv();
   const res = await app.request(
-    "/api/articles",
+    "/api/admin/me",
     { headers: { Cookie: `other=1; CF_Authorization=${token}; another=2` } },
     env,
     makeExecutionContext(),
@@ -165,7 +154,7 @@ Deno.test("access middleware: valid CF_Authorization cookie authenticates the re
 Deno.test("access middleware: header takes priority over cookie when both are present", async () => {
   const { env, token } = await makeConfiguredEnv();
   const res = await app.request(
-    "/api/articles",
+    "/api/admin/me",
     {
       headers: {
         "Cf-Access-Jwt-Assertion": token,
@@ -178,22 +167,15 @@ Deno.test("access middleware: header takes priority over cookie when both are pr
   assertEquals(res.status, 200);
 });
 
-Deno.test("access middleware: invalid token -> 401, matches the JSON/HTML split by path", async () => {
+Deno.test("access middleware: invalid token -> 401 unauthorized on /api/admin/*", async () => {
   const { env } = await makeConfiguredEnv();
-  const apiRes = await app.request(
-    "/api/articles",
+  const res = await app.request(
+    "/api/admin/me",
     { headers: { "Cf-Access-Jwt-Assertion": "not-a-real-jwt" } },
     env,
     makeExecutionContext(),
   );
-  assertEquals(apiRes.status, 401);
-
-  const spaRes = await app.request(
-    "/some/spa/route",
-    { headers: { "Cf-Access-Jwt-Assertion": "not-a-real-jwt" } },
-    env,
-    makeExecutionContext(),
-  );
-  assertEquals(spaRes.status, 401);
-  assertMatch(spaRes.headers.get("content-type") ?? "", /text\/html/);
+  assertEquals(res.status, 401);
+  const body = await res.json();
+  assertEquals(body.error, "unauthorized");
 });

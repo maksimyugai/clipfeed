@@ -1,63 +1,14 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
+import { Hono } from "hono";
 import app from "./index.ts";
+import type { AppEnv } from "./access-middleware.ts";
+import { turnstileGuard } from "./turnstile-middleware.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";
-const JWKS_CACHE_KEY = `access:jwks:${TEAM_DOMAIN}`;
 const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
-
-function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function base64UrlEncodeString(s: string): string {
-  return base64UrlEncode(new TextEncoder().encode(s));
-}
-
-async function generateKeyPair(): Promise<CryptoKeyPair> {
-  return await crypto.subtle.generateKey(
-    {
-      name: "RSASSA-PKCS1-v1_5",
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: "SHA-256",
-    },
-    true,
-    ["sign", "verify"],
-  ) as CryptoKeyPair;
-}
-
-async function exportJwk(publicKey: CryptoKey, kid: string): Promise<Record<string, unknown>> {
-  const jwk = await crypto.subtle.exportKey("jwk", publicKey) as Record<string, unknown>;
-  return { ...jwk, kid, alg: "RS256", use: "sig" };
-}
-
-async function signJwt(privateKey: CryptoKey, kid: string): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "RS256", typ: "JWT", kid };
-  const payload = {
-    sub: "user-123",
-    email: "person@example.com",
-    aud: [AUD],
-    iss: `https://${TEAM_DOMAIN}`,
-    iat: now - 10,
-    exp: now + 3600,
-    nbf: now - 10,
-  };
-  const headerB64 = base64UrlEncodeString(JSON.stringify(header));
-  const payloadB64 = base64UrlEncodeString(JSON.stringify(payload));
-  const signingInput = `${headerB64}.${payloadB64}`;
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    privateKey,
-    new TextEncoder().encode(signingInput),
-  );
-  return `${signingInput}.${base64UrlEncode(new Uint8Array(signature))}`;
-}
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   const kv = new Map<string, string>();
@@ -91,17 +42,6 @@ function makeExecutionContext() {
   };
 }
 
-async function makeAccessConfiguredEnv(
-  overrides: Partial<Env> = {},
-): Promise<{ env: Env; token: string }> {
-  const { publicKey, privateKey } = await generateKeyPair();
-  const jwk = await exportJwk(publicKey, "kid-1");
-  const env = makeEnv({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, ACCESS_AUD: AUD, ...overrides });
-  await env.CACHE.put(JWKS_CACHE_KEY, JSON.stringify({ keys: [jwk] }));
-  const token = await signJwt(privateKey, "kid-1");
-  return { env, token };
-}
-
 function stubSiteverify(
   responder: (body: URLSearchParams) => Response,
 ): { restore: () => void; calls: number } {
@@ -126,14 +66,35 @@ function stubSiteverify(
   };
 }
 
-function postArticles(env: Env, headers: Record<string, string> = {}) {
-  return app.request(
-    "/api/articles",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify({ url: "https://example.com/turnstile-test-article" }),
-    },
+// turnstileGuard is currently unmounted from the real app (see index.ts) —
+// mutations are always Access-authenticated under /api/admin/* now, so
+// there's no anonymous-mutation surface left for it to guard. These tests
+// exercise the middleware directly on a standalone test route, so its
+// logic (including the Access-identity bypass) stays proven correct if the
+// module is ever remounted on a public endpoint later.
+function makeTestApp(): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  app.post("/test-mutation", turnstileGuard(), (c) => c.json({ ok: true }));
+  return app;
+}
+
+// Simulates "some earlier middleware already established a verified Access
+// identity" without doing a full JWT round-trip — that verification path
+// is already exhaustively covered by access-middleware_test.ts.
+function makeTestAppWithAccessSub(sub: string): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  app.use("/test-mutation", (c, next) => {
+    c.set("accessSub", sub);
+    return next();
+  });
+  app.post("/test-mutation", turnstileGuard(), (c) => c.json({ ok: true }));
+  return app;
+}
+
+function postMutation(testApp: Hono<AppEnv>, env: Env, headers: Record<string, string> = {}) {
+  return testApp.request(
+    "/test-mutation",
+    { method: "POST", headers },
     env,
     makeExecutionContext(),
   );
@@ -141,16 +102,16 @@ function postArticles(env: Env, headers: Record<string, string> = {}) {
 
 Deno.test("turnstile: inactive mode (vars unset) does not require a token", async () => {
   const env = makeEnv({ TURNSTILE_SITE_KEY: "", TURNSTILE_SECRET_KEY: "" });
-  const res = await postArticles(env);
-  assertEquals(res.status, 202);
+  const res = await postMutation(makeTestApp(), env);
+  assertEquals(res.status, 200);
 });
 
 Deno.test("turnstile: active + valid token -> request proceeds", async () => {
   const stub = stubSiteverify(() => Response.json({ success: true }));
   try {
     const env = makeEnv();
-    const res = await postArticles(env, { "cf-turnstile-response": "good-token" });
-    assertEquals(res.status, 202);
+    const res = await postMutation(makeTestApp(), env, { "cf-turnstile-response": "good-token" });
+    assertEquals(res.status, 200);
     assertEquals(stub.calls, 1);
   } finally {
     stub.restore();
@@ -159,7 +120,7 @@ Deno.test("turnstile: active + valid token -> request proceeds", async () => {
 
 Deno.test("turnstile: active + missing token -> 403 turnstile_required", async () => {
   const env = makeEnv();
-  const res = await postArticles(env);
+  const res = await postMutation(makeTestApp(), env);
   assertEquals(res.status, 403);
   const body = await res.json();
   assertEquals(body.error, "turnstile_required");
@@ -171,7 +132,7 @@ Deno.test("turnstile: active + invalid token -> 403 turnstile_failed with codes 
   );
   try {
     const env = makeEnv();
-    const res = await postArticles(env, { "cf-turnstile-response": "bad-token" });
+    const res = await postMutation(makeTestApp(), env, { "cf-turnstile-response": "bad-token" });
     assertEquals(res.status, 403);
     const body = await res.json();
     assertEquals(body.error, "turnstile_failed");
@@ -184,21 +145,13 @@ Deno.test("turnstile: active + invalid token -> 403 turnstile_failed with codes 
 Deno.test("turnstile: a verified Access identity bypasses Turnstile entirely (no siteverify call)", async () => {
   const stub = stubSiteverify(() => Response.json({ success: true }));
   try {
-    const { env, token } = await makeAccessConfiguredEnv();
-    const res = await postArticles(env, { "Cf-Access-Jwt-Assertion": token });
-    assertEquals(res.status, 202);
+    const env = makeEnv();
+    const res = await postMutation(makeTestAppWithAccessSub("user-123"), env);
+    assertEquals(res.status, 200);
     assertEquals(stub.calls, 0);
   } finally {
     stub.restore();
   }
-});
-
-Deno.test("turnstile: Access configured but no/invalid Access token -> Turnstile still enforced", async () => {
-  const env = (await makeAccessConfiguredEnv()).env;
-  // No Access token at all -> access-middleware itself returns 401 first;
-  // this only proves Turnstile doesn't accidentally short-circuit auth.
-  const res = await postArticles(env, { "cf-turnstile-response": "irrelevant" });
-  assertEquals(res.status, 401);
 });
 
 Deno.test("turnstile: siteverify network failure -> 502 turnstile_unavailable (fail closed)", async () => {
@@ -206,47 +159,12 @@ Deno.test("turnstile: siteverify network failure -> 502 turnstile_unavailable (f
   globalThis.fetch = (() => Promise.reject(new TypeError("network down"))) as typeof fetch;
   try {
     const env = makeEnv();
-    const res = await postArticles(env, { "cf-turnstile-response": "some-token" });
+    const res = await postMutation(makeTestApp(), env, { "cf-turnstile-response": "some-token" });
     assertEquals(res.status, 502);
     const body = await res.json();
     assertEquals(body.error, "turnstile_unavailable");
   } finally {
     globalThis.fetch = originalFetch;
-  }
-});
-
-Deno.test("turnstile: GET endpoints are unaffected even when active and no token is sent", async () => {
-  const env = makeEnv();
-  const listRes = await app.request("/api/articles", {}, env, makeExecutionContext());
-  assertEquals(listRes.status, 200);
-
-  const byIdRes = await app.request(
-    "/api/articles/does-not-exist",
-    {},
-    env,
-    makeExecutionContext(),
-  );
-  assertEquals(byIdRes.status, 404); // reached the handler, not blocked by turnstile (which would be 403)
-});
-
-Deno.test("turnstile: guards all four mutating routes (missing token -> 403 turnstile_required)", async () => {
-  const env = makeEnv();
-  const cases: Array<[string, string]> = [
-    ["POST", "/api/articles"],
-    ["PATCH", "/api/articles/some-id"],
-    ["DELETE", "/api/articles/some-id"],
-    ["POST", "/api/articles/some-id/retry"],
-  ];
-  for (const [method, path] of cases) {
-    const res = await app.request(
-      path,
-      { method, headers: { "content-type": "application/json" }, body: "{}" },
-      env,
-      makeExecutionContext(),
-    );
-    assertEquals(res.status, 403, `${method} ${path} should be blocked`);
-    const body = await res.json();
-    assertEquals(body.error, "turnstile_required");
   }
 });
 
@@ -267,7 +185,7 @@ Deno.test("GET /api/config: returns null when Turnstile is inactive", async () =
 });
 
 Deno.test("GET /api/config: reachable with no identity at all, even when Access is configured", async () => {
-  const { env } = await makeAccessConfiguredEnv();
+  const env = makeEnv({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, ACCESS_AUD: AUD });
   const res = await app.request("/api/config", {}, env, makeExecutionContext());
   assertEquals(res.status, 200);
   const body = await res.json();

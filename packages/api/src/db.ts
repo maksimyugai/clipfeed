@@ -4,6 +4,7 @@ import type {
   Article,
   ArticleListItem,
   ArticleStatus,
+  PublicArticle,
   SummaryJson,
 } from "@clipfeed/shared/types";
 
@@ -56,6 +57,14 @@ function rowToArticle(row: ArticleRow): Article {
     ...rowToListItem(row),
     full_text: row.full_text,
   };
+}
+
+// Projects a full (owner-only) Article down to the shape GET
+// /api/articles/:id (public) actually returns — see PublicArticle's doc
+// comment in @clipfeed/shared/types for why full_text/error are dropped.
+export function toPublicArticle(article: Article): PublicArticle {
+  const { full_text: _fullText, error, ...rest } = article;
+  return { ...rest, has_error: error !== null };
 }
 
 function rowToListItem(row: ArticleRowNoText): ArticleListItem {

@@ -55,17 +55,22 @@ function OptionsApp() {
         return;
       }
 
-      const articlesRes = await fetch(`${origin}/api/articles?limit=1`, {
+      const meRes = await fetch(`${origin}/api/admin/me`, {
         headers: buildAuthHeaders(clientId, clientSecret),
       });
-      if (articlesRes.status === 401 || articlesRes.status === 403) {
+      if (meRes.status === 401) {
+        const body = await meRes.json().catch(() => null) as { error?: string } | null;
         setStatus("error");
-        setMessage("Authentication failed — check your service token / Access policy.");
+        setMessage(
+          body?.error === "auth_not_configured"
+            ? "This server hasn't set up Cloudflare Access yet — set ACCESS_TEAM_DOMAIN/ACCESS_AUD on it first."
+            : "Authentication failed — check your service token / Access policy.",
+        );
         return;
       }
-      if (!articlesRes.ok) {
+      if (!meRes.ok) {
         setStatus("error");
-        setMessage(`Unexpected response from the server (${articlesRes.status}).`);
+        setMessage(`Unexpected response from the server (${meRes.status}).`);
         return;
       }
     } catch (err) {

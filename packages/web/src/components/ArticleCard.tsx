@@ -39,7 +39,11 @@ function usePendingPoll(
         if (cancelled) return;
         if (updated.status !== "pending") {
           stopInterval();
-          onUpdate(updated);
+          // getArticle() returns the public shape (has_error, no raw error
+          // string) — merge onto the existing list item so `error` survives
+          // (it was already null while pending; a newly-failed article
+          // shows the generic "—" fallback until the next full list fetch).
+          onUpdate({ ...article, ...updated });
           return;
         }
       } catch {
@@ -91,6 +95,7 @@ export interface ArticleCardProps {
   onDelete: (id: string) => void;
   onRetry: (id: string) => void;
   onArticleUpdate: (article: ArticleListItem) => void;
+  isOwner: boolean;
 }
 
 export function ArticleCard(props: ArticleCardProps) {
@@ -107,6 +112,7 @@ export function ArticleCard(props: ArticleCardProps) {
     onDelete,
     onRetry,
     onArticleUpdate,
+    isOwner,
   } = props;
 
   const stuck = usePendingPoll(article, onArticleUpdate);
@@ -131,9 +137,11 @@ export function ArticleCard(props: ArticleCardProps) {
         <div class="card-date">{formatDate(article.added_at, lang)}</div>
         <h3 class="card-title">{article.title}</h3>
         <p class="error-text">{dict.errorPrefix}: {article.error ?? "—"}</p>
-        <button type="button" class="retry-button" onClick={() => onRetry(article.id)}>
-          {dict.retryButton}
-        </button>
+        {isOwner && (
+          <button type="button" class="retry-button" onClick={() => onRetry(article.id)}>
+            {dict.retryButton}
+          </button>
+        )}
       </article>
     );
   }
@@ -215,24 +223,28 @@ export function ArticleCard(props: ArticleCardProps) {
               {dict.summaryAddedVia} {viaLabel(dict, article.added_via)}
             </p>
             <div class="card-footer-actions">
-              <button
-                type="button"
-                class="icon-button"
-                aria-label={article.archived ? dict.unarchiveAction : dict.archiveAction}
-                onClick={() => onArchiveToggle(article.id, !article.archived)}
-              >
-                {article.archived ? "📤" : "🗄"}
-              </button>
-              <button
-                type="button"
-                class="icon-button"
-                aria-label={dict.deleteAction}
-                onClick={() => {
-                  if (confirm(dict.deleteConfirm)) onDelete(article.id);
-                }}
-              >
-                🗑
-              </button>
+              {isOwner && (
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label={article.archived ? dict.unarchiveAction : dict.archiveAction}
+                  onClick={() => onArchiveToggle(article.id, !article.archived)}
+                >
+                  {article.archived ? "📤" : "🗄"}
+                </button>
+              )}
+              {isOwner && (
+                <button
+                  type="button"
+                  class="icon-button"
+                  aria-label={dict.deleteAction}
+                  onClick={() => {
+                    if (confirm(dict.deleteConfirm)) onDelete(article.id);
+                  }}
+                >
+                  🗑
+                </button>
+              )}
               <button
                 type="button"
                 class="icon-button"

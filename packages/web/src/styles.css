@@ -208,6 +208,18 @@ ul {
   flex-shrink: 0;
 }
 
+.sign-in-link {
+  color: var(--sub);
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.sign-in-link:hover {
+  color: var(--acc);
+}
+
 @media (max-width: 640px) {
   .search-field {
     order: 3;

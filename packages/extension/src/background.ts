@@ -55,7 +55,7 @@ async function postArticle(
 ): Promise<SaveResult> {
   let response: Response;
   try {
-    response = await fetch(`${config.serverOrigin}/api/articles`, {
+    response = await fetch(`${config.serverOrigin}/api/admin/articles`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -166,7 +166,7 @@ async function undoSave(articleId: string): Promise<SaveResult> {
     };
   }
   try {
-    const response = await fetch(`${config.serverOrigin}/api/articles/${articleId}`, {
+    const response = await fetch(`${config.serverOrigin}/api/admin/articles/${articleId}`, {
       method: "DELETE",
       headers: buildAuthHeaders(config.clientId, config.clientSecret),
     });

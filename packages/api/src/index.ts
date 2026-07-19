@@ -2,7 +2,7 @@ import "./env.d.ts";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { accessAuth, type AppEnv } from "./access-middleware.ts";
-import { readTurnstileConfig, turnstileGuard } from "./turnstile-middleware.ts";
+import { readTurnstileConfig } from "./turnstile-middleware.ts";
 import {
   deleteArticle,
   findArticleIdByUrl,
@@ -11,6 +11,7 @@ import {
   listArticles,
   markArticlePending,
   patchArticle,
+  toPublicArticle,
 } from "./db.ts";
 import { runArticlePipeline } from "./pipeline.ts";
 import {
@@ -23,18 +24,18 @@ import {
 
 const app = new Hono<AppEnv>();
 
-// Public, same as /api/health: registered before the accessAuth wildcard
-// below so it's reachable with no identity at all — the SPA needs the
-// Turnstile site key before it has any Access session to present.
+// This instance is a public page: anyone may read the feed. Only mutations
+// (below, under /api/admin/*) require a verified Cloudflare Access
+// identity. Turnstile middleware exists (turnstile-middleware.ts) but is
+// currently unmounted from every route — mutations are always
+// Access-authenticated now, so there's no anonymous-mutation surface left
+// for it to guard; the module, its tests, and /api/config stay in place
+// dormant in case a public interaction (e.g. "suggest a link") shows up
+// later.
 app.get("/api/config", (c) => {
   const config = readTurnstileConfig(c.env);
   return c.json({ turnstile_site_key: config?.siteKey ?? null });
 });
-
-// Auth: Cloudflare Access JWT, verified on every route below except
-// /api/health and /api/config — see access-middleware.ts. No-ops (open)
-// until ACCESS_TEAM_DOMAIN + ACCESS_AUD are both configured.
-app.use("*", accessAuth());
 
 app.get("/api/health", (c) => {
   return c.json({ ok: true, ts: new Date().toISOString() });
@@ -59,7 +60,77 @@ async function readJsonBody(
   }
 }
 
-app.post("/api/articles", turnstileGuard(), async (c) => {
+app.get("/api/articles", async (c) => {
+  const query = c.req.query();
+  const limitRaw = query.limit ? Number(query.limit) : 20;
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 100
+    ? Math.floor(limitRaw)
+    : 20;
+
+  let archived: boolean | undefined;
+  if (query.archived === "1") archived = true;
+  else if (query.archived === "0") archived = false;
+
+  const result = await listArticles(c.env.DB, {
+    cursor: query.cursor || undefined,
+    limit,
+    tag: query.tag || undefined,
+    source: query.source || undefined,
+    q: query.q || undefined,
+    archived,
+  });
+
+  return c.json(result);
+});
+
+// Public — excludes full_text and the raw error string (see
+// PublicArticle/toPublicArticle). The full row is only available to the
+// owner, via GET /api/admin/articles/:id below.
+app.get("/api/articles/:id", async (c) => {
+  const article = await getArticleById(c.env.DB, c.req.param("id"));
+  if (!article) return c.json({ error: "not found" }, 404);
+  return c.json(toPublicArticle(article));
+});
+
+// Everything below requires a verified Cloudflare Access identity — see
+// access-middleware.ts. Unlike the old whole-app mounting, this FAILS
+// CLOSED (401 auth_not_configured) when Access isn't set up, rather than
+// serving mutation routes openly.
+app.use("/api/admin/*", accessAuth());
+
+app.get("/api/admin/me", (c) => {
+  return c.json({ sub: c.get("accessSub"), email: c.get("accessEmail") ?? null });
+});
+
+// Top-level navigation target for the SPA's "sign in" link. fetch() can't
+// complete Cloudflare Access's own hosted-login redirect dance, but a real
+// browser navigation can: Access intercepts this domain+path prefix at its
+// edge, shows its login UI for an unauthenticated visitor, and only
+// forwards the request to this Worker (with a valid session) once that's
+// done — so by the time this handler runs, the visitor is already signed
+// in and holds the Access cookie for this app.
+app.get("/api/admin/login", (c) => {
+  return c.html(
+    `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Signed in</title></head>
+<body>
+<p>Signed in — you can close this tab.</p>
+<script>setTimeout(() => { location.href = "/"; }, 800);</script>
+</body>
+</html>
+`,
+  );
+});
+
+// Owner-only full row, including full_text and the raw error string.
+app.get("/api/admin/articles/:id", async (c) => {
+  const article = await getArticleById(c.env.DB, c.req.param("id"));
+  if (!article) return c.json({ error: "not found" }, 404);
+  return c.json(article);
+});
+
+app.post("/api/admin/articles", async (c) => {
   const bodyResult = await readJsonBody(c);
   if (!bodyResult.ok) return bodyResult.response;
 
@@ -99,36 +170,7 @@ app.post("/api/articles", turnstileGuard(), async (c) => {
   return c.json({ id, status: "pending" }, 202);
 });
 
-app.get("/api/articles", async (c) => {
-  const query = c.req.query();
-  const limitRaw = query.limit ? Number(query.limit) : 20;
-  const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 100
-    ? Math.floor(limitRaw)
-    : 20;
-
-  let archived: boolean | undefined;
-  if (query.archived === "1") archived = true;
-  else if (query.archived === "0") archived = false;
-
-  const result = await listArticles(c.env.DB, {
-    cursor: query.cursor || undefined,
-    limit,
-    tag: query.tag || undefined,
-    source: query.source || undefined,
-    q: query.q || undefined,
-    archived,
-  });
-
-  return c.json(result);
-});
-
-app.get("/api/articles/:id", async (c) => {
-  const article = await getArticleById(c.env.DB, c.req.param("id"));
-  if (!article) return c.json({ error: "not found" }, 404);
-  return c.json(article);
-});
-
-app.patch("/api/articles/:id", turnstileGuard(), async (c) => {
+app.patch("/api/admin/articles/:id", async (c) => {
   const bodyResult = await readJsonBody(c);
   if (!bodyResult.ok) return bodyResult.response;
 
@@ -142,13 +184,13 @@ app.patch("/api/articles/:id", turnstileGuard(), async (c) => {
   return c.json(updated);
 });
 
-app.delete("/api/articles/:id", turnstileGuard(), async (c) => {
+app.delete("/api/admin/articles/:id", async (c) => {
   const deleted = await deleteArticle(c.env.DB, c.req.param("id"));
   if (!deleted) return c.json({ error: "not found" }, 404);
   return c.body(null, 204);
 });
 
-app.post("/api/articles/:id/retry", turnstileGuard(), async (c) => {
+app.post("/api/admin/articles/:id/retry", async (c) => {
   const id = c.req.param("id");
   const article = await getArticleById(c.env.DB, id);
   if (!article) return c.json({ error: "not found" }, 404);

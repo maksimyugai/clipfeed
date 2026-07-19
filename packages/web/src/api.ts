@@ -5,6 +5,7 @@ import type {
   CreateArticleRequest,
   CreateArticleResponse,
   PatchArticleRequest,
+  PublicArticle,
 } from "@clipfeed/shared/types";
 
 export class ApiError extends Error {
@@ -37,16 +38,6 @@ export function buildArticlesUrl(params: ArticlesQueryParams): string {
   return qs ? `/api/articles?${qs}` : "/api/articles";
 }
 
-const TURNSTILE_TOKEN_HEADER = "cf-turnstile-response";
-
-// Pure — attaches the Turnstile header only when a token was actually
-// acquired (i.e. Turnstile is active per /api/config). When inactive,
-// `token` is always null/undefined and mutating requests go out exactly as
-// before this feature — no header, no behavior change.
-export function buildMutationHeaders(token?: string | null): Record<string, string> {
-  return token ? { [TURNSTILE_TOKEN_HEADER]: token } : {};
-}
-
 async function readErrorMessage(res: Response): Promise<string> {
   try {
     const body = await res.json() as { error?: string };
@@ -75,47 +66,49 @@ export function listArticles(params: ArticlesQueryParams = {}): Promise<ArticleL
   return request<ArticleListResponse>(buildArticlesUrl(params));
 }
 
-export function getArticle(id: string): Promise<Article> {
-  return request<Article>(`/api/articles/${encodeURIComponent(id)}`);
+// Public — excludes full_text/error (see PublicArticle). Used by the
+// pending-status poll, which runs for any visitor watching a fresh save.
+export function getArticle(id: string): Promise<PublicArticle> {
+  return request<PublicArticle>(`/api/articles/${encodeURIComponent(id)}`);
+}
+
+export interface AdminMe {
+  sub: string;
+  email: string | null;
+}
+
+// 200 -> owner mode; throws ApiError(401) for a visitor (no/invalid Access
+// identity) or when Access isn't configured on the server at all.
+export function getAdminMe(): Promise<AdminMe> {
+  return request<AdminMe>("/api/admin/me");
 }
 
 export function createArticle(
   input: { url: string; tags?: string[]; added_via?: AddedVia },
-  turnstileToken?: string | null,
 ): Promise<CreateArticleResponse> {
   const body: CreateArticleRequest = input;
-  return request<CreateArticleResponse>("/api/articles", {
+  return request<CreateArticleResponse>("/api/admin/articles", {
     method: "POST",
     body: JSON.stringify(body),
-    headers: buildMutationHeaders(turnstileToken),
   });
 }
 
 export function patchArticle(
   id: string,
   patch: PatchArticleRequest,
-  turnstileToken?: string | null,
 ): Promise<Omit<Article, "full_text">> {
-  return request(`/api/articles/${encodeURIComponent(id)}`, {
+  return request(`/api/admin/articles/${encodeURIComponent(id)}`, {
     method: "PATCH",
     body: JSON.stringify(patch),
-    headers: buildMutationHeaders(turnstileToken),
   });
 }
 
-export function deleteArticle(id: string, turnstileToken?: string | null): Promise<void> {
-  return request<void>(`/api/articles/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-    headers: buildMutationHeaders(turnstileToken),
-  });
+export function deleteArticle(id: string): Promise<void> {
+  return request<void>(`/api/admin/articles/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export function retryArticle(
-  id: string,
-  turnstileToken?: string | null,
-): Promise<CreateArticleResponse> {
-  return request<CreateArticleResponse>(`/api/articles/${encodeURIComponent(id)}/retry`, {
+export function retryArticle(id: string): Promise<CreateArticleResponse> {
+  return request<CreateArticleResponse>(`/api/admin/articles/${encodeURIComponent(id)}/retry`, {
     method: "POST",
-    headers: buildMutationHeaders(turnstileToken),
   });
 }

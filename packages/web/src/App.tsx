@@ -1,22 +1,17 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import type { AddedVia, ArticleListItem } from "@clipfeed/shared/types";
-import {
-  dictionaries,
-  type Dictionary,
-  type Lang,
-  readStoredLang,
-  writeStoredLang,
-} from "./i18n.ts";
+import { dictionaries, type Lang, readStoredLang, writeStoredLang } from "./i18n.ts";
 import { useTheme } from "./theme.ts";
 import {
   ApiError,
   createArticle,
   deleteArticle,
+  getAdminMe,
   listArticles,
   patchArticle,
   retryArticle,
 } from "./api.ts";
-import { getTurnstileToken, loadTurnstileSiteKey, TURNSTILE_CLIENT_ERROR } from "./turnstile.ts";
+import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
@@ -27,16 +22,6 @@ import { Toast } from "./components/Toast.tsx";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PAGE_LIMIT = 20;
-
-// Maps the server's turnstile_* error codes (and the client-side token
-// acquisition failure sentinel) to a human message — every other ApiError
-// message is shown as-is, unchanged from before this feature.
-const TURNSTILE_ERROR_KEYS: Record<string, keyof Dictionary> = {
-  turnstile_required: "turnstileRequiredError",
-  turnstile_failed: "turnstileFailedError",
-  turnstile_unavailable: "turnstileUnavailableError",
-  [TURNSTILE_CLIENT_ERROR]: "turnstileClientError",
-};
 
 function computeTagFacets(articles: ArticleListItem[]) {
   const counts = new Map<string, number>();
@@ -78,7 +63,10 @@ export function App() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
+  const [ownerModeState, setOwnerModeState] = useState<"loading" | "owner" | "visitor">(
+    "loading",
+  );
+  const isOwner = canMutate(ownerModeState);
 
   const setLang = (next: Lang) => {
     setLangState(next);
@@ -87,21 +75,19 @@ export function App() {
 
   const showError = (err: unknown) => {
     const message = err instanceof ApiError || err instanceof Error ? err.message : String(err);
-    const dictKey = TURNSTILE_ERROR_KEYS[message];
-    setToastMessage(`${dict.toastErrorPrefix}: ${dictKey ? dict[dictKey] : message}`);
+    setToastMessage(`${dict.toastErrorPrefix}: ${message}`);
   };
 
-  // Fetched once, before any identity exists — /api/config is public.
+  // The instance is public-read: this only decides which owner-only
+  // controls to show (add/archive/delete/retry, the archive toggle) — a
+  // visitor's 401 here is expected, not an error to surface as a toast.
+  // Re-runs on every fresh load, including the one after a top-level
+  // navigation back from /api/admin/login.
   useEffect(() => {
-    loadTurnstileSiteKey().then(setTurnstileSiteKey);
+    getAdminMe()
+      .then(() => setOwnerModeState(classifyMeOutcome("success")))
+      .catch(() => setOwnerModeState(classifyMeOutcome("error")));
   }, []);
-
-  // Returns null (no header attached) when Turnstile isn't configured on
-  // the server; otherwise acquires a fresh, single-use token first.
-  const acquireTurnstileToken = async (): Promise<string | null> => {
-    if (!turnstileSiteKey) return null;
-    return await getTurnstileToken(turnstileSiteKey);
-  };
 
   // Debounce the raw search input into the value that actually drives fetches.
   useEffect(() => {
@@ -156,8 +142,7 @@ export function App() {
 
   const handleAdd = async (url: string, tags: string[]) => {
     try {
-      const token = await acquireTurnstileToken();
-      const created = await createArticle({ url, tags, added_via: "manual" as AddedVia }, token);
+      const created = await createArticle({ url, tags, added_via: "manual" as AddedVia });
       setArticles((current) => [
         {
           id: created.id,
@@ -188,8 +173,7 @@ export function App() {
 
   const handleArchiveToggle = async (id: string, archived: boolean) => {
     try {
-      const token = await acquireTurnstileToken();
-      const updated = await patchArticle(id, { archived }, token);
+      const updated = await patchArticle(id, { archived });
       if (archived !== archivedView) {
         setArticles((current) => current.filter((a) => a.id !== id));
       } else {
@@ -202,8 +186,7 @@ export function App() {
 
   const handleDelete = async (id: string) => {
     try {
-      const token = await acquireTurnstileToken();
-      await deleteArticle(id, token);
+      await deleteArticle(id);
       setArticles((current) => current.filter((a) => a.id !== id));
     } catch (err) {
       showError(err);
@@ -212,8 +195,7 @@ export function App() {
 
   const handleRetry = async (id: string) => {
     try {
-      const token = await acquireTurnstileToken();
-      await retryArticle(id, token);
+      await retryArticle(id);
       setArticles((current) =>
         current.map((a) => (a.id === id ? { ...a, status: "pending", error: null } : a))
       );
@@ -245,6 +227,7 @@ export function App() {
         searchValue={searchInput}
         onSearchChange={setSearchInput}
         onAddClick={() => setModalOpen(true)}
+        isOwner={isOwner}
       />
 
       <div class="layout">
@@ -291,6 +274,7 @@ export function App() {
             loadingMore={loadingMore}
             archivedView={archivedView}
             pickOfDayId={pickOfDayId}
+            isOwner={isOwner}
           />
         </main>
 
@@ -307,10 +291,11 @@ export function App() {
           onArchiveToggle={() => {
             setArchivedView((current) => !current);
           }}
+          isOwner={isOwner}
         />
       </div>
 
-      {modalOpen && (
+      {modalOpen && isOwner && (
         <AddModal
           dict={dict}
           onClose={() => setModalOpen(false)}

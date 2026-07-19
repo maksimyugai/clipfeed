@@ -10,25 +10,8 @@ export type AppEnv = {
   };
 };
 
-const HEALTH_PATH = "/api/health";
 const ACCESS_JWT_HEADER = "Cf-Access-Jwt-Assertion";
 const ACCESS_COOKIE_NAME = "CF_Authorization";
-
-const UNAUTHORIZED_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>Access required</title></head>
-<body>
-<h1>Access required</h1>
-<p>This ClipFeed instance is protected by Cloudflare Access. Sign in through your
-organization's Access login to continue.</p>
-</body>
-</html>
-`;
-
-// Logged once per isolate the first time auth is found disabled, so a
-// fork/dev deployment without ACCESS_TEAM_DOMAIN + ACCESS_AUD doesn't spam
-// logs on every request while still making the open state visible.
-let warnedDisabled = false;
 
 interface AccessConfig {
   teamDomain: string;
@@ -62,42 +45,34 @@ function logAuthFailure(reason: string, path: string): void {
   console.warn(JSON.stringify({ event: "access_auth_failed", reason, path }));
 }
 
-function unauthorizedResponse(c: Context<AppEnv>, isApi: boolean): Response {
-  if (isApi) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
-  return c.html(UNAUTHORIZED_HTML, 401);
-}
-
-// Verifies the Cloudflare Access JWT on every request except /api/health.
-// No-ops (serves openly) when ACCESS_TEAM_DOMAIN/ACCESS_AUD aren't both
-// set — the zero-config fork/dev bootstrap state.
+// Gates every route it's mounted on behind a verified Cloudflare Access
+// JWT — in this app, that's /api/admin/* only (see index.ts). Public reads
+// (the feed, article details, static assets) never pass through this
+// middleware at all.
+//
+// Unlike a typical "open until configured" bootstrap default, this FAILS
+// CLOSED when ACCESS_TEAM_DOMAIN/ACCESS_AUD aren't both set: under the
+// public-read/owner-write model, an unconfigured instance must never
+// silently let mutation routes through open just because nobody's gotten
+// around to setting up Access yet.
 export function accessAuth(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    if (c.req.path === HEALTH_PATH) {
-      return next();
-    }
-
     const config = readConfig(c.env);
     if (!config) {
-      if (!warnedDisabled) {
-        console.warn("Access auth disabled — set ACCESS_TEAM_DOMAIN and ACCESS_AUD");
-        warnedDisabled = true;
-      }
-      return next();
+      logAuthFailure("auth_not_configured", c.req.path);
+      return c.json({ error: "auth_not_configured" }, 401);
     }
 
-    const isApi = c.req.path.startsWith("/api/");
     const token = extractToken(c);
     if (!token) {
       logAuthFailure("missing_token", c.req.path);
-      return unauthorizedResponse(c, isApi);
+      return c.json({ error: "unauthorized" }, 401);
     }
 
     const result = await verifyAccessJwt(token, config.teamDomain, config.aud, c.env.CACHE);
     if (!result.ok) {
       logAuthFailure(result.reason, c.req.path);
-      return unauthorizedResponse(c, isApi);
+      return c.json({ error: "unauthorized" }, 401);
     }
 
     c.set("accessSub", result.claims.sub);

@@ -21,6 +21,7 @@ export interface SidebarProps {
   totalCount: number;
   archivedView: boolean;
   onArchiveToggle: () => void;
+  isOwner: boolean;
 }
 
 export function TopicPills(
@@ -89,6 +90,7 @@ export function Sidebar(
     totalCount,
     archivedView,
     onArchiveToggle,
+    isOwner,
   }: SidebarProps,
 ) {
   return (
@@ -121,9 +123,11 @@ export function Sidebar(
         <div class="stat-label">{dict.sidebarTotalArticles}</div>
       </div>
 
-      <button type="button" class="archive-link" onClick={onArchiveToggle}>
-        {archivedView ? dict.sidebarBackToFeed : dict.sidebarArchiveLink}
-      </button>
+      {isOwner && (
+        <button type="button" class="archive-link" onClick={onArchiveToggle}>
+          {archivedView ? dict.sidebarBackToFeed : dict.sidebarArchiveLink}
+        </button>
+      )}
     </aside>
   );
 }
