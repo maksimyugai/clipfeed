@@ -244,10 +244,87 @@ Deno.test("summarizeArticle: fails after two broken responses", async () => {
   }) as typeof fetch;
 
   try {
-    await assertRejects(() =>
-      summarizeArticle({ apiKey: "test-key", model: "test-model" }, "Title", "Body text")
+    await assertRejects(
+      () => summarizeArticle({ apiKey: "test-key", model: "test-model" }, "Title", "Body text"),
+      Error,
+      "anthropic api error: model output did not match the required schema after retry",
     );
     assertEquals(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: retry-exhausted error is 'ai gateway error' prefixed in gateway mode", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: "still not json" }] }),
+        { status: 200 },
+      ),
+    )) as typeof fetch;
+
+  try {
+    await assertRejects(
+      () =>
+        summarizeArticle(
+          {
+            aiGatewayUrl: "https://gateway.ai.cloudflare.com/v1/acct123/clipfeed/anthropic",
+            aiGatewayToken: "gw-token",
+            model: "test-model",
+          },
+          "Title",
+          "Body text",
+        ),
+      Error,
+      "ai gateway error: model output did not match the required schema after retry",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: missing text content is prefixed per mode (direct)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ content: [] }), { status: 200 }),
+    )) as typeof fetch;
+
+  try {
+    await assertRejects(
+      () => summarizeArticle({ apiKey: "test-key", model: "test-model" }, "Title", "Body text"),
+      Error,
+      "anthropic api error: response had no text content",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: missing text content is prefixed per mode (gateway)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ content: [] }), { status: 200 }),
+    )) as typeof fetch;
+
+  try {
+    await assertRejects(
+      () =>
+        summarizeArticle(
+          {
+            aiGatewayUrl: "https://gateway.ai.cloudflare.com/v1/acct123/clipfeed/anthropic",
+            aiGatewayToken: "gw-token",
+            model: "test-model",
+          },
+          "Title",
+          "Body text",
+        ),
+      Error,
+      "ai gateway error: response had no text content",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
