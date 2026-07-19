@@ -29,3 +29,18 @@
 # fine to set here for local testing against a real Access app.
 # ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
 # ACCESS_AUD=
+
+# Cloudflare Turnstile bot protection (see README "Bot protection
+# (Turnstile)"). Optional — only activates once BOTH are set. Requests
+# carrying a verified Access identity bypass Turnstile entirely, so a
+# request from the Chrome extension or a bot using an Access service token
+# never sees a widget. TURNSTILE_SITE_KEY is public (safe in [vars] too);
+# TURNSTILE_SECRET_KEY must be a real secret (`wrangler secret put` in
+# production).
+#
+# For local dev, Cloudflare publishes test keys that always pass/fail —
+# no real Turnstile widget/dashboard setup needed to exercise the code path:
+#   always passes:  site 1x00000000000000000000AA  secret 1x0000000000000000000000000000000AA
+#   always blocks:  site 2x00000000000000000000AB  secret 2x0000000000000000000000000000000AA
+# TURNSTILE_SITE_KEY=1x00000000000000000000AA
+# TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA

@@ -106,7 +106,8 @@ is tied to a specific account, domain, or Access team.
 4. `deno task deploy`.
 5. Your Worker is now live at `*.workers.dev` and **unprotected** — anyone with the URL can call its
    API (including the summarization endpoint, which spends your LLM budget). See "Protecting your
-   instance" below to lock it down with Cloudflare Access before real use.
+   instance" below to lock it down with Cloudflare Access, and/or "Bot protection (Turnstile)" to
+   block scripted abuse of a public instance, before real use.
 
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
@@ -152,6 +153,47 @@ state, not a failure mode. Once both are set, every tool you use to smoke-test t
 (`curl`, browser, scripts) needs either a logged-in Access session cookie or
 `CF-Access-Client-Id`/`CF-Access-Client-Secret` headers from a Service Token — plain requests will
 get a `401`.
+
+## Bot protection (Turnstile)
+
+Access answers "who are you"; Turnstile answers "are you a browser with a human at the wheel" — the
+two are complementary, not redundant. Turnstile protects the **mutating** endpoints
+(`POST /api/articles`, `POST /api/articles/:id/retry`, `PATCH /api/articles/:id`,
+`DELETE /api/articles/:id`) so a public instance can't have its LLM budget or data abused by scripts
+hitting the API directly, even if you never turn Access on.
+
+**The bypass rule:** any request that already carries a verified Access identity (a logged-in
+session or a Service Token) skips Turnstile entirely — a Service Token is proof of "human enough" on
+its own, and non-browser clients like the Chrome extension physically cannot render a Turnstile
+widget, so they must never be asked to. **Practical consequence: with Turnstile active, non-browser
+clients (the Chrome extension, scripts, future bots) MUST authenticate via an Access Service Token**
+(see "Protecting your instance" → policy 2 above) — there's no other way for them to get past a
+mutating endpoint once Turnstile is on.
+
+Setup, in the Cloudflare dashboard:
+
+1. **Turnstile → Add widget.** Widget mode: **Invisible** (or Managed — either works; the SPA
+   requests `appearance: "interaction-only"`, so a visible challenge only appears if Cloudflare's
+   own risk scoring decides one is needed).
+2. **Domains:** add your Worker's public hostname(s), and `localhost` if you want to test the real
+   widget locally (Cloudflare's dashboard accepts `localhost` as a domain for this purpose).
+3. Copy the **Site Key** (public, safe to ship to the browser) and **Secret Key** (server-only),
+   then set them on the Worker:
+   ```
+   deno run -A npm:wrangler secret put TURNSTILE_SITE_KEY
+   deno run -A npm:wrangler secret put TURNSTILE_SECRET_KEY
+   ```
+   (`TURNSTILE_SITE_KEY` isn't sensitive on its own — plain `[vars]` works too, same as
+   `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` — but per the forkability policy, never commit a real value as
+   a default in `wrangler.toml`.)
+4. **Verify:** `GET /api/config` should now return `{"turnstile_site_key": "<your site key>"}`
+   instead of `null`; a `POST /api/articles` with no `cf-turnstile-response` header and no Access
+   identity should now return `403 {"error":"turnstile_required"}` instead of succeeding.
+
+**Both `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` must be set for enforcement to activate** —
+with only one set, or neither, mutating endpoints behave exactly as before this feature (no widget,
+no checks). For local dev without setting up a real widget, Cloudflare publishes fixed test keys
+that always pass or always block verification — see `.dev.vars.example` for the exact values.
 
 ## Chrome extension
 

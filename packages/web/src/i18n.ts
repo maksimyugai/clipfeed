@@ -41,6 +41,10 @@ export interface Dictionary {
   viaExtension: string;
   viaAgent: string;
   toastErrorPrefix: string;
+  turnstileRequiredError: string;
+  turnstileFailedError: string;
+  turnstileUnavailableError: string;
+  turnstileClientError: string;
 }
 
 const ru: Dictionary = {
@@ -84,6 +88,10 @@ const ru: Dictionary = {
   viaExtension: "расширением",
   viaAgent: "агентом",
   toastErrorPrefix: "Ошибка",
+  turnstileRequiredError: "Требуется проверка — попробуйте ещё раз.",
+  turnstileFailedError: "Проверка не пройдена — попробуйте ещё раз.",
+  turnstileUnavailableError: "Сервис проверки временно недоступен — попробуйте чуть позже.",
+  turnstileClientError: "Не удалось выполнить проверку — попробуйте ещё раз.",
 };
 
 const en: Dictionary = {
@@ -127,6 +135,11 @@ const en: Dictionary = {
   viaExtension: "via extension",
   viaAgent: "by the agent",
   toastErrorPrefix: "Error",
+  turnstileRequiredError: "Verification required — please try again.",
+  turnstileFailedError: "Verification failed — please try again.",
+  turnstileUnavailableError:
+    "Verification service is temporarily unavailable — please try again shortly.",
+  turnstileClientError: "Could not complete the verification check — please try again.",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };
