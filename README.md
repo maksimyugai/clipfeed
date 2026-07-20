@@ -46,11 +46,18 @@ ClipFeed picks a summarization backend at request time, in this priority order:
    `deno task deploy` with no secrets set. Uses Cloudflare's
    `@cf/meta/llama-3.3-70b-instruct-fp8-fast` via the native `AI` binding declared in
    `wrangler.toml`. Quality is noticeably below Claude for nuanced summarization — good enough to
-   try the app out, not the last word.
+   try the app out, not the last word (see "Two validation tiers" below for exactly how this plays
+   out).
 2. **AI Gateway (recommended upgrade)** — routes calls through Cloudflare AI Gateway to a real
-   Claude model, with usage/cost visibility and key rotation without a redeploy. Set secrets
-   `AI_GATEWAY_URL` (+ `CF_AIG_TOKEN` for an authenticated gateway).
-3. **Direct Anthropic** — calls `api.anthropic.com` straight. Set secret `ANTHROPIC_API_KEY`.
+   Claude model, with usage/cost visibility and key rotation without a redeploy. Set secret
+   `AI_GATEWAY_URL` to your gateway's Anthropic-provider endpoint — it must already end in
+   `/anthropic` (ClipFeed appends `/v1/messages` itself, not the whole path):
+   `https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/anthropic` (see
+   `.dev.vars.example`). Add `CF_AIG_TOKEN` too if the gateway requires auth. The actual model
+   called is `SUMMARY_MODEL` ([vars] in `wrangler.toml`, default `claude-haiku-4-5-20251001`) —
+   change that value for a different Claude model; no secret needed, since it's not sensitive.
+3. **Direct Anthropic** — calls `api.anthropic.com` straight, using the same `SUMMARY_MODEL`. Set
+   secret `ANTHROPIC_API_KEY`.
 
 A mode is only used when its configuration is **complete** — AI Gateway needs `AI_GATEWAY_URL` _and_
 a credential (`CF_AIG_TOKEN` or `ANTHROPIC_API_KEY`); direct Anthropic needs `ANTHROPIC_API_KEY`
@@ -61,6 +68,46 @@ gets summarized) — if summaries look unexpectedly non-Claude-quality, check th
 `GET /api/admin/articles/:id` (owner-only — the public `GET /api/articles/:id` only exposes a
 `has_error` boolean, not the raw message) for past failures, and your AI Gateway logs for whether
 requests are actually arriving there. See "Deploy your own (fork)" below for the exact commands.
+
+### Two validation tiers
+
+Every summary is checked against a content-quality bar before it's persisted (title length, tldr
+length, bullet count/length, body paragraph count/length, and a duplicate-content heuristic — see
+`validateSummary` in `packages/api/src/summarize.ts`) — an LLM response that fails gets one
+corrective retry naming the specific violations, then the article is marked `'failed'` rather than
+storing a substandard summary. There are two named bars, not one:
+
+|                 | **STRICT** (gateway / direct)     | **RELAXED** (Workers AI)          |
+| --------------- | --------------------------------- | --------------------------------- |
+| tldr            | ≥ 200 characters                  | ≥ 150 characters                  |
+| body paragraphs | 2–4, each 300–700 characters      | 2–6, each 150–700 characters      |
+| bullets         | 4–7 items, each 40–220 characters | 3–7 items, each 30–220 characters |
+
+**Why two bars:** this is a genuine instruction-following gap, not a formatting quirk. Claude-class
+models (gateway/direct) reliably clear STRICT on the first attempt. Llama 3.3 70B (Workers AI's
+free-tier default) passed STRICT only ~1 time in 6 live attempts in earlier testing — every failed
+attempt still costs a real queue slot (roughly 2–3 minutes of Workers AI call time before the
+corrective retry gives up), so a summary that could have been "good enough" under a more realistic
+bar was instead thrown away and the article marked `'failed'`. Live-verifying RELAXED itself (2 real
+articles, 2 runs each, against the real Workers AI binding — not a simulation): **4/4 runs passed on
+the first attempt**, 144–197 seconds each. Every one of those 4 summaries was also checked against
+STRICT purely for measurement (not enforcement, since workers-ai always validates against RELAXED) —
+all 4 would have failed STRICT, mostly on bullet count (3 items instead of 4–7) or a body paragraph
+running under 300 characters, confirming the two bars are actually selecting different, real
+outcomes rather than one being redundant.
+
+**The prompt is a single template, parameterized by whichever profile is active** (see
+`buildSystemPrompt` in `summarize.ts`) — so the numbers the model is told to hit always match the
+numbers `validateSummary` actually enforces for that mode; there's no separate "workers-ai prompt"
+to drift out of sync.
+
+**The tradeoff, plainly:** RELAXED summaries are shorter and can have thinner body paragraphs or
+fewer bullets than STRICT ones — genuinely lower quality by design, not a bug. It exists so a fork
+running on the free Workers AI tier gets a usably high first/second-attempt success rate instead of
+habitually exhausting both attempts and falling through to a generic validation-failure error. If
+quality matters more than staying on the free tier, set up AI Gateway or direct Anthropic (above) —
+gateway/direct summaries always use STRICT regardless of how good a given Llama response might have
+been.
 
 ## Database
 
