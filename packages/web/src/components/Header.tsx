@@ -31,6 +31,28 @@ export function Header(
       <div class="header-inner">
         <span class="logo">{dict.brand}</span>
 
+        {
+          /* Decorative — conveys nothing a screen reader needs; the visible
+            text around it already carries all the meaning. */
+        }
+        <svg
+          class="ua-flag"
+          viewBox="0 0 24 16"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <defs>
+            <clipPath id="ua-flag-clip">
+              <rect width="24" height="16" rx="2" />
+            </clipPath>
+          </defs>
+          <g clip-path="url(#ua-flag-clip)">
+            <rect width="24" height="8" fill="#0057B7" />
+            <rect y="8" width="24" height="8" fill="#FFD700" />
+          </g>
+        </svg>
+
         <div class="search-field">
           <input
             class="search-input"

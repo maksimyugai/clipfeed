@@ -134,6 +134,13 @@ ul {
   white-space: nowrap;
 }
 
+.ua-flag {
+  width: 24px;
+  height: 16px;
+  flex-shrink: 0;
+  display: block;
+}
+
 .search-field {
   flex: 1;
   min-width: 0;
@@ -224,6 +231,11 @@ ul {
   .search-field {
     order: 3;
     flex: 0 0 100%;
+  }
+
+  .ua-flag {
+    width: 20px;
+    height: 14px;
   }
 }
 
@@ -581,6 +593,21 @@ ul {
   line-height: 1.6;
   color: var(--txt);
   margin: 6px 0 14px;
+}
+
+.card-body {
+  margin: 0 0 16px;
+}
+
+.card-body p {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--txt);
+  margin: 0 0 10px;
+}
+
+.card-body p:last-child {
+  margin-bottom: 0;
 }
 
 .bullet-list {
