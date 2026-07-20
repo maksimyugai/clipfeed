@@ -27,6 +27,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     ...overrides,
   };

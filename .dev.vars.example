@@ -24,6 +24,13 @@
 # DAILY_SUMMARY_LIMIT=50
 # PENDING_TIMEOUT_MIN=10
 
+# How much summary you want to read: target TOTAL body length in characters
+# (all paragraphs, per language) — the prompt and validation both derive
+# their numbers from this one setting. Valid range 400-4000; anything
+# missing/invalid/out of range falls back to 1200. See README "Summary
+# length".
+# SUMMARY_BODY_TARGET_CHARS=1200
+
 # Daily scraping agent (see README "Daily scraping agent"; sources live in
 # packages/api/sources.json, not here). INTEREST_TOPICS steers the ranking
 # call's taste — free text, edit to match what you actually want surfaced.

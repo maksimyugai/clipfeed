@@ -12,6 +12,13 @@ PENDING_TIMEOUT_MIN = 10
 INTEREST_TOPICS = "AI/LLMs and their engineering, software development, Cloudflare and edge computing, programming languages, security, notable science/tech news"
 AGENT_HOUR_UTC = "5"
 DIGEST_HOUR_UTC = "6"
+# How much summary you want to read: the target TOTAL body length in
+# characters (all paragraphs, per language). Prompt and validation both
+# derive their numbers from this one setting (see summarize.ts's
+# deriveSummarySpec) — string, not a number, so a bad override (missing,
+# non-numeric, outside [400, 4000]) degrades to the 1200 default instead of
+# breaking. See README "Summary length".
+SUMMARY_BODY_TARGET_CHARS = "1200"
 
 [ai]
 binding = "AI"
