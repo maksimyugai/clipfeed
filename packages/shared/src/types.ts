@@ -1,6 +1,12 @@
 export type ArticleStatus = "pending" | "ready" | "failed";
 export type AddedVia = "extension" | "manual" | "agent" | "telegram";
 
+// Healing strategy bucket for a 'failed' row — see classifyFailure() in
+// packages/api/src/classify-failure.ts for the mapping from the stored
+// `error` string. null until a failure has actually been classified (old
+// rows from before this column existed, or a row that isn't 'failed').
+export type FailureClass = "transient" | "permanent" | "unknown";
+
 // body_ru/body_en: 2-4 self-contained prose paragraphs (what happened,
 // how/why, key context, implications) — the readable digest a reader can
 // stop at instead of opening the source. Required for every NEW summary
@@ -44,6 +50,8 @@ export interface Article {
   status: ArticleStatus;
   archived: boolean;
   error: string | null;
+  fail_class: FailureClass | null;
+  heal_attempts: number;
 }
 
 export type ArticleListItem = Omit<Article, "full_text">;

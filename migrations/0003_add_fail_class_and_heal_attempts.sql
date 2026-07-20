@@ -1,0 +1,2 @@
+ALTER TABLE articles ADD COLUMN fail_class TEXT;
+ALTER TABLE articles ADD COLUMN heal_attempts INTEGER NOT NULL DEFAULT 0;
