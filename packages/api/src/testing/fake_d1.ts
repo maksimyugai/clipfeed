@@ -60,6 +60,7 @@ export class FakeD1 implements D1Database {
         summary_en: null,
         summary_json: null,
         error: null,
+        fail_class: null,
       };
       let vi = 0;
       for (const col of cols) {
@@ -67,6 +68,7 @@ export class FakeD1 implements D1Database {
       }
       row.status = "pending";
       row.archived = 0;
+      row.heal_attempts = 0;
       this.rows.push(row);
       return;
     }
@@ -109,17 +111,30 @@ export class FakeD1 implements D1Database {
           tags,
           status: "ready",
           error: null,
+          fail_class: null,
+          heal_attempts: 0,
         });
         return;
       }
       if (sql.includes("SET status = 'failed'")) {
         row.status = "failed";
         row.error = values[0];
+        row.fail_class = values[1];
+        if (sql.includes("archived = 1")) row.archived = 1;
         return;
       }
       if (sql.includes("SET status = 'pending'")) {
         row.status = "pending";
         row.error = null;
+        return;
+      }
+      if (sql.startsWith("UPDATE articles SET fail_class = ?")) {
+        row.fail_class = values[0];
+        if (sql.includes("archived = 1")) row.archived = 1;
+        return;
+      }
+      if (sql === "UPDATE articles SET heal_attempts = heal_attempts + 1 WHERE id = ?") {
+        row.heal_attempts = (row.heal_attempts as number) + 1;
         return;
       }
 
@@ -156,6 +171,59 @@ export class FakeD1 implements D1Database {
     if (sql === "SELECT id FROM articles WHERE id = ?") {
       const row = this.rows.find((r) => r.id === values[0]);
       return row ? [{ id: row.id }] : [];
+    }
+
+    if (sql === "SELECT added_via FROM articles WHERE id = ?") {
+      const row = this.rows.find((r) => r.id === values[0]);
+      return row ? [{ added_via: row.added_via }] : [];
+    }
+
+    if (sql.startsWith("SELECT id, fail_class, heal_attempts FROM articles")) {
+      const [transientCap, unknownCap, maxRows] = values as [number, number, number];
+      const candidates = this.rows
+        .filter((r) =>
+          r.status === "failed" && r.archived === 0 &&
+          ((r.fail_class === "transient" && (r.heal_attempts as number) < transientCap) ||
+            (r.fail_class === "unknown" && (r.heal_attempts as number) < unknownCap))
+        )
+        .sort((a, b) => (a.added_at as string).localeCompare(b.added_at as string))
+        .slice(0, maxRows);
+      return candidates.map((r) => ({
+        id: r.id,
+        fail_class: r.fail_class,
+        heal_attempts: r.heal_attempts,
+      }));
+    }
+
+    if (sql.startsWith("SELECT id, url, error, added_via FROM articles")) {
+      return this.rows
+        .filter((r) => r.status === "failed" && r.fail_class === null && r.archived === 0)
+        .map((r) => ({ id: r.id, url: r.url, error: r.error, added_via: r.added_via }));
+    }
+
+    if (sql === "SELECT MAX(added_at) as last_added_at FROM articles WHERE added_via = 'agent'") {
+      const agentRows = this.rows.filter((r) => r.added_via === "agent");
+      const lastAddedAt = agentRows.length === 0
+        ? null
+        : agentRows.map((r) => r.added_at as string).sort().at(-1)!;
+      return [{ last_added_at: lastAddedAt }];
+    }
+
+    if (sql.startsWith("SELECT fail_class, COUNT(*) as count, SUM(heal_attempts) as attempts")) {
+      const groups = new Map<string | null, { count: number; attempts: number }>();
+      for (const r of this.rows) {
+        if (r.status !== "failed") continue;
+        const key = r.fail_class as string | null;
+        const entry = groups.get(key) ?? { count: 0, attempts: 0 };
+        entry.count += 1;
+        entry.attempts += (r.heal_attempts as number) ?? 0;
+        groups.set(key, entry);
+      }
+      return [...groups.entries()].map(([fail_class, { count, attempts }]) => ({
+        fail_class,
+        count,
+        attempts,
+      }));
     }
 
     if (sql.startsWith("SELECT url FROM articles WHERE url IN")) {

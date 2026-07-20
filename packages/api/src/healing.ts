@@ -1,0 +1,67 @@
+import "./env.d.ts";
+import {
+  classifyAndMaybeArchive,
+  incrementHealAttempts,
+  listHealableFailedArticles,
+  listUnclassifiedFailures,
+  markArticlePending,
+} from "./db.ts";
+import { enqueueArticleJob } from "./queue.ts";
+import { recordThinHostFailure } from "./thin-host-learning.ts";
+
+// Retry budget per class — PERMANENT is excluded entirely (never retried;
+// see listHealableFailedArticles, which only selects transient/unknown).
+// UNKNOWN gets a single, lower-confidence attempt: a content-shaped
+// failure (e.g. 'summary validation') MIGHT pass on retry, but there's no
+// strong signal either way, unlike a transient infra failure.
+const HEAL_CAPS = { transient: 2, unknown: 1 };
+
+// Budget safety: bounds how much queue/LLM work one hourly tick can
+// create, independent of how many failed articles are eligible — a burst
+// of failures (e.g. a provider outage) heals gradually over several ticks
+// instead of all at once.
+const MAX_HEALS_PER_TICK = 5;
+
+// Runs every hour, unconditionally, after the existing scheduled jobs (see
+// scheduled.ts) — no dedicated on/off config, since a self-healing pass is
+// cheap when there's nothing to heal (a couple of empty SELECTs) and the
+// two safety limits above (per-class caps, MAX_HEALS_PER_TICK) already
+// bound its cost when there is.
+//
+// Two independent passes:
+//  1. Classify any 'failed' rows that predate the fail_class column
+//     (migration 0003) — lazily backfilled here rather than a one-off
+//     migration script, since migrations only alter schema, never run
+//     application logic. A permanent+insufficient-text backfill also
+//     teaches the thin-host learned list, since that signal was never
+//     recorded for these rows either (see thin-host-learning.ts).
+//  2. Retry TRANSIENT/UNKNOWN failures up to their cap, oldest first,
+//     capped at MAX_HEALS_PER_TICK total. The re-enqueued article goes
+//     through the exact same queue path as any other 'process' job, so the
+//     normal daily summary budget (cost-guard.ts) still applies —
+//     healing doesn't bypass it, just adds another way to reach the
+//     pipeline.
+export async function runHealingJob(env: Env, ctx?: ExecutionContext): Promise<void> {
+  const unclassified = await listUnclassifiedFailures(env.DB);
+  for (const row of unclassified) {
+    const failClass = await classifyAndMaybeArchive(env.DB, row.id, row.error, row.added_via);
+    if (
+      failClass === "permanent" && (row.error ?? "").toLowerCase().includes("insufficient text")
+    ) {
+      await recordThinHostFailure(env.CACHE, row.url);
+    }
+  }
+
+  const candidates = await listHealableFailedArticles(env.DB, HEAL_CAPS, MAX_HEALS_PER_TICK);
+  for (const article of candidates) {
+    await incrementHealAttempts(env.DB, article.id);
+    console.log(JSON.stringify({
+      event: "heal_retry",
+      articleId: article.id,
+      class: article.fail_class,
+      attempt: article.heal_attempts + 1,
+    }));
+    await markArticlePending(env.DB, article.id);
+    await enqueueArticleJob(env, ctx, { kind: "process", articleId: article.id });
+  }
+}
