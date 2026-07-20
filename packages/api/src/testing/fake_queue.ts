@@ -34,9 +34,12 @@ export class FakeMessage implements Message<QueueMessage> {
   }
 }
 
-export function makeBatch(messages: FakeMessage[]): MessageBatch<QueueMessage> {
+export function makeBatch(
+  messages: FakeMessage[],
+  queue = "clipfeed-jobs",
+): MessageBatch<QueueMessage> {
   return {
-    queue: "clipfeed-jobs",
+    queue,
     messages,
     ackAll(): void {
       for (const m of messages) m.acked = true;

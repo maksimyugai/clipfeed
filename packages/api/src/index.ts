@@ -15,7 +15,13 @@ import {
   sweepStalePending,
   toPublicArticle,
 } from "./db.ts";
-import { enqueueArticleJob, processQueueMessage, stashPendingHtml } from "./queue.ts";
+import {
+  DEAD_LETTER_QUEUE_NAME,
+  enqueueArticleJob,
+  processDeadLetterMessage,
+  processQueueMessage,
+  stashPendingHtml,
+} from "./queue.ts";
 import {
   MAX_BODY_BYTES,
   sourceFromUrl,
@@ -275,24 +281,68 @@ export default {
   ): void {
     ctx.waitUntil(handleScheduled(env, controller.scheduledTime));
   },
-  // Consumer for the "clipfeed-jobs" queue (see wrangler.toml
-  // [[queues.consumers]], queue.ts) — a consumer invocation gets minutes of
-  // wall time, unlike the 30s hard cap on ctx.waitUntil(), which is what
-  // this task exists to route around for large-article summarization.
-  // processQueueMessage() owns the terminal-state guarantee (it delegates
-  // to runArticlePipeline/runResummarization, whose own top-level
-  // try/catch already turns any failure into a 'failed' row) — so a throw
-  // reaching this loop means something unexpected (e.g. D1 itself
-  // erroring), not a normal pipeline failure; only that case is retried.
+  // Consumer for BOTH the "clipfeed-jobs" queue and its
+  // "clipfeed-dlq" dead-letter queue (see wrangler.toml [[queues.consumers]],
+  // queue.ts) — Cloudflare invokes this same export for either, batch.queue
+  // tells them apart. A consumer invocation gets minutes of wall time,
+  // unlike the 30s hard cap on ctx.waitUntil(), which is what this task
+  // exists to route around for large-article summarization.
+  //
+  // queue_received/queue_done bracket every message on the main queue —
+  // deliberately the very first and very last thing this loop does per
+  // message, so a production `wrangler tail` window always shows a life
+  // sign for an invocation even if processQueueMessage itself throws
+  // early, rather than a silent gap.
   async queue(
     batch: MessageBatch<QueueMessage>,
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<void> {
+    if (batch.queue === DEAD_LETTER_QUEUE_NAME) {
+      for (const message of batch.messages) {
+        try {
+          await processDeadLetterMessage(env, message.body);
+        } catch (err) {
+          console.warn(JSON.stringify({
+            event: "queue_dead_letter_unexpected_throw",
+            id: message.body.articleId,
+            error: err instanceof Error ? err.message : String(err),
+          }));
+        } finally {
+          // Nothing further to retry into — either it succeeded, was
+          // skipped as a no-op/already-terminal, or D1 itself is down (in
+          // which case retrying here can't help either). Acking always
+          // avoids a dead-letter-of-a-dead-letter loop.
+          message.ack();
+        }
+      }
+      return;
+    }
+
+    // processQueueMessage() owns the terminal-state guarantee (it
+    // delegates to runArticlePipeline/runResummarization, whose own
+    // top-level try/catch already turns any failure into a 'failed' row)
+    // — so a throw reaching this loop means something unexpected (e.g. D1
+    // itself erroring), not a normal pipeline failure; only that case is
+    // retried, and after max_retries Cloudflare routes it to the DLQ
+    // consumer above.
     for (const message of batch.messages) {
+      const startedAt = Date.now();
+      console.log(JSON.stringify({
+        event: "queue_received",
+        articleId: message.body.articleId,
+        kind: message.body.kind,
+        attempt: message.attempts,
+      }));
       try {
         await processQueueMessage(env, message.body);
         message.ack();
+        console.log(JSON.stringify({
+          event: "queue_done",
+          articleId: message.body.articleId,
+          outcome: "ok",
+          duration_ms: Date.now() - startedAt,
+        }));
       } catch (err) {
         console.warn(JSON.stringify({
           event: "queue_message_unexpected_throw",
@@ -300,6 +350,12 @@ export default {
           error: err instanceof Error ? err.message : String(err),
         }));
         message.retry();
+        console.log(JSON.stringify({
+          event: "queue_done",
+          articleId: message.body.articleId,
+          outcome: "retry",
+          duration_ms: Date.now() - startedAt,
+        }));
       }
     }
   },

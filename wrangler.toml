@@ -50,16 +50,25 @@ id = "8e4fddfbda204322a609830cc771124f"
 # that (see README "Queue-based pipeline execution"). A consumer invocation
 # gets minutes of wall time instead. max_batch_size = 1 keeps one article
 # per invocation, so one slow summarization never blocks another queued
-# article's budget. No dead_letter_queue: the pipeline itself guarantees a
-# terminal 'ready'/'failed' row (see pipeline.ts), so a message that still
-# fails after max_retries is a genuine infrastructure error, not a normal
-# failure mode worth a separate queue to inspect.
+# article's budget.
 #
-# The queue itself isn't provisioned by this config — a forker runs
-# `deno task setup` once (or `wrangler queues create clipfeed-jobs`) before
-# their first deploy. If the JOBS binding isn't available (queue missing,
-# or any environment that hasn't set this up), the app falls back to the
-# pre-Queues ctx.waitUntil() behavior — see queue.ts's enqueueArticleJob.
+# dead_letter_queue = "clipfeed-dlq": the pipeline itself guarantees a
+# terminal 'ready'/'failed' row ONLY once the consumer actually runs it
+# (see pipeline.ts) — a message that's silently dropped before that ever
+# happens (delivery never reaching a consumer invocation, or an infra-level
+# failure exhausting max_retries) previously left the article stuck
+# 'pending' until the sweeper's timeout, with no record of what happened.
+# The DLQ consumer below (same Worker, see index.ts's `queue` export)
+# closes that gap: it terminal-fails the referenced article directly, so no
+# queue path can leave a row non-terminal regardless of the failure
+# mechanism.
+#
+# Neither queue is provisioned by this config — a forker runs
+# `deno task setup` once (or `wrangler queues create clipfeed-jobs` +
+# `wrangler queues create clipfeed-dlq`) before their first deploy. If the
+# JOBS binding isn't available (queue missing, or any environment that
+# hasn't set this up), the app falls back to the pre-Queues
+# ctx.waitUntil() behavior — see queue.ts's enqueueArticleJob.
 [[queues.producers]]
 binding = "JOBS"
 queue = "clipfeed-jobs"
@@ -69,6 +78,12 @@ queue = "clipfeed-jobs"
 max_batch_size = 1
 max_retries = 2
 max_batch_timeout = 5
+dead_letter_queue = "clipfeed-dlq"
+
+[[queues.consumers]]
+queue = "clipfeed-dlq"
+max_batch_size = 10
+max_retries = 3
 
 # invocation_logs writes one line per request; lower head_sampling_rate if
 # public traffic grows.

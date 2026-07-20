@@ -99,18 +99,33 @@ running the pipeline directly; the same Worker's `queue()` export (`index.ts`) c
 Extension-submitted HTML (up to 2MB) is too large for a Queues message body (128KB limit), so it's
 handed off through KV instead — see `queue.ts`'s `stashPendingHtml`/`takePendingHtml`. Batch size is
 1: one article per consumer invocation, so one slow summarization never blocks another queued
-article. The pipeline itself already guarantees a terminal `'ready'`/`'failed'` row (see
-`pipeline.ts`), so there's no dead-letter queue — a message that still fails after `max_retries` is
-an infrastructure error, not a normal failure mode.
+article. Every consumer invocation logs `queue_received` as its first line and `queue_done` as its
+last (with `articleId`/`kind`/`outcome`/`duration_ms`), and every successful enqueue logs
+`queue_enqueued` — so a `wrangler tail` window always shows a life sign for a message, rather than a
+silent gap if something goes wrong before the pipeline itself gets to log anything.
+
+The pipeline itself guarantees a terminal `'ready'`/`'failed'` row for every invocation it actually
+runs (see `pipeline.ts`) — but that guarantee only covers messages the consumer gets to run at all.
+A message that's dropped before ever reaching a consumer invocation, or that exhausts `max_retries`
+on a genuine infrastructure error, previously left its article stuck `'pending'` until the sweeper's
+timeout with no record of what happened. `clipfeed-jobs`' consumer now has a
+`dead_letter_queue = "clipfeed-dlq"`: Cloudflare routes an exhausted message there automatically,
+and the same Worker's `queue()` export consumes it too (`batch.queue` tells the two apart) — it
+marks the referenced article `'failed'` with `"queue: processing failed after retries"` and logs
+`queue_dead_letter`, skipping articles that are already terminal (idempotent, so a message that
+dead-letters after the pipeline itself already wrote a real result doesn't clobber it). This closes
+the gap: no queue path can leave an article non-terminal, regardless of the failure mechanism.
 
 **Forkability / graceful degradation:** if the `JOBS` binding isn't available (the queue hasn't been
 provisioned yet, or any environment that hasn't wired `[[queues.producers]]`), the app falls back to
 the pre-Queues `ctx.waitUntil()` behavior with a logged warning (`queue.ts`'s `enqueueArticleJob`) —
 large articles may hit the 30s cap again in that mode, but nothing crashes. `deno task setup`
-provisions the queue (`wrangler queues create clipfeed-jobs`, reusing an existing one of that name
-if present) — **run it once, before your first deploy**, since `wrangler deploy` needs the queue to
-already exist to bind `[[queues.producers/consumers]]` to it. Cloudflare Queues is on the Workers
-free plan (10,000 operations/day across reads/writes/deletes, 24h max retention).
+provisions both queues (`wrangler queues create clipfeed-jobs` and `clipfeed-dlq`, reusing existing
+ones of those names if present) — **run it once, before your first deploy**, since `wrangler deploy`
+needs both queues to already exist to bind `[[queues.producers/consumers]]` (including the
+`dead_letter_queue` reference) to them. Cloudflare Queues is on the Workers free plan (10,000
+operations/day across reads/writes/deletes, 24h max retention) — the DLQ's own traffic is normally
+zero, so it doesn't meaningfully add to that budget.
 
 ## Deploy your own (fork)
 
@@ -119,10 +134,10 @@ is tied to a specific account, domain, or Access team.
 
 1. Fork the repo.
 2. `deno run -A npm:wrangler login`, then `deno task setup` — creates (or reuses) your D1 database,
-   KV namespace, and the `clipfeed-jobs` queue (see "Queue-based pipeline execution" below), patches
-   `wrangler.toml` with your real D1/KV ids, and applies migrations to the remote database. It never
-   commits that patch for you; review and commit it yourself. It also prints which of the secrets
-   below are already set, without ever reading or printing their values.
+   KV namespace, and the `clipfeed-jobs`/`clipfeed-dlq` queues (see "Queue-based pipeline execution"
+   below), patches `wrangler.toml` with your real D1/KV ids, and applies migrations to the remote
+   database. It never commits that patch for you; review and commit it yourself. It also prints
+   which of the secrets below are already set, without ever reading or printing their values.
 3. (Optional) Upgrade the LLM mode — ClipFeed already works out of the box on the free Workers AI
    default (see "LLM modes" above). To use a real Claude model instead, set one of:
    - **AI Gateway (recommended)** — gives you usage/cost visibility and lets you rotate or swap the

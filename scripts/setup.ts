@@ -8,6 +8,7 @@ const WRANGLER_TOML_PATH = "wrangler.toml";
 const D1_DB_NAME = "clipfeed";
 const KV_BINDING = "CACHE";
 const QUEUE_NAME = "clipfeed-jobs";
+const DLQ_NAME = "clipfeed-dlq";
 
 interface WranglerResult {
   code: number;
@@ -175,20 +176,20 @@ async function ensureKv(toml: string, created: string[], reused: string[]): Prom
   return patchKvNamespaceId(toml, newId);
 }
 
-async function ensureQueue(created: string[], reused: string[]): Promise<void> {
+async function ensureQueue(name: string, created: string[], reused: string[]): Promise<void> {
   const list = await runWrangler(["queues", "list"]);
-  if (list.code === 0 && queueExistsInList(list.stdout, QUEUE_NAME)) {
-    reused.push(`Queue "${QUEUE_NAME}" already exists`);
+  if (list.code === 0 && queueExistsInList(list.stdout, name)) {
+    reused.push(`Queue "${name}" already exists`);
     return;
   }
 
-  const create = await runWrangler(["queues", "create", QUEUE_NAME]);
+  const create = await runWrangler(["queues", "create", name]);
   if (create.code !== 0) {
-    console.error(`Could not create queue "${QUEUE_NAME}":\n`);
+    console.error(`Could not create queue "${name}":\n`);
     console.error(create.stdout || create.stderr);
     Deno.exit(1);
   }
-  created.push(`Queue "${QUEUE_NAME}"`);
+  created.push(`Queue "${name}"`);
 }
 
 async function applyMigrations(): Promise<void> {
@@ -274,7 +275,12 @@ async function main(): Promise<void> {
   await Deno.writeTextFile(WRANGLER_TOML_PATH, toml);
   console.log("✓ wrangler.toml updated in place (left uncommitted — review before committing)\n");
 
-  await ensureQueue(created, reused);
+  await ensureQueue(QUEUE_NAME, created, reused);
+  // The dead-letter queue (see wrangler.toml's dead_letter_queue on the
+  // main consumer) — same provisioning story, no id/placeholder to patch,
+  // just needs to exist before deploy or `wrangler deploy` fails outright
+  // (Cloudflare validates dead_letter_queue references at deploy time).
+  await ensureQueue(DLQ_NAME, created, reused);
   await applyMigrations();
   console.log();
   await reportSecrets();
