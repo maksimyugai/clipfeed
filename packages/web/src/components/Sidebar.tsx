@@ -15,6 +15,7 @@ export interface SidebarProps {
   tags: TagFacet[];
   activeTag: string | null;
   onTagClick: (tag: string | null) => void;
+  onClearAll: () => void;
   sources: SourceFacet[];
   activeSource: string | null;
   onSourceClick: (source: string | null) => void;
@@ -25,9 +26,9 @@ export interface SidebarProps {
 }
 
 export function TopicPills(
-  { dict, tags, activeTag, onTagClick }: Pick<
+  { dict, tags, activeTag, onTagClick, onClearAll }: Pick<
     SidebarProps,
-    "dict" | "tags" | "activeTag" | "onTagClick"
+    "dict" | "tags" | "activeTag" | "onTagClick" | "onClearAll"
   >,
 ) {
   return (
@@ -36,7 +37,7 @@ export function TopicPills(
         type="button"
         class={`pill${activeTag === null ? " pill--active" : ""}`}
         aria-pressed={activeTag === null}
-        onClick={() => onTagClick(null)}
+        onClick={onClearAll}
       >
         {dict.sidebarAllPill}
       </button>
@@ -78,12 +79,60 @@ export function SourcePills(
   );
 }
 
+// Dismissible chips summarizing the currently active tag/source filters —
+// rendered above the feed so there's always a visible, one-click way back
+// to an unfiltered view without relying on the "все"/"all" pill being in
+// sight (it scrolls out of view in the sidebar, and isn't shown at all on
+// mobile once the filter row is scrolled past). Renders nothing when
+// neither filter is active.
+export interface ActiveFilterChipsProps {
+  activeTag: string | null;
+  activeSource: string | null;
+  onClearTag: () => void;
+  onClearSource: () => void;
+  clearTagAria: string;
+  clearSourceAria: string;
+}
+
+export function ActiveFilterChips(
+  { activeTag, activeSource, onClearTag, onClearSource, clearTagAria, clearSourceAria }:
+    ActiveFilterChipsProps,
+) {
+  if (activeTag === null && activeSource === null) return null;
+
+  return (
+    <div class="active-filters-row">
+      {activeTag !== null && (
+        <button
+          type="button"
+          class="pill pill--active filter-chip"
+          aria-label={clearTagAria}
+          onClick={onClearTag}
+        >
+          {activeTag} <span aria-hidden="true">✕</span>
+        </button>
+      )}
+      {activeSource !== null && (
+        <button
+          type="button"
+          class="source-pill filter-chip"
+          aria-label={clearSourceAria}
+          onClick={onClearSource}
+        >
+          🌐 {activeSource} <span aria-hidden="true">✕</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function Sidebar(
   {
     dict,
     tags,
     activeTag,
     onTagClick,
+    onClearAll,
     sources,
     activeSource,
     onSourceClick,
@@ -96,7 +145,13 @@ export function Sidebar(
   return (
     <aside class="sidebar">
       <div class="sidebar-section">
-        <TopicPills dict={dict} tags={tags} activeTag={activeTag} onTagClick={onTagClick} />
+        <TopicPills
+          dict={dict}
+          tags={tags}
+          activeTag={activeTag}
+          onTagClick={onTagClick}
+          onClearAll={onClearAll}
+        />
       </div>
 
       <div class="sidebar-section">

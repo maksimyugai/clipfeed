@@ -142,13 +142,14 @@ ul {
 }
 
 .search-field {
+  position: relative;
   flex: 1;
   min-width: 0;
 }
 
 .search-input {
   width: 100%;
-  padding: 8px 12px;
+  padding: 8px 32px 8px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--bg);
@@ -158,6 +159,23 @@ ul {
 
 .search-input::placeholder {
   color: var(--mut);
+}
+
+.search-clear {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  border: none;
+  background: none;
+  color: var(--mut);
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px;
+}
+
+.search-clear:hover {
+  color: var(--acc);
 }
 
 .lang-toggle {
@@ -313,6 +331,23 @@ ul {
   background: var(--grad-action);
   color: #fff;
   border-color: transparent;
+}
+
+/* --- Active filter chips (above the feed — see ActiveFilterChips) --- */
+
+.active-filters-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-chip {
+  cursor: pointer;
+}
+
+.filter-chip:hover {
+  opacity: 0.85;
 }
 
 /* --- Sidebar sections --- */

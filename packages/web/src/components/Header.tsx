@@ -9,6 +9,7 @@ export interface HeaderProps {
   onThemeToggle: () => void;
   searchValue: string;
   onSearchChange: (value: string) => void;
+  onSearchClear: () => void;
   onAddClick: () => void;
   isOwner: boolean;
 }
@@ -22,6 +23,7 @@ export function Header(
     onThemeToggle,
     searchValue,
     onSearchChange,
+    onSearchClear,
     onAddClick,
     isOwner,
   }: HeaderProps,
@@ -62,6 +64,16 @@ export function Header(
             onInput={(e) => onSearchChange((e.target as HTMLInputElement).value)}
             aria-label={dict.searchPlaceholder}
           />
+          {searchValue !== "" && (
+            <button
+              type="button"
+              class="search-clear"
+              aria-label={dict.clearSearchAria}
+              onClick={onSearchClear}
+            >
+              ✕
+            </button>
+          )}
         </div>
 
         <div class="lang-toggle" role="group" aria-label="RU/EN">

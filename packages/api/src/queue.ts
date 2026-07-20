@@ -1,9 +1,16 @@
 import "./env.d.ts";
 import type { QueueMessage, QueueNotify } from "@clipfeed/shared/types";
-import { getArticleById } from "./db.ts";
+import { getArticleById, markArticleFailed } from "./db.ts";
 import { runArticlePipeline, runResummarization } from "./pipeline.ts";
 import { editMessageText, readTelegramConfig } from "./telegram-client.ts";
 import { failedText, readySuccessText } from "./telegram-strings.ts";
+
+// Literal queue names from wrangler.toml — batch.queue (see index.ts's
+// `queue` export) always carries the real configured name, and there's no
+// binding that exposes a queue's own name back to code, so matching a
+// hardcoded constant against it is the only option.
+export const MAIN_QUEUE_NAME = "clipfeed-jobs";
+export const DEAD_LETTER_QUEUE_NAME = "clipfeed-dlq";
 
 const PENDING_HTML_TTL_SECONDS = 30 * 60;
 
@@ -100,6 +107,40 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
   }
 }
 
+// Consumer for the "clipfeed-dlq" queue (see wrangler.toml
+// [[queues.consumers]], index.ts's `queue` export) — Cloudflare routes a
+// message here automatically once it exhausts max_retries on the main
+// queue, so this is the backstop closing the "message never reaches a
+// terminal write" gap. Idempotent: an article can already be terminal here
+// (e.g. the pipeline itself wrote 'failed' on the final retry attempt, and
+// only the ack afterward was lost) — re-marking it would clobber a
+// perfectly good 'ready' row or overwrite a real error with this generic
+// one, so both terminal states are left untouched.
+export async function processDeadLetterMessage(env: Env, message: QueueMessage): Promise<void> {
+  const article = await getArticleById(env.DB, message.articleId);
+  if (!article) {
+    console.warn(JSON.stringify({
+      event: "queue_dead_letter_skipped",
+      reason: "article not found",
+      id: message.articleId,
+    }));
+    return;
+  }
+
+  if (article.status === "ready" || article.status === "failed") {
+    console.warn(JSON.stringify({
+      event: "queue_dead_letter_skipped",
+      reason: "already terminal",
+      id: message.articleId,
+      status: article.status,
+    }));
+    return;
+  }
+
+  await markArticleFailed(env.DB, message.articleId, "queue: processing failed after retries");
+  console.warn(JSON.stringify({ event: "queue_dead_letter", articleId: message.articleId }));
+}
+
 // Producer-side dispatch. The intended production path is JOBS.send(): a
 // consumer invocation gets minutes of wall time, unlike ctx.waitUntil()'s
 // hard 30-second cap (the actual cause of "timeout: processing did not
@@ -118,6 +159,11 @@ export async function enqueueArticleJob(
 ): Promise<void> {
   if (env.JOBS) {
     await env.JOBS.send(message);
+    console.log(JSON.stringify({
+      event: "queue_enqueued",
+      articleId: message.articleId,
+      kind: message.kind,
+    }));
     return;
   }
   console.warn("queue not configured — large articles may time out");
