@@ -17,6 +17,19 @@ export function readTelegramConfig(env: Env): TelegramConfig | null {
   return { botToken, webhookSecret, ownerChatId };
 }
 
+// Names only, never values — used by the webhook handler to log which
+// secret(s) are missing when the feature is inactive (see
+// telegram-webhook.ts's warnMissingTelegramSecretsOnce). A webhook
+// registered with Telegram but missing one of these three secrets
+// otherwise 404s on every delivery with zero diagnostic trail.
+export function missingTelegramSecretNames(env: Env): string[] {
+  const missing: string[] = [];
+  if (!(env.TELEGRAM_BOT_TOKEN ?? "").trim()) missing.push("TELEGRAM_BOT_TOKEN");
+  if (!(env.TELEGRAM_WEBHOOK_SECRET ?? "").trim()) missing.push("TELEGRAM_WEBHOOK_SECRET");
+  if (!(env.TELEGRAM_OWNER_CHAT_ID ?? "").trim()) missing.push("TELEGRAM_OWNER_CHAT_ID");
+  return missing;
+}
+
 export interface TelegramMessageEntity {
   type: string;
   offset: number;
@@ -121,6 +134,14 @@ export async function setWebhook(
 
 export async function getWebhookInfo(botToken: string): Promise<WebhookInfo> {
   return await callTelegram<WebhookInfo>(botToken, "getWebhookInfo", {});
+}
+
+// Used by scripts/telegram-setup.ts's --delete-webhook flag: Telegram
+// forbids getUpdates (long-polling) while a webhook is registered, so
+// discovering a chat id via --get-chat-id needs the webhook temporarily
+// gone. Re-running setup afterward re-registers it.
+export async function deleteWebhook(botToken: string): Promise<boolean> {
+  return await callTelegram<boolean>(botToken, "deleteWebhook", {});
 }
 
 export async function getUpdates(botToken: string): Promise<TelegramUpdate[]> {

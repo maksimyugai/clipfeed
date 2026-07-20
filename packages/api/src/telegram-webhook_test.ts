@@ -4,6 +4,7 @@ import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { FakeQueue } from "./testing/fake_queue.ts";
 import type { TelegramMessage, TelegramUpdate } from "./telegram-client.ts";
+import { resetMissingTelegramSecretsWarningForTest } from "./telegram-webhook.ts";
 
 const OWNER_CHAT_ID = "999";
 const OTHER_CHAT_ID = "555";
@@ -82,6 +83,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     ANTHROPIC_API_KEY: "test-key",
     TELEGRAM_BOT_TOKEN: "123:abc",
@@ -207,6 +209,73 @@ Deno.test("webhook: 404 when the Telegram feature isn't configured", async () =>
     const res = await webhookRequest(env, ctx, messageUpdate({ text: "/help" }));
     assertEquals(res.status, 404);
     assertEquals(stub.telegramCalls.length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+// --- missing-secrets warning: the silent-404 debugging trap this task fixes ---
+
+function withCapturedWarnings<T>(
+  fn: () => T | Promise<T>,
+): Promise<{ result: T; warnings: unknown[][] }> {
+  const original = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  return Promise.resolve(fn()).then((result) => {
+    console.warn = original;
+    return { result, warnings };
+  }, (err) => {
+    console.warn = original;
+    throw err;
+  });
+}
+
+Deno.test("webhook: missing secrets log a warning listing exactly which secret names are absent (never values)", async () => {
+  resetMissingTelegramSecretsWarningForTest();
+  const stub = stubFetch();
+  try {
+    const env = makeEnv({
+      TELEGRAM_BOT_TOKEN: undefined,
+      TELEGRAM_WEBHOOK_SECRET: "configured-secret",
+      TELEGRAM_OWNER_CHAT_ID: undefined,
+    });
+    const { ctx } = makeExecutionContext();
+    const { result: res, warnings } = await withCapturedWarnings(() =>
+      webhookRequest(env, ctx, messageUpdate({ text: "/help" }))
+    );
+    assertEquals(res.status, 404);
+    assertEquals(warnings.length, 1);
+    const logged = JSON.parse(String(warnings[0][0]));
+    assertEquals(logged.event, "telegram_webhook_inactive_missing_secrets");
+    assertEquals(logged.missing, ["TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_CHAT_ID"]);
+    assertEquals(JSON.stringify(logged).includes("configured-secret"), false);
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("webhook: the missing-secrets warning fires only once per isolate, not on every request", async () => {
+  resetMissingTelegramSecretsWarningForTest();
+  const stub = stubFetch();
+  try {
+    const env = makeEnv({
+      TELEGRAM_BOT_TOKEN: undefined,
+      TELEGRAM_WEBHOOK_SECRET: undefined,
+      TELEGRAM_OWNER_CHAT_ID: undefined,
+    });
+    const { ctx } = makeExecutionContext();
+    const { warnings: firstWarnings } = await withCapturedWarnings(() =>
+      webhookRequest(env, ctx, messageUpdate({ text: "/help" }))
+    );
+    assertEquals(firstWarnings.length, 1);
+
+    const { warnings: secondWarnings } = await withCapturedWarnings(() =>
+      webhookRequest(env, ctx, messageUpdate({ text: "/help" }))
+    );
+    assertEquals(secondWarnings.length, 0);
   } finally {
     stub.restore();
   }

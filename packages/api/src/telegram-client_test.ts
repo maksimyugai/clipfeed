@@ -1,6 +1,6 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
-import { readTelegramConfig } from "./telegram-client.ts";
+import { missingTelegramSecretNames, readTelegramConfig } from "./telegram-client.ts";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -14,6 +14,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     PENDING_TIMEOUT_MIN: 10,
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     PUBLIC_BASE_URL: "",
     ...overrides,
@@ -55,4 +56,42 @@ Deno.test("readTelegramConfig: returns trimmed config when all three are set", (
     TELEGRAM_OWNER_CHAT_ID: " 42 ",
   }));
   assertEquals(config, { botToken: "123:abc", webhookSecret: "secret", ownerChatId: "42" });
+});
+
+// --- missingTelegramSecretNames: names only, used to warn on a silently-404ing webhook ---
+
+Deno.test("missingTelegramSecretNames: all three missing when none are set", () => {
+  assertEquals(
+    missingTelegramSecretNames(makeEnv()),
+    ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET", "TELEGRAM_OWNER_CHAT_ID"],
+  );
+});
+
+Deno.test("missingTelegramSecretNames: lists exactly the ones that are unset, in a fixed order", () => {
+  assertEquals(
+    missingTelegramSecretNames(makeEnv({ TELEGRAM_WEBHOOK_SECRET: "secret" })),
+    ["TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_CHAT_ID"],
+  );
+});
+
+Deno.test("missingTelegramSecretNames: whitespace-only counts as missing", () => {
+  assertEquals(
+    missingTelegramSecretNames(makeEnv({
+      TELEGRAM_BOT_TOKEN: "123:abc",
+      TELEGRAM_WEBHOOK_SECRET: "   ",
+      TELEGRAM_OWNER_CHAT_ID: "42",
+    })),
+    ["TELEGRAM_WEBHOOK_SECRET"],
+  );
+});
+
+Deno.test("missingTelegramSecretNames: empty array when all three are set", () => {
+  assertEquals(
+    missingTelegramSecretNames(makeEnv({
+      TELEGRAM_BOT_TOKEN: "123:abc",
+      TELEGRAM_WEBHOOK_SECRET: "secret",
+      TELEGRAM_OWNER_CHAT_ID: "42",
+    })),
+    [],
+  );
 });
