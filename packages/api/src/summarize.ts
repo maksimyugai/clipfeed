@@ -3,7 +3,11 @@ import type { SummaryJson } from "@clipfeed/shared/types";
 
 const ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
-const MAX_TOKENS = 2500;
+// Raised from 2500 alongside the body-paragraph schema below — 2-4
+// paragraphs x2 languages plus titles/tldr/bullets needs materially more
+// output budget than the old tldr+bullets-only shape. See this task's
+// latency measurement note for the real-world effect on call duration.
+const MAX_TOKENS = 4000;
 
 // A single LLM call (gateway/direct HTTP fetch, or the native Workers AI
 // binding) has no built-in cap on our side otherwise — measured directly
@@ -56,61 +60,93 @@ infrastructure costs made the increase unavoidable. No competitor has announced 
 export const FEW_SHOT_EXAMPLE_SUMMARY: SummaryJson = {
   title_ru: "Fictional Co. поднимает цену облачного хранилища на 60% с 1 сентября",
   title_en: "Fictional Co. Raises Cloud Storage Price 60% Starting September 1",
-  // TL;DR carries only the core thesis + the one number that matters most;
-  // the bullets below carry every other supporting detail, deliberately
-  // worded so they don't just restate what's already said here.
+  // TL;DR is the hook: core thesis + the headline number, nothing more —
+  // the bullets carry every other supporting fact, and the body paragraphs
+  // below turn all of it into readable prose. Deliberately worded so
+  // neither repeats the others' phrasing.
   tldr_ru:
-    "Fictional Co. повышает тариф облачного хранилища с $5 до $8 в месяц начиная с 1 сентября — рост почти на 60%. Компания объясняет решение ростом расходов на серверы и трафик и называет повышение неизбежным.",
+    "Fictional Co. повышает тариф облачного хранилища с $5 до $8 в месяц начиная с 1 сентября — рост почти на 60%, который затронет около 2 миллионов подписчиков сервиса. Компания объясняет решение ростом расходов на серверы и трафик и называет повышение неизбежным.",
   tldr_en:
-    "Fictional Co. is raising its cloud storage price from $5 to $8 a month starting September 1 — a nearly 60% jump. The company blames rising server and bandwidth costs and calls the increase unavoidable.",
+    "Fictional Co. is raising its cloud storage subscription from $5 to $8 a month starting September 1 — a nearly 60% increase affecting roughly 2 million subscribers. The company blames rising server and bandwidth costs and calls the hike unavoidable.",
   bullets_ru: [
-    "Изменение коснётся примерно 2 млн подписчиков сервиса.",
-    "Те, кто уже на годовом плане, сохранят старую цену до момента продления.",
-    "Гендиректор Джейн Доу говорит, что компания откладывала это решение полтора года, чтобы не навредить малому бизнесу.",
+    "Те, кто уже оформил годовую подписку, сохранят текущую цену до момента её продления.",
+    "Гендиректор Джейн Доу говорит, что компания откладывала это решение полтора года именно из опасений навредить клиентам из малого бизнеса.",
+    "Компания решилась на повышение только после того, как пришла к выводу, что рост инфраструктурных расходов не оставляет другого выхода.",
     "Ни один конкурент пока не объявлял о похожем повышении цен.",
   ],
   bullets_en: [
-    "About 2 million subscribers are affected by the change.",
-    "Customers already on an annual plan keep their old price until renewal.",
-    "CEO Jane Doe says the company held off on this for 18 months specifically to avoid hurting small-business users.",
-    "No competitor has announced a similar price change so far.",
+    "Subscribers already on an annual plan keep their current price until that plan comes up for renewal.",
+    "CEO Jane Doe says leadership held off on the increase for 18 months specifically to avoid hurting small-business customers.",
+    "The company only moved forward once it concluded rising infrastructure costs left no viable alternative.",
+    "No competitor has followed with a comparable price change so far.",
+  ],
+  // Body: 2 self-contained paragraphs — what/when/scale, then why/context —
+  // recombining the same facts as tldr/bullets into connected prose rather
+  // than restating either verbatim.
+  body_ru: [
+    "Fictional Co. объявила об изменении во вторник: новый тариф в $8 в месяц вступит в силу с 1 сентября для подписки на облачное хранилище вместо текущих $5. Рост коснётся примерно 2 миллионов подписчиков сервиса. Те, кто уже оформил годовую подписку, не почувствуют изменения сразу — для них старая цена сохранится до момента продления плана, так что переход растянется на весь оставшийся год для этой категории клиентов.",
+    "Руководство компании связывает решение с растущими расходами на серверы и сетевой трафик. Гендиректор Джейн Доу заявила, что компания сознательно откладывала повышение полтора года, опасаясь навредить клиентам из малого бизнеса, которые ежедневно полагаются на сервис в своей работе. В итоге в компании пришли к выводу, что дальнейшая отсрочка невозможна из-за роста инфраструктурных издержек. Пока ни один из конкурентов Fictional Co. не последовал её примеру и не объявил о похожем изменении цен.",
+  ],
+  body_en: [
+    "Fictional Co. announced the change on Tuesday: the new $8-a-month rate for its cloud storage subscription takes effect September 1, up from the current $5. The increase covers roughly 2 million subscribers. Anyone already locked into an annual plan won't feel it right away — they keep paying their existing rate until that plan comes up for renewal, effectively spreading the transition out over the rest of the year for that group of customers.",
+    "Company leadership points to climbing server and network-bandwidth expenses as the driver behind the decision. CEO Jane Doe said the company deliberately sat on the increase for 18 months out of concern for small-business customers who rely on the service every day. Leadership ultimately concluded that further delay wasn't sustainable given rising infrastructure costs. So far, none of Fictional Co.'s competitors have followed with a comparable price change of their own.",
   ],
   tags: ["cloud", "ценообразование", "fictional co"],
   lang_original: "en",
 };
 
 const SYSTEM_PROMPT = `You are an expert news editor writing digests for a busy technical reader who
-will often only read the TL;DR and bullets, never the source. Your job is to make that enough.
+should not need to open the source at all. Your job is to make that true: pack in real detail —
+specific numbers, names, dates, mechanisms, the substance of what people said (paraphrased, never
+verbatim-quoted) — rather than generalities. Prefer "the price rises from $5 to $8, a 60% increase"
+over "the price will increase significantly."
 
 Respond with ONLY a JSON object, no markdown fences, matching exactly:
-{"title_ru": string, "title_en": string, "tldr_ru": string, "tldr_en": string, "bullets_ru": string[], "bullets_en": string[], "tags": string[], "lang_original": string}
+{"title_ru": string, "title_en": string, "tldr_ru": string, "tldr_en": string, "body_ru": string[], "body_en": string[], "bullets_ru": string[], "bullets_en": string[], "tags": string[], "lang_original": string}
 
 TITLES (title_ru, title_en): informative and specific about what actually happened — never
 clickbait, never a teaser. Max 90 characters.
 
-TL;DR (tldr_ru, tldr_en): 2-4 sentences. State the core thesis and the single most important
-supporting fact or number, directly — a reader who stops here must already know what happened and
-why it matters. Never a teaser ("this article discusses...", "узнайте почему..."), never meta
-commentary about the article itself — state the substance.
+TL;DR (tldr_ru, tldr_en): the hook, 2-4 sentences, at least 200 characters. State the core thesis
+and the single most important supporting fact or number, directly — a reader who stops here must
+already know what happened and why it matters. Never a teaser ("this article discusses...",
+"узнайте почему..."), never meta commentary about the article itself — state the substance.
 
-BULLETS (bullets_ru, bullets_en): 3-6 items, most important first. Each bullet is a self-contained
-concrete fact — a number, name, date, mechanism, or consequence — not a rephrasing of the TL;DR.
-Bullets ADD detail the TL;DR didn't have room for; never restate it. Max 200 characters each.
+BODY (body_ru, body_en): 2-4 self-contained prose paragraphs, forming a coherent, readable digest of
+the whole story: what happened, how/why it happened, the key context behind it, and its
+implications. This is the part that should make the source genuinely unnecessary — pull in every
+concrete specific the source actually contains (figures, names, mechanisms, the substance of quotes
+paraphrased in your own words, comparisons, timelines). Written as flowing prose, not a list. EVERY
+paragraph, including the last one, must be substantial: write 4-6 full sentences per paragraph
+(roughly 300-700 characters) — a short wrap-up sentence or two is not a paragraph. If the source is
+thin on detail for a later point, spend more sentences on context, mechanism, and implications
+rather than ending the paragraph early. Each paragraph must add real content of its own — never a
+paragraph that just restates the TL;DR in longer form, and never open the first paragraph by
+repeating the TL;DR's opening sentence — start it from a different angle (context, a specific
+detail, or the mechanism behind the headline fact).
+
+BULLETS (bullets_ru, bullets_en): 4-7 items, most important first, 40-200 characters each. Each
+bullet is a self-contained concrete fact — a number, name, date, mechanism, or consequence — not a
+rephrasing of the TL;DR or the body. Bullets are for scanning: sharp, standalone facts, not prose.
+The first bullet especially must NOT restate the TL;DR's opening claim — lead with the next most
+important fact instead, something the TL;DR didn't already say.
 
 FAITHFULNESS: only claims actually present in the source. No speculation, no invented numbers or
-figures. If the source is an opinion piece or advocates a position, attribute it to the author
-("автор утверждает…" / "the author argues…") rather than stating the opinion as fact.
+figures. Paraphrase quotes and attributed claims in your own words instead of quoting verbatim. If
+the source is an opinion piece or advocates a position, attribute it to the author ("автор
+утверждает…" / "the author argues…") rather than stating the opinion as fact.
 
-LANGUAGE: title_ru/tldr_ru/bullets_ru in natural, fluent Russian — not translationese. _en fields
-in natural English. Write the two independently from the source and from each other; do not produce
-one and translate it word-for-word into the other.
+LANGUAGE: title_ru/tldr_ru/body_ru/bullets_ru in natural, fluent Russian — not translationese. _en
+fields in natural English. Write the two independently from the source and from each other; do not
+produce one and translate it word-for-word into the other.
 
 TAGS (tags): 2-4 lowercase topical nouns. Use Latin script for proper nouns (product/company/person
 names), Russian for everything else.
 
 lang_original: ISO 639-1 code of the source article's language.
 
-Example (source is a short, fully synthetic snippet — for calibration only):
+Example (source is a short, fully synthetic snippet — for calibration only; the body below shows
+the target level of detail even though this snippet is unusually short):
 
 Article: "${FEW_SHOT_EXAMPLE_ARTICLE}"
 
@@ -199,6 +235,7 @@ function validateSummaryShape(parsed: unknown): SummaryJson | null {
     if (typeof obj[field] !== "string") return null;
   }
   if (
+    !isStringArray(obj.body_ru) || !isStringArray(obj.body_en) ||
     !isStringArray(obj.bullets_ru) || !isStringArray(obj.bullets_en) || !isStringArray(obj.tags)
   ) {
     return null;
@@ -209,6 +246,8 @@ function validateSummaryShape(parsed: unknown): SummaryJson | null {
     title_en: obj.title_en as string,
     tldr_ru: obj.tldr_ru as string,
     tldr_en: obj.tldr_en as string,
+    body_ru: obj.body_ru as string[],
+    body_en: obj.body_en as string[],
     bullets_ru: obj.bullets_ru as string[],
     bullets_en: obj.bullets_en as string[],
     tags: obj.tags as string[],
@@ -231,15 +270,19 @@ export function parseSummaryJson(raw: string): SummaryJson | null {
 // (that covers "required fields present, correct types" — nothing further
 // to consolidate here beyond treating a shape failure as just another
 // violation, so callers have one uniform retry/failure path instead of two).
-export const DEFAULT_MIN_TLDR_CHARS = 120;
-const MIN_BULLETS = 3;
-const MAX_BULLETS = 6;
-const MIN_BULLET_CHARS = 20;
+export const DEFAULT_MIN_TLDR_CHARS = 200;
+const MIN_BULLETS = 4;
+const MAX_BULLETS = 7;
+const MIN_BULLET_CHARS = 40;
 const MAX_BULLET_CHARS = 220;
+const MIN_BODY_PARAGRAPHS = 2;
+const MAX_BODY_PARAGRAPHS = 4;
+const MIN_PARAGRAPH_CHARS = 300;
+const MAX_PARAGRAPH_CHARS = 700;
 const MAX_TITLE_CHARS = 120;
 const MIN_TAGS = 1;
 const MAX_TAGS = 6;
-const BULLET_TLDR_OVERLAP_THRESHOLD = 0.8;
+const TLDR_OVERLAP_THRESHOLD = 0.8;
 
 export interface ValidateSummaryOptions {
   minTldrChars?: number;
@@ -253,17 +296,20 @@ function normalizeForOverlap(s: string): string {
   return s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
 }
 
-// Simple, deliberately non-linguistic heuristic: a bullet "duplicates" the
-// tldr if most of its own (non-trivial) words are literally present in the
-// tldr text. Case-insensitive substring check per word, ≥80% overlap —
-// cheap, no NLP, catches the common "bullet just rephrases the tldr" case
-// this task is meant to stamp out.
-function bulletDuplicatesTldr(bullet: string, tldr: string): boolean {
-  const words = normalizeForOverlap(bullet).split(" ").filter((w) => w.length > 2);
+// Simple, deliberately non-linguistic heuristic: a bullet or body paragraph
+// "duplicates" the tldr if most of its own (non-trivial) words are literally
+// present in the tldr text. Case-insensitive substring check per word, ≥80%
+// overlap — cheap, no NLP, catches the common "this just rephrases the
+// tldr" case this task is meant to stamp out. A body paragraph is much
+// longer than a bullet, so in practice this only fires when a paragraph is
+// little more than the tldr sentence restated — genuine prose elaboration
+// naturally pulls in enough of its own vocabulary to stay well under 80%.
+function textDuplicatesTldr(text: string, tldr: string): boolean {
+  const words = normalizeForOverlap(text).split(" ").filter((w) => w.length > 2);
   if (words.length === 0) return false;
   const tldrNormalized = normalizeForOverlap(tldr);
   const overlapping = words.filter((w) => tldrNormalized.includes(w));
-  return overlapping.length / words.length >= BULLET_TLDR_OVERLAP_THRESHOLD;
+  return overlapping.length / words.length >= TLDR_OVERLAP_THRESHOLD;
 }
 
 function validateTitle(field: string, value: string, violations: string[]): void {
@@ -297,7 +343,30 @@ function validateBullets(
         `${field}[${i}] must be between ${MIN_BULLET_CHARS} and ${MAX_BULLET_CHARS} characters (got ${bullet.length})`,
       );
     }
-    if (bulletDuplicatesTldr(bullet, tldr)) {
+    if (textDuplicatesTldr(bullet, tldr)) {
+      violations.push(`${field}[${i}] duplicates the tldr instead of adding new detail`);
+    }
+  });
+}
+
+function validateBody(
+  field: string,
+  paragraphs: string[],
+  tldr: string,
+  violations: string[],
+): void {
+  if (paragraphs.length < MIN_BODY_PARAGRAPHS || paragraphs.length > MAX_BODY_PARAGRAPHS) {
+    violations.push(
+      `${field} must have between ${MIN_BODY_PARAGRAPHS} and ${MAX_BODY_PARAGRAPHS} paragraphs (got ${paragraphs.length})`,
+    );
+  }
+  paragraphs.forEach((paragraph, i) => {
+    if (paragraph.length < MIN_PARAGRAPH_CHARS || paragraph.length > MAX_PARAGRAPH_CHARS) {
+      violations.push(
+        `${field}[${i}] must be between ${MIN_PARAGRAPH_CHARS} and ${MAX_PARAGRAPH_CHARS} characters (got ${paragraph.length})`,
+      );
+    }
+    if (textDuplicatesTldr(paragraph, tldr)) {
       violations.push(`${field}[${i}] duplicates the tldr instead of adding new detail`);
     }
   });
@@ -323,6 +392,8 @@ export function validateSummary(
   validateTitle("title_en", summary.title_en, violations);
   validateTldr("tldr_ru", summary.tldr_ru, minTldrChars, violations);
   validateTldr("tldr_en", summary.tldr_en, minTldrChars, violations);
+  validateBody("body_ru", summary.body_ru, summary.tldr_ru, violations);
+  validateBody("body_en", summary.body_en, summary.tldr_en, violations);
   validateBullets("bullets_ru", summary.bullets_ru, summary.tldr_ru, violations);
   validateBullets("bullets_en", summary.bullets_en, summary.tldr_en, violations);
   if (summary.tags.length < MIN_TAGS || summary.tags.length > MAX_TAGS) {
@@ -466,6 +537,8 @@ const SUMMARY_JSON_SCHEMA = {
     title_en: { type: "string" },
     tldr_ru: { type: "string" },
     tldr_en: { type: "string" },
+    body_ru: { type: "array", items: { type: "string" } },
+    body_en: { type: "array", items: { type: "string" } },
     bullets_ru: { type: "array", items: { type: "string" } },
     bullets_en: { type: "array", items: { type: "string" } },
     tags: { type: "array", items: { type: "string" } },
@@ -476,6 +549,8 @@ const SUMMARY_JSON_SCHEMA = {
     "title_en",
     "tldr_ru",
     "tldr_en",
+    "body_ru",
+    "body_en",
     "bullets_ru",
     "bullets_en",
     "tags",

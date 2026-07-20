@@ -116,3 +116,29 @@ Deno.test("buildCandidatePool: empty input yields an empty pool without querying
   const pool = await buildCandidatePool(db, [], NOW);
   assertEquals(pool, []);
 });
+
+// --- thin/mirror host filter (link-posts, not articles) ---
+
+Deno.test("buildCandidatePool: drops candidates on known thin/mirror hosts, keeps everything else", async () => {
+  const db = new FakeD1();
+  const thin = [
+    makeCandidate({ id: "xcancel", url: "https://xcancel.com/someuser/status/123" }),
+    makeCandidate({ id: "nitter", url: "https://nitter.net/someuser/status/456" }),
+    makeCandidate({ id: "twitter", url: "https://twitter.com/someuser/status/789" }),
+    makeCandidate({ id: "x", url: "https://x.com/someuser/status/321" }),
+    makeCandidate({ id: "tco", url: "https://t.co/abc123" }),
+    // www-prefixed variant of a denylisted host is still caught.
+    makeCandidate({ id: "www-x", url: "https://www.x.com/someuser/status/654" }),
+  ];
+  const real = makeCandidate({ id: "real", url: "https://arstechnica.com/article" });
+
+  const pool = await buildCandidatePool(db, [...thin, real], NOW);
+  assertEquals(pool.map((c) => c.id), ["real"]);
+});
+
+Deno.test("buildCandidatePool: a subdomain of a denylisted host is not caught (exact-host match only)", async () => {
+  const db = new FakeD1();
+  const subdomain = makeCandidate({ id: "sub", url: "https://blog.x.com/some-post" });
+  const pool = await buildCandidatePool(db, [subdomain], NOW);
+  assertEquals(pool.map((c) => c.id), ["sub"]);
+});

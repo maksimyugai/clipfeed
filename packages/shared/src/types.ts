@@ -1,11 +1,21 @@
 export type ArticleStatus = "pending" | "ready" | "failed";
 export type AddedVia = "extension" | "manual" | "agent" | "telegram";
 
+// body_ru/body_en: 2-4 self-contained prose paragraphs (what happened,
+// how/why, key context, implications) — the readable digest a reader can
+// stop at instead of opening the source. Required for every NEW summary
+// (see validateSummary in summarize.ts), but rows saved before this field
+// existed have no body_ru/body_en in their stored JSON at all — callers
+// reading summary_json back out of D1 must not assume these arrays are
+// present (see selectSummaryFields in packages/web/src/lib/summaryFields.ts
+// for the defensive read); there's no migration backfilling old rows.
 export interface SummaryJson {
   title_ru: string;
   title_en: string;
   tldr_ru: string;
   tldr_en: string;
+  body_ru: string[];
+  body_en: string[];
   bullets_ru: string[];
   bullets_en: string[];
   tags: string[];

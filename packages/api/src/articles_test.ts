@@ -16,26 +16,42 @@ const VALID_SUMMARY = {
   title_ru: "Заголовок",
   title_en: "Example Title",
   tldr_ru:
-    "Кратко. Компания повысила стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик.",
+    "Кратко. Компания повысила стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса по всему миру.",
   tldr_en:
-    "Short summary. The company raised its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs.",
+    "Short summary. The company raised its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers worldwide.",
+  body_ru: [
+    "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
+    "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
+  ],
+  body_en: [
+    "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
+    "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
+  ],
   bullets_ru: [
-    "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
-    "Годовые подписчики сохранят текущую цену до продления.",
-    "Компания откладывала повышение полтора года.",
+    "Цена вырастет с $5 до $8 в месяц — рост почти на 60% для новых платежей.",
+    "Годовые подписчики сохранят текущую цену до момента продления плана.",
+    "Компания откладывала повышение полтора года, опасаясь навредить малому бизнесу.",
+    "Рост издержек на серверы стал основной причиной, которую назвала компания.",
   ],
   bullets_en: [
-    "Point 1 covers pricing.",
-    "Point 2 covers rollout timing.",
-    "Point 3 covers scope.",
+    "Point 1 covers pricing: the new rate is nearly 60% higher than before.",
+    "Point 2 covers rollout timing: annual subscribers get a grace period.",
+    "Point 3 covers scope: the change applies to subscribers everywhere.",
+    "Point 4 covers the stated reason: rising server and bandwidth costs.",
   ],
   tags: ["technology"],
   lang_original: "en",
 };
 
+// Long enough that extraction clears pipeline.ts's MIN_EXTRACTED_TEXT_CHARS
+// (300) guard.
 const ARTICLE_HTML = "<html><head><title>Example</title></head><body><article><h1>Example</h1>" +
-  "<p>Hello world, this is the first paragraph of example content.</p>" +
-  "<p>Here is a second paragraph with more detail to summarize.</p></article></body></html>";
+  "<p>Hello world, this is the first paragraph of example content, with enough extra words to " +
+  "comfortably clear the minimum extraction length used by the pipeline's insufficient-text " +
+  "guard in tests.</p>" +
+  "<p>Here is a second paragraph with more detail to summarize, padded a little further so the " +
+  "combined extracted text safely stays well above that threshold even after Readability trims " +
+  "whitespace.</p></article></body></html>";
 
 // A second, distinct compliant summary — used to prove a resummarize call
 // actually produced NEW content, not just re-persisted the old one.
@@ -43,18 +59,28 @@ const RESUMMARIZED_SUMMARY = {
   title_ru: "Обновлённый заголовок",
   title_en: "Updated Title",
   tldr_ru:
-    "Обновлённый пересказ. После повторного анализа компания уточнила детали повышения цены подписки и сроки перехода на новый тариф.",
+    "Обновлённый пересказ. После повторного анализа компания уточнила детали повышения цены подписки и сроки перехода на новый тариф для всех категорий клиентов сервиса по всему миру, включая точную дату и условия перехода.",
   tldr_en:
-    "Updated summary. After a fresh pass, the company clarified the pricing change details and the rollout timeline for the new tier.",
+    "Updated summary. After a fresh pass, the company clarified the pricing change details and the rollout timeline for the new tier across every customer segment it serves worldwide, including the exact effective date and terms.",
+  body_ru: [
+    "После повторного анализа компания опубликовала уточнённые детали изменения цены подписки, включая точную дату вступления в силу и переходные условия для уже действующих клиентов сервиса по всем регионам присутствия, где он предлагается пользователям на регулярной основе уже несколько лет подряд без существенных перерывов в обслуживании.",
+    "Обновлённый список затронутых регионов и деталей переходного периода призван снять оставшиеся вопросы у подписчиков, которые ранее жаловались на нехватку конкретики в первом объявлении о повышении цены на сервис и его условиях, а также на отсутствие ясности по срокам вступления изменений в силу и по итоговой стоимости.",
+  ],
+  body_en: [
+    "After a fresh pass over the announcement, the company published clarified details about the pricing change, including the exact effective date and transition terms for existing customers of the service across every region where it's regularly offered to users, some of whom have subscribed for several years already.",
+    "The updated list of affected regions and transition-period details is meant to resolve the remaining questions subscribers had raised about the lack of specifics in the original price-increase announcement for the service and its terms, along with unclear timing on when changes would actually take effect.",
+  ],
   bullets_ru: [
-    "Уточнена дата вступления изменений в силу.",
-    "Добавлены детали о переходном периоде для действующих клиентов.",
-    "Обновлён список затронутых регионов.",
+    "Уточнена дата вступления изменений в силу для всех регионов присутствия.",
+    "Добавлены детали о переходном периоде для действующих клиентов сервиса.",
+    "Обновлён список затронутых регионов с учётом обратной связи от подписчиков.",
+    "Компания подтвердила, что тарифы для новых клиентов останутся без изменений.",
   ],
   bullets_en: [
-    "The effective date was clarified.",
-    "Added detail on the transition period for existing customers.",
-    "Updated the list of affected regions.",
+    "The effective date was clarified across every region where the service operates.",
+    "Added detail on the transition period for existing customers of the service.",
+    "Updated the list of affected regions based on feedback from subscribers.",
+    "The company confirmed pricing for brand-new customers remains unchanged.",
   ],
   tags: ["technology", "pricing"],
   lang_original: "en",

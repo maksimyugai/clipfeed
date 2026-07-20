@@ -211,6 +211,11 @@ export function ArticleCard(props: ArticleCardProps) {
               <span class="tldr-label">{dict.tldrLabel}</span> {fields.tldr}
             </p>
           )}
+          {fields.body.length > 0 && (
+            <div class="card-body">
+              {fields.body.map((paragraph, i) => <p key={i}>{paragraph}</p>)}
+            </div>
+          )}
           {fields.bullets.length > 0 && (
             <ul class="bullet-list">
               {fields.bullets.map((bullet, i) => <li key={i}>{bullet}</li>)}

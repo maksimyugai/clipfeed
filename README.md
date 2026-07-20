@@ -380,6 +380,13 @@ Add, remove, or repoint entries freely; a feed that starts returning errors is l
 for that run, never breaks the others. There's no dedicated test-a-feed command — the quickest way
 to check a new URL works is `POST /api/admin/agent/run` (see below) and watch the logs.
 
+Candidates whose URL host is a known thin/mirror host — a Twitter/X mirror or link shortener
+(`xcancel.com`, `nitter.net`, `twitter.com`, `x.com`, `t.co`) — are dropped in the pool-building
+stage before ranking even sees them: those pages are link-posts, not articles, and yield ~0 chars of
+real extractable text (see `agent-pool.ts`'s `THIN_HOST_DENYLIST`, extend it if a new thin host
+shows up in practice). Most Hacker News stories link to real articles, so this rarely shrinks the
+pool.
+
 ### Interests (`INTEREST_TOPICS`)
 
 One `[vars]` string — free text describing what you want surfaced, sent straight into the ranking
