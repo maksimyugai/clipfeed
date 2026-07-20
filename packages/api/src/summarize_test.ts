@@ -2,11 +2,14 @@ import "./env.d.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   buildAnthropicRequest,
+  buildSystemPrompt,
   callLlm,
   FEW_SHOT_EXAMPLE_SUMMARY,
   parseSummaryJson,
   parseWorkersAiResult,
+  RELAXED_PROFILE,
   renderSummaryMarkdown,
+  STRICT_PROFILE,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
   validateSummary,
@@ -1050,13 +1053,112 @@ Deno.test("validateSummary: 1 and 6 tags are both fine (boundaries)", () => {
   );
 });
 
-Deno.test("validateSummary: minTldrChars option lowers the bar (mode-aware threshold)", () => {
-  const shortTldrSummary = makeValidSummary({
-    tldr_ru: "Компания подняла цену подписки с $5 до $8 в этом месяце.", // ~58 chars
-    tldr_en: "The company raised its subscription price from $5 to $8.", // ~59 chars
-  });
-  assertEquals(validateSummary(shortTldrSummary).ok, false);
-  assertEquals(validateSummary(shortTldrSummary, { minTldrChars: 50 }).ok, true);
+Deno.test("validateSummary: RELAXED profile lowers the tldr bar relative to STRICT", () => {
+  // 150-199 chars: fails STRICT (>=200) but clears RELAXED (>=150).
+  const midLengthTldr = "x".repeat(180);
+  const summary = makeValidSummary({ tldr_ru: midLengthTldr, tldr_en: midLengthTldr });
+  assertEquals(validateSummary(summary, STRICT_PROFILE).ok, false);
+  assertEquals(validateSummary(summary, RELAXED_PROFILE).ok, true);
+});
+
+Deno.test("validateSummary: profile defaults to STRICT when omitted", () => {
+  const midLengthTldr = "x".repeat(180);
+  const summary = makeValidSummary({ tldr_ru: midLengthTldr, tldr_en: midLengthTldr });
+  assertEquals(validateSummary(summary).ok, validateSummary(summary, STRICT_PROFILE).ok);
+});
+
+// --- RELAXED profile boundaries (workers-ai) ---
+
+Deno.test("validateSummary (RELAXED): tldr at exactly 150 chars is fine (boundary)", () => {
+  const tldr = "x".repeat(150);
+  const result = validateSummary(
+    makeValidSummary({ tldr_ru: tldr, tldr_en: tldr }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(result.ok, true);
+});
+
+Deno.test("validateSummary (RELAXED): tldr at 149 chars is a violation", () => {
+  const tldr = "x".repeat(149);
+  const result = validateSummary(
+    makeValidSummary({ tldr_ru: tldr, tldr_en: tldr }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(result.ok, false);
+});
+
+Deno.test("validateSummary (RELAXED): 3 bullets is fine, 2 is a violation (boundary)", () => {
+  const base = makeValidSummary();
+  const threeBullets = validateSummary(
+    makeValidSummary({ bullets_en: base.bullets_en.slice(0, 3) }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(threeBullets.ok, true);
+
+  const twoBullets = validateSummary(
+    makeValidSummary({ bullets_en: base.bullets_en.slice(0, 2) }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(twoBullets.ok, false);
+});
+
+Deno.test("validateSummary (RELAXED): a 30-char bullet is fine, 29 chars is a violation (boundary)", () => {
+  const base = makeValidSummary();
+  const thirty = validateSummary(
+    makeValidSummary({ bullets_en: ["x".repeat(30), ...base.bullets_en.slice(1)] }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(thirty.ok, true);
+
+  const twentyNine = validateSummary(
+    makeValidSummary({ bullets_en: ["x".repeat(29), ...base.bullets_en.slice(1)] }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(twentyNine.ok, false);
+});
+
+Deno.test("validateSummary (RELAXED): 6 body paragraphs is fine, 7 is a violation (boundary)", () => {
+  const paragraph = (n: number) =>
+    `Paragraph number ${n} with enough distinct filler content padded out well past the RELAXED ` +
+    "profile's 150-character minimum so this boundary test isn't accidentally failing on length instead of count.";
+  const six = validateSummary(
+    makeValidSummary({
+      body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4), paragraph(5), paragraph(6)],
+    }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(six.ok, true);
+
+  const seven = validateSummary(
+    makeValidSummary({
+      body_en: [
+        paragraph(1),
+        paragraph(2),
+        paragraph(3),
+        paragraph(4),
+        paragraph(5),
+        paragraph(6),
+        paragraph(7),
+      ],
+    }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(seven.ok, false);
+});
+
+Deno.test("validateSummary (RELAXED): a 150-char paragraph is fine, 149 chars is a violation (boundary)", () => {
+  const base = makeValidSummary();
+  const at150 = validateSummary(
+    makeValidSummary({ body_en: ["x".repeat(150), base.body_en[1]] }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(at150.ok, true);
+
+  const at149 = validateSummary(
+    makeValidSummary({ body_en: ["x".repeat(149), base.body_en[1]] }),
+    RELAXED_PROFILE,
+  );
+  assertEquals(at149.ok, false);
 });
 
 Deno.test("validateSummary: multiple simultaneous violations are all reported, not just the first", () => {
@@ -1069,9 +1171,70 @@ Deno.test("validateSummary: multiple simultaneous violations are all reported, n
   }
 });
 
-Deno.test("validateSummary: the prompt's own few-shot example passes validation (guards against prompt/validator drift)", () => {
-  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY);
+Deno.test("validateSummary: the prompt's own few-shot example passes STRICT (guards against prompt/validator drift)", () => {
+  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY, STRICT_PROFILE);
   assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
+Deno.test("validateSummary: the prompt's own few-shot example ALSO passes RELAXED (same example serves both tiers)", () => {
+  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY, RELAXED_PROFILE);
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
+// --- Prompt parameterization: no drift between the prompt text and the profile it was built from ---
+
+Deno.test("buildSystemPrompt: STRICT prompt states STRICT's own numbers", () => {
+  const prompt = buildSystemPrompt(STRICT_PROFILE);
+  assertEquals(prompt.includes("at least 200 characters"), true);
+  assertEquals(prompt.includes("2-4 self-contained"), true);
+  assertEquals(prompt.includes("300-700 characters"), true);
+  assertEquals(prompt.includes("4-7 items"), true);
+  assertEquals(prompt.includes("40-220 characters each"), true);
+});
+
+Deno.test("buildSystemPrompt: RELAXED prompt states RELAXED's own numbers, not STRICT's", () => {
+  const prompt = buildSystemPrompt(RELAXED_PROFILE);
+  assertEquals(prompt.includes("at least 150 characters"), true);
+  assertEquals(prompt.includes("2-6 self-contained"), true);
+  assertEquals(prompt.includes("150-700 characters"), true);
+  assertEquals(prompt.includes("3-7 items"), true);
+  assertEquals(prompt.includes("30-220 characters each"), true);
+  assertEquals(prompt.includes("at least 200 characters"), false);
+  assertEquals(prompt.includes("2-4 self-contained"), false);
+});
+
+// --- Profile selection is fixed per summarize function, not a caller option ---
+
+Deno.test("summarizeArticleWithWorkersAi accepts a summary that clears RELAXED but would fail STRICT", async () => {
+  // 160-char tldr: fails STRICT's 200-char floor, clears RELAXED's 150.
+  const relaxedOnly = { ...makeValidSummary(), tldr_ru: "x".repeat(160), tldr_en: "x".repeat(160) };
+  assertEquals(validateSummary(relaxedOnly, STRICT_PROFILE).ok, false);
+  assertEquals(validateSummary(relaxedOnly, RELAXED_PROFILE).ok, true);
+
+  const ai = makeStubAi(() => ({ response: relaxedOnly }));
+  const result = await summarizeArticleWithWorkersAi(ai, "model", "Title", "text");
+  assertEquals(result, relaxedOnly);
+});
+
+Deno.test("summarizeArticle (gateway/direct) rejects a summary that only clears RELAXED, not STRICT", async () => {
+  const relaxedOnly = { ...makeValidSummary(), tldr_ru: "x".repeat(160), tldr_en: "x".repeat(160) };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(relaxedOnly) }] }),
+        { status: 200 },
+      ),
+    )) as typeof fetch;
+  try {
+    await assertRejects(
+      () => summarizeArticle({ apiKey: "key", model: "model" }, "Title", "text"),
+      Error,
+      "summary validation",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 // --- Corrective retry: the second attempt gets the specific violations ---

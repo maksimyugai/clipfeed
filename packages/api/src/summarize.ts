@@ -95,7 +95,58 @@ export const FEW_SHOT_EXAMPLE_SUMMARY: SummaryJson = {
   lang_original: "en",
 };
 
-const SYSTEM_PROMPT = `You are an expert news editor writing digests for a busy technical reader who
+// Content-quality bar, applied on top of the shape check. Two named tiers
+// (see STRICT_PROFILE/RELAXED_PROFILE below) instead of one fixed set of
+// numbers: Claude-class models (gateway/direct) reliably clear the STRICT
+// bar first-try, but Workers AI's free-tier default (Llama) passes it only
+// ~1/6 attempts in live testing — each failed attempt costs a real queue
+// slot (~3 minutes). RELAXED keeps the same shape (body paragraphs +
+// bullets + tldr, never a plain teaser) but with lower floors, so forkers
+// running on the zero-config free tier get a materially better first/
+// second-attempt success rate instead of habitually exhausting both
+// attempts and falling through to the generic validation-failure error.
+export interface ValidationProfile {
+  minTldrChars: number;
+  minBullets: number;
+  maxBullets: number;
+  minBulletChars: number;
+  maxBulletChars: number;
+  minBodyParagraphs: number;
+  maxBodyParagraphs: number;
+  minParagraphChars: number;
+  maxParagraphChars: number;
+}
+
+export const STRICT_PROFILE: ValidationProfile = {
+  minTldrChars: 200,
+  minBullets: 4,
+  maxBullets: 7,
+  minBulletChars: 40,
+  maxBulletChars: 220,
+  minBodyParagraphs: 2,
+  maxBodyParagraphs: 4,
+  minParagraphChars: 300,
+  maxParagraphChars: 700,
+};
+
+export const RELAXED_PROFILE: ValidationProfile = {
+  minTldrChars: 150,
+  minBullets: 3,
+  maxBullets: 7,
+  minBulletChars: 30,
+  maxBulletChars: 220,
+  minBodyParagraphs: 2,
+  maxBodyParagraphs: 6,
+  minParagraphChars: 150,
+  maxParagraphChars: 700,
+};
+
+// Parameterized by the active profile's own numbers so the prompt can never
+// drift out of sync with what validateSummary() actually enforces — every
+// numeric constraint the prompt states below is read straight from
+// `profile`, not restated as a separate literal.
+export function buildSystemPrompt(profile: ValidationProfile): string {
+  return `You are an expert news editor writing digests for a busy technical reader who
 should not need to open the source at all. Your job is to make that true: pack in real detail —
 specific numbers, names, dates, mechanisms, the substance of what people said (paraphrased, never
 verbatim-quoted) — rather than generalities. Prefer "the price rises from $5 to $8, a 60% increase"
@@ -107,29 +158,31 @@ Respond with ONLY a JSON object, no markdown fences, matching exactly:
 TITLES (title_ru, title_en): informative and specific about what actually happened — never
 clickbait, never a teaser. Max 90 characters.
 
-TL;DR (tldr_ru, tldr_en): the hook, 2-4 sentences, at least 200 characters. State the core thesis
-and the single most important supporting fact or number, directly — a reader who stops here must
-already know what happened and why it matters. Never a teaser ("this article discusses...",
-"узнайте почему..."), never meta commentary about the article itself — state the substance.
+TL;DR (tldr_ru, tldr_en): the hook, 2-4 sentences, at least ${profile.minTldrChars} characters. State
+the core thesis and the single most important supporting fact or number, directly — a reader who
+stops here must already know what happened and why it matters. Never a teaser ("this article
+discusses...", "узнайте почему..."), never meta commentary about the article itself — state the
+substance.
 
-BODY (body_ru, body_en): 2-4 self-contained prose paragraphs, forming a coherent, readable digest of
-the whole story: what happened, how/why it happened, the key context behind it, and its
-implications. This is the part that should make the source genuinely unnecessary — pull in every
-concrete specific the source actually contains (figures, names, mechanisms, the substance of quotes
-paraphrased in your own words, comparisons, timelines). Written as flowing prose, not a list. EVERY
-paragraph, including the last one, must be substantial: write 4-6 full sentences per paragraph
-(roughly 300-700 characters) — a short wrap-up sentence or two is not a paragraph. If the source is
-thin on detail for a later point, spend more sentences on context, mechanism, and implications
-rather than ending the paragraph early. Each paragraph must add real content of its own — never a
-paragraph that just restates the TL;DR in longer form, and never open the first paragraph by
-repeating the TL;DR's opening sentence — start it from a different angle (context, a specific
-detail, or the mechanism behind the headline fact).
+BODY (body_ru, body_en): ${profile.minBodyParagraphs}-${profile.maxBodyParagraphs} self-contained
+prose paragraphs, forming a coherent, readable digest of the whole story: what happened, how/why it
+happened, the key context behind it, and its implications. This is the part that should make the
+source genuinely unnecessary — pull in every concrete specific the source actually contains (figures,
+names, mechanisms, the substance of quotes paraphrased in your own words, comparisons, timelines).
+Written as flowing prose, not a list. EVERY paragraph, including the last one, must be substantial:
+roughly ${profile.minParagraphChars}-${profile.maxParagraphChars} characters — a short wrap-up
+sentence or two is not a paragraph. If the source is thin on detail for a later point, spend more
+sentences on context, mechanism, and implications rather than ending the paragraph early. Each
+paragraph must add real content of its own — never a paragraph that just restates the TL;DR in longer
+form, and never open the first paragraph by repeating the TL;DR's opening sentence — start it from a
+different angle (context, a specific detail, or the mechanism behind the headline fact).
 
-BULLETS (bullets_ru, bullets_en): 4-7 items, most important first, 40-200 characters each. Each
-bullet is a self-contained concrete fact — a number, name, date, mechanism, or consequence — not a
-rephrasing of the TL;DR or the body. Bullets are for scanning: sharp, standalone facts, not prose.
-The first bullet especially must NOT restate the TL;DR's opening claim — lead with the next most
-important fact instead, something the TL;DR didn't already say.
+BULLETS (bullets_ru, bullets_en): ${profile.minBullets}-${profile.maxBullets} items, most important
+first, ${profile.minBulletChars}-${profile.maxBulletChars} characters each. Each bullet is a
+self-contained concrete fact — a number, name, date, mechanism, or consequence — not a rephrasing of
+the TL;DR or the body. Bullets are for scanning: sharp, standalone facts, not prose. The first bullet
+especially must NOT restate the TL;DR's opening claim — lead with the next most important fact
+instead, something the TL;DR didn't already say.
 
 FAITHFULNESS: only claims actually present in the source. No speculation, no invented numbers or
 figures. Paraphrase quotes and attributed claims in your own words instead of quoting verbatim. If
@@ -152,6 +205,12 @@ Article: "${FEW_SHOT_EXAMPLE_ARTICLE}"
 
 Ideal output:
 ${JSON.stringify(FEW_SHOT_EXAMPLE_SUMMARY)}`;
+}
+
+// Built once per profile at module load — the profile objects and prompt
+// template are both static, so there's nothing to recompute per call.
+const STRICT_SYSTEM_PROMPT = buildSystemPrompt(STRICT_PROFILE);
+const RELAXED_SYSTEM_PROMPT = buildSystemPrompt(RELAXED_PROFILE);
 
 // Anthropic credentials/routing, resolved from Env by the caller. Both
 // gateway fields and apiKey are optional — a forker picks one mode:
@@ -265,28 +324,13 @@ export function parseSummaryJson(raw: string): SummaryJson | null {
   }
 }
 
-// Content-quality bar, on top of the shape check parseSummaryJson /
-// parseWorkersAiResult already did before handing us a non-null SummaryJson
-// (that covers "required fields present, correct types" — nothing further
-// to consolidate here beyond treating a shape failure as just another
-// violation, so callers have one uniform retry/failure path instead of two).
-export const DEFAULT_MIN_TLDR_CHARS = 200;
-const MIN_BULLETS = 4;
-const MAX_BULLETS = 7;
-const MIN_BULLET_CHARS = 40;
-const MAX_BULLET_CHARS = 220;
-const MIN_BODY_PARAGRAPHS = 2;
-const MAX_BODY_PARAGRAPHS = 4;
-const MIN_PARAGRAPH_CHARS = 300;
-const MAX_PARAGRAPH_CHARS = 700;
+// Bounds that don't vary by profile — title length, tag count, and the
+// duplicate-overlap heuristic threshold are the same regardless of which
+// provider produced the summary (see this task's "unchanged" carve-outs).
 const MAX_TITLE_CHARS = 120;
 const MIN_TAGS = 1;
 const MAX_TAGS = 6;
 const TLDR_OVERLAP_THRESHOLD = 0.8;
-
-export interface ValidateSummaryOptions {
-  minTldrChars?: number;
-}
 
 export type SummaryValidationResult =
   | { ok: true; value: SummaryJson }
@@ -330,17 +374,18 @@ function validateBullets(
   field: string,
   bullets: string[],
   tldr: string,
+  profile: ValidationProfile,
   violations: string[],
 ): void {
-  if (bullets.length < MIN_BULLETS || bullets.length > MAX_BULLETS) {
+  if (bullets.length < profile.minBullets || bullets.length > profile.maxBullets) {
     violations.push(
-      `${field} must have between ${MIN_BULLETS} and ${MAX_BULLETS} items (got ${bullets.length})`,
+      `${field} must have between ${profile.minBullets} and ${profile.maxBullets} items (got ${bullets.length})`,
     );
   }
   bullets.forEach((bullet, i) => {
-    if (bullet.length < MIN_BULLET_CHARS || bullet.length > MAX_BULLET_CHARS) {
+    if (bullet.length < profile.minBulletChars || bullet.length > profile.maxBulletChars) {
       violations.push(
-        `${field}[${i}] must be between ${MIN_BULLET_CHARS} and ${MAX_BULLET_CHARS} characters (got ${bullet.length})`,
+        `${field}[${i}] must be between ${profile.minBulletChars} and ${profile.maxBulletChars} characters (got ${bullet.length})`,
       );
     }
     if (textDuplicatesTldr(bullet, tldr)) {
@@ -353,17 +398,22 @@ function validateBody(
   field: string,
   paragraphs: string[],
   tldr: string,
+  profile: ValidationProfile,
   violations: string[],
 ): void {
-  if (paragraphs.length < MIN_BODY_PARAGRAPHS || paragraphs.length > MAX_BODY_PARAGRAPHS) {
+  if (
+    paragraphs.length < profile.minBodyParagraphs || paragraphs.length > profile.maxBodyParagraphs
+  ) {
     violations.push(
-      `${field} must have between ${MIN_BODY_PARAGRAPHS} and ${MAX_BODY_PARAGRAPHS} paragraphs (got ${paragraphs.length})`,
+      `${field} must have between ${profile.minBodyParagraphs} and ${profile.maxBodyParagraphs} paragraphs (got ${paragraphs.length})`,
     );
   }
   paragraphs.forEach((paragraph, i) => {
-    if (paragraph.length < MIN_PARAGRAPH_CHARS || paragraph.length > MAX_PARAGRAPH_CHARS) {
+    if (
+      paragraph.length < profile.minParagraphChars || paragraph.length > profile.maxParagraphChars
+    ) {
       violations.push(
-        `${field}[${i}] must be between ${MIN_PARAGRAPH_CHARS} and ${MAX_PARAGRAPH_CHARS} characters (got ${paragraph.length})`,
+        `${field}[${i}] must be between ${profile.minParagraphChars} and ${profile.maxParagraphChars} characters (got ${paragraph.length})`,
       );
     }
     if (textDuplicatesTldr(paragraph, tldr)) {
@@ -377,25 +427,26 @@ function validateBody(
 // when parseSummaryJson/parseWorkersAiResult already failed the shape
 // check; that's reported as a violation too, so every caller has exactly
 // one retry-then-fail path instead of a separate one for shape vs quality.
+// `profile` defaults to STRICT so existing call sites/tests that don't
+// care about the distinction keep working unchanged.
 export function validateSummary(
   summary: SummaryJson | null,
-  options: ValidateSummaryOptions = {},
+  profile: ValidationProfile = STRICT_PROFILE,
 ): SummaryValidationResult {
   if (!summary) {
     return { ok: false, violations: ["response did not match the required JSON schema"] };
   }
 
-  const minTldrChars = options.minTldrChars ?? DEFAULT_MIN_TLDR_CHARS;
   const violations: string[] = [];
 
   validateTitle("title_ru", summary.title_ru, violations);
   validateTitle("title_en", summary.title_en, violations);
-  validateTldr("tldr_ru", summary.tldr_ru, minTldrChars, violations);
-  validateTldr("tldr_en", summary.tldr_en, minTldrChars, violations);
-  validateBody("body_ru", summary.body_ru, summary.tldr_ru, violations);
-  validateBody("body_en", summary.body_en, summary.tldr_en, violations);
-  validateBullets("bullets_ru", summary.bullets_ru, summary.tldr_ru, violations);
-  validateBullets("bullets_en", summary.bullets_en, summary.tldr_en, violations);
+  validateTldr("tldr_ru", summary.tldr_ru, profile.minTldrChars, violations);
+  validateTldr("tldr_en", summary.tldr_en, profile.minTldrChars, violations);
+  validateBody("body_ru", summary.body_ru, summary.tldr_ru, profile, violations);
+  validateBody("body_en", summary.body_en, summary.tldr_en, profile, violations);
+  validateBullets("bullets_ru", summary.bullets_ru, summary.tldr_ru, profile, violations);
+  validateBullets("bullets_en", summary.bullets_en, summary.tldr_en, profile, violations);
   if (summary.tags.length < MIN_TAGS || summary.tags.length > MAX_TAGS) {
     violations.push(
       `tags must have between ${MIN_TAGS} and ${MAX_TAGS} items (got ${summary.tags.length})`,
@@ -506,7 +557,10 @@ async function callAnthropic(
 }
 
 // One call, guarded by the caller's daily budget check. On unparseable
-// output, retries once with a corrective message before giving up.
+// output, retries once with a corrective message before giving up. Always
+// STRICT: gateway/direct means a Claude-class model, which clears the
+// STRICT bar first-try in live testing — no need for the workers-ai
+// relaxation here.
 export async function summarizeArticle(
   config: AnthropicConfig,
   title: string,
@@ -514,13 +568,15 @@ export async function summarizeArticle(
 ): Promise<SummaryJson> {
   const firstMessage = buildUserMessage(title, text);
   const firstResult = validateSummary(
-    parseSummaryJson(await callAnthropic(config, SYSTEM_PROMPT, firstMessage, MAX_TOKENS)),
+    parseSummaryJson(await callAnthropic(config, STRICT_SYSTEM_PROMPT, firstMessage, MAX_TOKENS)),
+    STRICT_PROFILE,
   );
   if (firstResult.ok) return firstResult.value;
 
   const correctiveMsg = correctiveValidationMessage(firstMessage, firstResult.violations);
   const secondResult = validateSummary(
-    parseSummaryJson(await callAnthropic(config, SYSTEM_PROMPT, correctiveMsg, MAX_TOKENS)),
+    parseSummaryJson(await callAnthropic(config, STRICT_SYSTEM_PROMPT, correctiveMsg, MAX_TOKENS)),
+    STRICT_PROFILE,
   );
   if (secondResult.ok) return secondResult.value;
 
@@ -562,7 +618,7 @@ const SUMMARY_JSON_SCHEMA = {
 function workersAiInput(userMessage: string, useJsonSchema: boolean): Record<string, unknown> {
   const input: Record<string, unknown> = {
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: RELAXED_SYSTEM_PROMPT },
       { role: "user", content: userMessage },
     ],
     max_tokens: MAX_TOKENS,
@@ -619,13 +675,6 @@ async function runWorkersAi(ai: Ai, model: string, userMessage: string): Promise
   }
 }
 
-// Llama (the zero-config default model) reliably clears the standard
-// 120-char tldr bar in local testing against real articles (see the task's
-// live-tuning evidence) — no mode-specific relaxation needed so far. Kept
-// as its own named constant, not shared with DEFAULT_MIN_TLDR_CHARS,
-// specifically so that changes if evidence ever says otherwise.
-export const WORKERS_AI_MIN_TLDR_CHARS = DEFAULT_MIN_TLDR_CHARS;
-
 export async function summarizeArticleWithWorkersAi(
   ai: Ai,
   model: string,
@@ -635,14 +684,14 @@ export async function summarizeArticleWithWorkersAi(
   const firstMessage = buildUserMessage(title, text);
   const firstResult = validateSummary(
     parseWorkersAiResult(await runWorkersAi(ai, model, firstMessage)),
-    { minTldrChars: WORKERS_AI_MIN_TLDR_CHARS },
+    RELAXED_PROFILE,
   );
   if (firstResult.ok) return firstResult.value;
 
   const correctiveMsg = correctiveValidationMessage(firstMessage, firstResult.violations);
   const secondResult = validateSummary(
     parseWorkersAiResult(await runWorkersAi(ai, model, correctiveMsg)),
-    { minTldrChars: WORKERS_AI_MIN_TLDR_CHARS },
+    RELAXED_PROFILE,
   );
   if (secondResult.ok) return secondResult.value;
 
