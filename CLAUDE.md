@@ -39,3 +39,8 @@ assumes a fixed backend.
    onward).
 7. gitleaks runs only against git-tracked content and git history — never scan untracked local files
    (e.g. `.dev.vars`) and never echo scanner findings' matched secret values into logs or reports.
+8. Never print the contents of `.dev.vars` or any secret-bearing file into logs, command output, or
+   reports — not via `cat`, `grep`, `diff`, or an editor/Read view. To verify such a file was
+   modified or restored correctly, compare hashes (e.g. `sha256sum`) or line counts, or diff against
+   a redacted copy — never the raw content. Diagnostic commands that touch such a file must redact
+   values by name allow-list (print `KEY=<redacted>`, never `KEY=value`) before echoing anything.

@@ -83,12 +83,12 @@ export const FEW_SHOT_EXAMPLE_SUMMARY: SummaryJson = {
   // recombining the same facts as tldr/bullets into connected prose rather
   // than restating either verbatim.
   body_ru: [
-    "Fictional Co. объявила об изменении во вторник: новый тариф в $8 в месяц вступит в силу с 1 сентября для подписки на облачное хранилище вместо текущих $5. Рост коснётся примерно 2 миллионов подписчиков сервиса. Те, кто уже оформил годовую подписку, не почувствуют изменения сразу — для них старая цена сохранится до момента продления плана, так что переход растянется на весь оставшийся год для этой категории клиентов.",
-    "Руководство компании связывает решение с растущими расходами на серверы и сетевой трафик. Гендиректор Джейн Доу заявила, что компания сознательно откладывала повышение полтора года, опасаясь навредить клиентам из малого бизнеса, которые ежедневно полагаются на сервис в своей работе. В итоге в компании пришли к выводу, что дальнейшая отсрочка невозможна из-за роста инфраструктурных издержек. Пока ни один из конкурентов Fictional Co. не последовал её примеру и не объявил о похожем изменении цен.",
+    "Fictional Co. объявила об изменении во вторник: новый тариф в $8 в месяц вступит в силу с 1 сентября для подписки на облачное хранилище вместо текущих $5. Рост коснётся примерно 2 миллионов подписчиков сервиса. Те, кто уже оформил годовую подписку, не почувствуют изменения сразу — для них старая цена сохранится до момента продления плана.",
+    "Руководство компании связывает решение с растущими расходами на серверы и сетевой трафик. Гендиректор Джейн Доу заявила, что компания сознательно откладывала повышение полтора года, опасаясь навредить клиентам из малого бизнеса. В итоге в компании пришли к выводу, что дальнейшая отсрочка невозможна из-за роста инфраструктурных издержек.",
   ],
   body_en: [
-    "Fictional Co. announced the change on Tuesday: the new $8-a-month rate for its cloud storage subscription takes effect September 1, up from the current $5. The increase covers roughly 2 million subscribers. Anyone already locked into an annual plan won't feel it right away — they keep paying their existing rate until that plan comes up for renewal, effectively spreading the transition out over the rest of the year for that group of customers.",
-    "Company leadership points to climbing server and network-bandwidth expenses as the driver behind the decision. CEO Jane Doe said the company deliberately sat on the increase for 18 months out of concern for small-business customers who rely on the service every day. Leadership ultimately concluded that further delay wasn't sustainable given rising infrastructure costs. So far, none of Fictional Co.'s competitors have followed with a comparable price change of their own.",
+    "Fictional Co. announced the change on Tuesday: the new $8-a-month rate for its cloud storage subscription takes effect September 1, up from the current $5. The increase covers roughly 2 million subscribers. Anyone already locked into an annual plan won't feel it right away, keeping their existing rate until that plan comes up for renewal.",
+    "Company leadership points to climbing server and network-bandwidth expenses as the driver behind the decision. CEO Jane Doe said the company deliberately sat on the increase for 18 months out of concern for small-business customers. Leadership ultimately concluded that further delay wasn't sustainable given rising costs.",
   ],
   tags: ["business", "cloud", "fictional co"],
   lang_original: "en",
@@ -160,6 +160,25 @@ export function parseSummaryBodyTargetChars(raw: string | undefined): number {
 const PARAGRAPH_FLOOR_CHARS: Record<ProfileKind, number> = { strict: 250, relaxed: 120 };
 const RELAXED_TLDR_RATIO = 0.75;
 
+// Llama (Workers AI's free-tier default) reliably writes shorter body
+// paragraphs than Claude given the same instructions — live evidence: at
+// the default target, a naive profile-agnostic formula converges RELAXED
+// onto nearly the same bounds as STRICT (both floor near 288 chars), and
+// Llama failed 2/2 live runs on 240-290-char paragraphs that a genuinely
+// permissive RELAXED profile (this constant's predecessor) passed 4/4.
+// This factor scales RELAXED's effective target DOWN before deriving
+// per-paragraph size from it — "meet the model where it actually writes"
+// instead of asking it to hit STRICT-shaped numbers under a different name.
+const RELAXED_EFFECTIVE_TARGET_RATIO = 0.7;
+// STRICT widens its per-paragraph band -40%/+40%; RELAXED widens further
+// on the low end only (-55%/+40%) — Llama's shorter natural paragraph
+// length needs more room below the aim band, not above it.
+const PARAGRAPH_LOW_WIDENING_FACTOR: Record<ProfileKind, number> = {
+  strict: 0.6, // 1 - 0.40
+  relaxed: 0.45, // 1 - 0.55
+};
+const PARAGRAPH_HIGH_WIDENING_FACTOR = 1.4; // +40%, same for both profiles
+
 function paragraphCountRange(targetTotalChars: number): [number, number] {
   if (targetTotalChars <= 900) return [2, 2];
   if (targetTotalChars <= 2000) return [2, 3];
@@ -169,30 +188,50 @@ function paragraphCountRange(targetTotalChars: number): [number, number] {
 // Single source of truth for both the prompt's sizing block
 // (buildSystemPrompt) and validateSummary()'s hard bounds — see
 // SummarySpec's doc comment for why that matters. Math, in order:
-//   1. paragraph COUNT scales with the total target (a bigger digest reads
-//      better as more, not just longer, paragraphs).
-//   2. per-paragraph TARGET band is targetTotalChars / paragraph count,
-//      +-25% — the number shown to the model as "aim for".
-//   3. hard BOUNDS widen that band to -40%/+40% (so a first-attempt miss
-//      near the aim band still passes), floored per profile so even a tiny
-//      total target yields a real paragraph, and the ceiling is simply the
-//      high end of that band — no separate, silently-out-of-sync cap.
+//   1. paragraph COUNT scales with the OWNER's actual target (a bigger
+//      requested digest reads better as more, not just longer,
+//      paragraphs) — RELAXED gets one extra paragraph of headroom on the
+//      upper end of whichever tier STRICT would land in, e.g. the default
+//      tier's STRICT 2-3 becomes RELAXED 2-4, so Llama's shorter natural
+//      paragraphs can still add up to a comparable total.
+//   2. per-paragraph TARGET band is EFFECTIVE-target / paragraph count,
+//      +-25% — the number shown to the model as "aim for". "Effective"
+//      target is the raw owner setting for STRICT, but scaled down by
+//      RELAXED_EFFECTIVE_TARGET_RATIO for RELAXED (see that constant).
+//   3. hard BOUNDS widen that band — asymmetrically for RELAXED (see
+//      PARAGRAPH_LOW_WIDENING_FACTOR) — floored per profile so even a
+//      tiny total target yields a real paragraph, and the ceiling is
+//      simply the high end of that band — no separate, silently-out-of
+//      -sync cap.
 export function deriveSummarySpec(
   targetTotalChars: number,
   profileKind: ProfileKind,
 ): SummarySpec {
-  const [minBodyParagraphs, maxBodyParagraphs] = paragraphCountRange(targetTotalChars);
+  const [strictMinBodyParagraphs, strictMaxBodyParagraphs] = paragraphCountRange(
+    targetTotalChars,
+  );
+  const minBodyParagraphs = strictMinBodyParagraphs;
+  const maxBodyParagraphs = profileKind === "strict"
+    ? strictMaxBodyParagraphs
+    : strictMaxBodyParagraphs + 1;
+
+  const effectiveTargetChars = profileKind === "strict"
+    ? targetTotalChars
+    : Math.round(targetTotalChars * RELAXED_EFFECTIVE_TARGET_RATIO);
+
   const avgParagraphs = (minBodyParagraphs + maxBodyParagraphs) / 2;
-  const perParagraphTarget = targetTotalChars / avgParagraphs;
+  const perParagraphTarget = effectiveTargetChars / avgParagraphs;
 
   const paragraphTargetLow = Math.round(perParagraphTarget * 0.75);
   const paragraphTargetHigh = Math.round(perParagraphTarget * 1.25);
   const minParagraphChars = Math.max(
-    Math.round(perParagraphTarget * 0.6),
+    Math.round(perParagraphTarget * PARAGRAPH_LOW_WIDENING_FACTOR[profileKind]),
     PARAGRAPH_FLOOR_CHARS[profileKind],
   );
-  const maxParagraphChars = Math.round(perParagraphTarget * 1.4);
+  const maxParagraphChars = Math.round(perParagraphTarget * PARAGRAPH_HIGH_WIDENING_FACTOR);
 
+  // tldr/bullets are unaffected by the RELAXED effective-target scaling —
+  // always derived from the owner's raw targetTotalChars, same as before.
   const strictTldrMin = Math.min(350, Math.max(150, Math.round(targetTotalChars * 0.15)));
   const minTldrChars = profileKind === "strict"
     ? strictTldrMin
