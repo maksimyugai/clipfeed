@@ -1,85 +1,176 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { ArticleListItem } from "@clipfeed/shared/types";
 import type { Dictionary, Lang } from "../i18n.ts";
 import { viaLabel } from "../i18n.ts";
 import { getArticle } from "../api.ts";
 import { selectSummaryFields } from "../lib/summaryFields.ts";
 import { formatDate } from "../lib/format.ts";
+import { nextPollDelayMs, pollReducer, type PollState } from "../lib/pollSchedule.ts";
 
-const POLL_INTERVAL_MS = 4000;
-const MAX_POLL_ATTEMPTS = 30; // ~2 minutes of visible time at 4s/poll
+const JUST_READY_HIGHLIGHT_MS = 2000;
 
-// Polls GET /api/articles/:id while status is 'pending', pausing while the
-// tab is hidden (via visibilitychange) so it doesn't burn through the
-// attempt budget or make requests nobody can see the result of.
+// Polls GET /api/articles/:id while status is 'pending'. Cadence and the
+// give-up/resume transitions live in pollSchedule.ts (pure, unit-tested);
+// this hook owns only the DOM-timer wiring: a variable-delay setTimeout
+// chain (the schedule isn't a fixed interval — see nextPollDelayMs), the
+// elapsed-time clock driving it, tab-visibility pause/resume (existing
+// behavior, unchanged), and the manual "Check now" re-fetch that can always
+// bring a given-up card back to polling — so a pending card never reaches a
+// genuine dead end, just a slower/manual path back to the same result.
 function usePendingPoll(
   article: ArticleListItem,
   onUpdate: (article: ArticleListItem) => void,
-): boolean {
-  const [stuck, setStuck] = useState(false);
+): { pollState: PollState; checkNow: () => void } {
+  const [pollState, setPollState] = useState<PollState>("polling");
+  // Mirrors `pollState` for the effect below to read synchronously — a
+  // plain closure over the state variable would see whatever value was
+  // current when the effect was set up (article.id/status haven't
+  // changed, so the effect never re-runs to pick up a fresher one), which
+  // would make visibility-resume always think it's still "polling" even
+  // after a give-up.
+  const pollStateRef = useRef<PollState>("polling");
+  // Wall-clock accumulator for the CURRENT cycle only — paused while the
+  // tab is hidden (matching the existing pause behavior) and reset to 0
+  // whenever a manual check resumes a fresh cycle.
+  const elapsedRef = useRef(0);
+  const checkNowRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (article.status !== "pending") return;
 
-    let attempts = 0;
     let cancelled = false;
-    let intervalId: ReturnType<typeof setInterval> | undefined;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    let cycleStartedAt = 0;
 
-    const stopInterval = () => {
-      if (intervalId !== undefined) {
-        clearInterval(intervalId);
-        intervalId = undefined;
+    pollStateRef.current = "polling";
+    elapsedRef.current = 0;
+    setPollState("polling");
+
+    const applyPollState = (next: PollState) => {
+      pollStateRef.current = next;
+      setPollState(next);
+    };
+
+    const stopTimer = () => {
+      if (timerId !== undefined) {
+        clearTimeout(timerId);
+        timerId = undefined;
       }
     };
 
-    const tick = async () => {
-      attempts += 1;
+    const runCheck = async (): Promise<"done" | "still-pending" | "error"> => {
       try {
         const updated = await getArticle(article.id);
-        if (cancelled) return;
+        if (cancelled) return "done";
         if (updated.status !== "pending") {
-          stopInterval();
           // getArticle() returns the public shape (has_error, no raw error
           // string) — merge onto the existing list item so `error` survives
           // (it was already null while pending; a newly-failed article
           // shows the generic "—" fallback until the next full list fetch).
           onUpdate({ ...article, ...updated });
-          return;
+          return "done";
         }
+        return "still-pending";
       } catch {
-        // Transient network error — keep trying until the attempt budget runs out.
-      }
-      if (attempts >= MAX_POLL_ATTEMPTS) {
-        stopInterval();
-        setStuck(true);
+        return "error";
       }
     };
 
-    const startInterval = () => {
-      if (intervalId === undefined) {
-        intervalId = setInterval(tick, POLL_INTERVAL_MS);
-      }
+    const scheduleNext = (delayMs: number) => {
+      stopTimer();
+      timerId = setTimeout(tick, delayMs);
     };
+
+    // Starts (or resumes) a poll cycle from the current elapsed-time clock
+    // — if that clock already exceeds the give-up budget (only possible if
+    // this runs right after a stale resume), give up immediately instead
+    // of firing a 0-delay poll.
+    const startCycle = () => {
+      const delay = nextPollDelayMs(elapsedRef.current);
+      if (delay === null) {
+        applyPollState("given-up");
+        return;
+      }
+      cycleStartedAt = Date.now();
+      scheduleNext(delay);
+    };
+
+    async function tick() {
+      const outcome = await runCheck();
+      if (cancelled || outcome === "done") return;
+
+      elapsedRef.current += Date.now() - cycleStartedAt;
+
+      if (outcome === "error") {
+        applyPollState(pollReducer("polling", { type: "tick-error" }));
+        return;
+      }
+
+      const nextState = pollReducer("polling", {
+        type: "tick-still-pending",
+        elapsedMs: elapsedRef.current,
+      });
+      applyPollState(nextState);
+      if (nextState === "polling") {
+        cycleStartedAt = Date.now();
+        scheduleNext(nextPollDelayMs(elapsedRef.current) ?? 0);
+      }
+    }
 
     const onVisibilityChange = () => {
       if (document.hidden) {
-        stopInterval();
-      } else {
-        startInterval();
+        stopTimer();
+      } else if (pollStateRef.current === "polling") {
+        startCycle();
       }
     };
 
-    if (!document.hidden) startInterval();
+    checkNowRef.current = () => {
+      stopTimer();
+      runCheck().then((outcome) => {
+        if (cancelled || outcome === "done") return;
+        // A manual check always starts a fresh cycle, regardless of why the
+        // previous one stopped (give-up timeout or a fetch error) — that's
+        // the "never a dead end" guarantee: there's always a way back to
+        // polling.
+        elapsedRef.current = 0;
+        applyPollState(pollReducer("given-up", { type: "manual-check-still-pending" }));
+        if (!document.hidden) startCycle();
+      });
+    };
+
+    if (!document.hidden) startCycle();
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
-      stopInterval();
+      stopTimer();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [article.id, article.status]);
 
-  return stuck;
+  return { pollState, checkNow: () => checkNowRef.current() };
+}
+
+// Briefly true right after `status` flips from 'pending' to 'ready' — drives
+// a fading highlight so the transition is noticeable instead of the card
+// just silently changing shape. Not triggered for a 'pending' -> 'failed'
+// transition, which already has its own distinct card--failed styling.
+function useJustReadyHighlight(status: ArticleListItem["status"]): boolean {
+  const [justReady, setJustReady] = useState(false);
+  const previousStatus = useRef(status);
+
+  useEffect(() => {
+    if (previousStatus.current === "pending" && status === "ready") {
+      setJustReady(true);
+      const timer = setTimeout(() => setJustReady(false), JUST_READY_HIGHLIGHT_MS);
+      previousStatus.current = status;
+      return () => clearTimeout(timer);
+    }
+    previousStatus.current = status;
+  }, [status]);
+
+  return justReady;
 }
 
 export interface ArticleCardProps {
@@ -117,18 +208,30 @@ export function ArticleCard(props: ArticleCardProps) {
     isOwner,
   } = props;
 
-  const stuck = usePendingPoll(article, onArticleUpdate);
+  const { pollState, checkNow } = usePendingPoll(article, onArticleUpdate);
+  const justReady = useJustReadyHighlight(article.status);
+  const givenUpPolling = pollState === "given-up";
 
   if (article.status === "pending") {
     return (
       <article class="card card--pending">
         <div class="card-date">{formatDate(article.added_at, lang)}</div>
         <h3 class="card-title">{article.title}</h3>
-        <div class="pending-row">
-          <span class="spinner" aria-hidden="true" />
-          <span>{dict.pendingLabel}</span>
-        </div>
-        {stuck && <div class="pending-stuck-note">{dict.pendingStuckLabel}</div>}
+        {givenUpPolling
+          ? (
+            <div class="pending-stuck-note">
+              <span>{dict.pendingStuckLabel}</span>
+              <button type="button" class="check-now-button" onClick={checkNow}>
+                {dict.checkNowButton}
+              </button>
+            </div>
+          )
+          : (
+            <div class="pending-row">
+              <span class="spinner" aria-hidden="true" />
+              <span>{dict.pendingLabel}</span>
+            </div>
+          )}
       </article>
     );
   }
@@ -161,7 +264,9 @@ export function ArticleCard(props: ArticleCardProps) {
 
   const fields = selectSummaryFields(article.title, article.summary_json, lang);
   const source = article.source;
-  const cardClass = `card${isPickOfDay ? " card--highlighted" : ""}`;
+  const cardClass = `card${isPickOfDay ? " card--highlighted" : ""}${
+    justReady ? " card--just-ready" : ""
+  }`;
 
   return (
     <article class={cardClass} aria-expanded={expanded}>

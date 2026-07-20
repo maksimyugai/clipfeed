@@ -513,6 +513,33 @@ ul {
     var(--grad-highlight) border-box;
 }
 
+/* Same gradient-border treatment as .card--highlighted, but transient: a
+   pending card briefly gets this the moment it flips to 'ready', fading
+   out over 2s so the transition is noticeable without staying highlighted
+   forever (see useJustReadyHighlight in ArticleCard.tsx). */
+.card--just-ready {
+  border: 1.5px solid transparent;
+  background:
+    linear-gradient(var(--card), var(--card)) padding-box,
+    var(--grad-highlight) border-box;
+  animation: just-ready-fade 2s ease-out forwards;
+}
+
+@keyframes just-ready-fade {
+  from {
+    box-shadow: 0 0 0 3px rgba(127, 119, 221, 0.25);
+  }
+  to {
+    box-shadow: 0 0 0 3px rgba(127, 119, 221, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card--just-ready {
+    animation: none;
+  }
+}
+
 .pick-chip {
   display: inline-block;
   font-size: 11px;
@@ -733,9 +760,26 @@ ul {
 }
 
 .pending-stuck-note {
-  margin-top: 6px;
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
   color: var(--mut);
+}
+
+.check-now-button {
+  border: 1px solid var(--acc);
+  color: var(--acc);
+  background: transparent;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.check-now-button:hover {
+  background: var(--tag-bg);
 }
 
 .card--failed {

@@ -27,6 +27,7 @@ export interface Dictionary {
   emptyArchiveTitle: string;
   pendingLabel: string;
   pendingStuckLabel: string;
+  checkNowButton: string;
   retryButton: string;
   errorPrefix: string;
   readMore: string;
@@ -80,7 +81,8 @@ const ru: Dictionary = {
   emptyFeedHint: "Нажмите «+», чтобы добавить первую статью",
   emptyArchiveTitle: "В архиве пока ничего нет",
   pendingLabel: "Пересказ готовится…",
-  pendingStuckLabel: "Обработка занимает больше времени, чем обычно…",
+  pendingStuckLabel: "Долго обрабатывается…",
+  checkNowButton: "Проверить",
   retryButton: "Повторить",
   errorPrefix: "Ошибка",
   readMore: "читать далее",
@@ -134,7 +136,8 @@ const en: Dictionary = {
   emptyFeedHint: 'Press "+" to add your first article',
   emptyArchiveTitle: "Nothing archived yet",
   pendingLabel: "Summary in progress…",
-  pendingStuckLabel: "Still processing…",
+  pendingStuckLabel: "Taking a while…",
+  checkNowButton: "Check now",
   retryButton: "Retry",
   errorPrefix: "Error",
   readMore: "read more",
