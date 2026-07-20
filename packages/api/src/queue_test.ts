@@ -69,6 +69,9 @@ class MapKv implements KVNamespace {
     this.store.delete(key);
     return Promise.resolve();
   }
+  list(): Promise<{ keys: { name: string }[]; list_complete: boolean }> {
+    return Promise.resolve({ keys: [], list_complete: true });
+  }
 }
 
 function makeEnv(overrides: Partial<Env> = {}): Env {

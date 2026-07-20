@@ -66,6 +66,9 @@ function makeFakeKv(initial: Record<string, string> = {}): KVNamespace {
       store.delete(key);
       return Promise.resolve();
     },
+    list(): Promise<{ keys: { name: string }[]; list_complete: boolean }> {
+      return Promise.resolve({ keys: [], list_complete: true });
+    },
   };
 }
 

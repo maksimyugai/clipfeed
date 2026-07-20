@@ -74,6 +74,9 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
         kv.delete(key);
         return Promise.resolve();
       },
+      list(): Promise<{ keys: { name: string }[]; list_complete: boolean }> {
+        return Promise.resolve({ keys: [], list_complete: true });
+      },
     },
     ASSETS: { fetch: () => Promise.resolve(new Response("<html>spa shell</html>")) },
     AI: { run: () => Promise.reject(new Error("AI.run should not be called in these tests")) },

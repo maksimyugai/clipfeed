@@ -2,6 +2,7 @@ import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
+import { insertPendingArticle, markArticleFailed } from "./db.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";
@@ -117,6 +118,13 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
         kv.delete(key);
         return Promise.resolve();
       },
+      list(
+        options?: { prefix?: string },
+      ): Promise<{ keys: { name: string }[]; list_complete: boolean }> {
+        const prefix = options?.prefix ?? "";
+        const keys = [...kv.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
+        return Promise.resolve({ keys, list_complete: true });
+      },
     },
     ASSETS: { fetch: () => Promise.resolve(new Response("<html>spa shell</html>")) },
     AI: { run: () => Promise.reject(new Error("AI.run should not be called in these tests")) },
@@ -213,6 +221,7 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
     ["POST", "/api/admin/articles/some-id/retry"],
     ["POST", "/api/admin/articles/some-id/resummarize"],
     ["POST", "/api/admin/agent/run"],
+    ["GET", "/api/admin/health-report"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -234,6 +243,7 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     ["POST", "/api/admin/articles/some-id/retry"],
     ["POST", "/api/admin/articles/some-id/resummarize"],
     ["POST", "/api/admin/agent/run"],
+    ["GET", "/api/admin/health-report"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -241,6 +251,45 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     const body = await res.json();
     assertEquals(body.error, "unauthorized", `${method} ${path}`);
   }
+});
+
+Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-healing summary", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  await insertPendingArticle(env.DB, {
+    id: "h1",
+    url: "https://example.com/h1",
+    title: "h1",
+    source: "example.com",
+    tags: [],
+    added_via: "agent",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleFailed(env.DB, "h1", "daily-limit"); // transient
+
+  await insertPendingArticle(env.DB, {
+    id: "h2",
+    url: "https://thin.example.com/h2",
+    title: "h2",
+    source: "thin.example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-02T00:00:00.000Z",
+  });
+  await markArticleFailed(env.DB, "h2", "extraction: insufficient text (3 chars)"); // permanent
+
+  await env.CACHE.put("thinhost:learned.example.com", "3");
+
+  const res = await app.request("/api/admin/health-report", { headers: authHeaders }, env, ctx);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+
+  assertEquals(body.failed_by_class.transient, 1);
+  assertEquals(body.failed_by_class.permanent, 1);
+  assertEquals(body.heal_attempts_totals.transient, 0);
+  assertEquals(body.learned_thinhosts, [{ host: "learned.example.com", count: 3 }]);
+  assertEquals(body.last_agent_run.last_added_at, "2026-01-01T00:00:00.000Z");
 });
 
 Deno.test("POST /api/admin/agent/run: 202 for the owner, runs the agent job via waitUntil", async () => {

@@ -30,6 +30,12 @@ declare global {
     get(key: string): Promise<string | null>;
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
     delete(key: string): Promise<void>;
+    // Used by GET /api/admin/health-report to enumerate learned thin hosts
+    // (see thin-host-learning.ts's listLearnedThinHosts) — simplified to
+    // the fields we actually read from Cloudflare's real KV list API.
+    list(
+      options?: { prefix?: string; cursor?: string },
+    ): Promise<{ keys: { name: string }[]; list_complete: boolean; cursor?: string }>;
   }
 
   interface Ai {

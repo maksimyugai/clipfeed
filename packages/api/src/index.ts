@@ -8,6 +8,8 @@ import {
   deleteArticle,
   findArticleIdByUrl,
   getArticleById,
+  getFailureStats,
+  getLastAgentActivity,
   insertPendingArticle,
   listArticles,
   markArticlePending,
@@ -32,6 +34,7 @@ import {
 import { handleTelegramWebhook } from "./telegram-webhook.ts";
 import { runAgentJob } from "./agent.ts";
 import { handleScheduled } from "./scheduled.ts";
+import { listLearnedThinHosts } from "./thin-host-learning.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -263,6 +266,26 @@ app.post("/api/admin/agent/run", (c) => {
   return c.json({ ok: true }, 202);
 });
 
+// Owner-only visibility into the self-healing system (see healing.ts,
+// classify-failure.ts, thin-host-learning.ts) — no SPA UI for this yet,
+// intended for curl/owner tooling. Three cheap D1/KV reads, no article
+// content.
+app.get("/api/admin/health-report", async (c) => {
+  const [{ failed_by_class, heal_attempts_totals }, learnedThinhosts, lastAgentActivity] =
+    await Promise.all([
+      getFailureStats(c.env.DB),
+      listLearnedThinHosts(c.env.CACHE),
+      getLastAgentActivity(c.env.DB),
+    ]);
+
+  return c.json({
+    failed_by_class,
+    heal_attempts_totals,
+    learned_thinhosts: learnedThinhosts,
+    last_agent_run: { last_added_at: lastAgentActivity },
+  });
+});
+
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 // Named export for tests, which call `app.request(...)` directly — the
@@ -279,7 +302,7 @@ export default {
     env: Env,
     ctx: ExecutionContext,
   ): void {
-    ctx.waitUntil(handleScheduled(env, controller.scheduledTime));
+    ctx.waitUntil(handleScheduled(env, controller.scheduledTime, ctx));
   },
   // Consumer for BOTH the "clipfeed-jobs" queue and its
   // "clipfeed-dlq" dead-letter queue (see wrangler.toml [[queues.consumers]],
