@@ -2,6 +2,7 @@ import "./env.d.ts";
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
+import { FakeQueue } from "./testing/fake_queue.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";
@@ -120,6 +121,10 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
       },
       put(key: string, value: string): Promise<void> {
         kv.set(key, value);
+        return Promise.resolve();
+      },
+      delete(key: string): Promise<void> {
+        kv.delete(key);
         return Promise.resolve();
       },
     },
@@ -783,4 +788,134 @@ Deno.test("POST /api/admin/articles/:id/resummarize: 404 for a missing id, 409 f
     ctx,
   );
   assertEquals(res.status, 409);
+});
+
+// --- Queue producer: JOBS.send() called with the correct message when the
+// binding is configured (see queue.ts's enqueueArticleJob; the JOBS-absent
+// fallback path is exercised by every test above, since makeEnv() doesn't
+// set JOBS by default). ---
+
+Deno.test("POST /api/admin/articles: with JOBS configured, enqueues a 'process' message and does not run the pipeline inline", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const { ctx, settle } = makeExecutionContext();
+
+  const res = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({ url: "https://example.com/queued-create" }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 202);
+  const created = await res.json();
+  await settle();
+
+  assertEquals(jobs.sent.length, 1);
+  assertEquals(jobs.sent[0], { kind: "process", articleId: created.id });
+
+  // Still 'pending' — a real consumer never ran; only the message was sent.
+  const db = env.DB as unknown as FakeD1;
+  assertEquals(db.rows.find((r) => r.id === created.id)!.status, "pending");
+});
+
+Deno.test("POST /api/admin/articles: with JOBS configured and html supplied, stashes it in CACHE for the consumer to pick up", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const { ctx } = makeExecutionContext();
+
+  const res = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({ url: "https://example.com/queued-with-html", html: ARTICLE_HTML }),
+    },
+    env,
+    ctx,
+  );
+  const created = await res.json();
+
+  const stashed = await env.CACHE.get(`pending-html:${created.id}`);
+  assertEquals(stashed, ARTICLE_HTML);
+});
+
+Deno.test("POST /api/admin/articles/:id/retry: with JOBS configured, enqueues a 'process' message instead of running inline", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx, settle } = makeExecutionContext();
+
+  const restoreFetch = stubFetch({ anthropicStatus: 500 });
+  const created = await (
+    await app.request(
+      "/api/admin/articles",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders },
+        body: JSON.stringify({ url: "https://example.com/retry-queued" }),
+      },
+      env,
+      ctx,
+    )
+  ).json();
+  await settle();
+  restoreFetch();
+
+  // JOBS only shows up now — the initial create above used the fallback
+  // path so the article would actually reach 'failed' and be retryable.
+  env.JOBS = jobs;
+  const retryRes = await app.request(
+    `/api/admin/articles/${created.id}/retry`,
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(retryRes.status, 202);
+  await settle();
+
+  assertEquals(jobs.sent, [{ kind: "process", articleId: created.id }]);
+  const db = env.DB as unknown as FakeD1;
+  assertEquals(db.rows.find((r) => r.id === created.id)!.status, "pending");
+});
+
+Deno.test("POST /api/admin/articles/:id/resummarize: with JOBS configured, enqueues a 'resummarize' message instead of running inline", async () => {
+  const jobs = new FakeQueue();
+  const restoreFetch = stubFetch();
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx, settle } = makeExecutionContext();
+
+  const created = await (
+    await app.request(
+      "/api/admin/articles",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders },
+        body: JSON.stringify({ url: "https://example.com/resum-queued" }),
+      },
+      env,
+      ctx,
+    )
+  ).json();
+  await settle();
+
+  env.JOBS = jobs;
+  try {
+    const res = await app.request(
+      `/api/admin/articles/${created.id}/resummarize`,
+      { method: "POST", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(res.status, 202);
+    await settle();
+
+    assertEquals(jobs.sent, [{ kind: "resummarize", articleId: created.id }]);
+    const db = env.DB as unknown as FakeD1;
+    assertEquals(db.rows.find((r) => r.id === created.id)!.status, "pending");
+  } finally {
+    restoreFetch();
+  }
 });

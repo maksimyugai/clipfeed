@@ -72,3 +72,26 @@ export interface PatchArticleRequest {
 export interface RetryArticleRequest {
   html?: string;
 }
+
+// Telegram edit-on-finish target, carried through a queue message so the
+// consumer (which may run in a completely different invocation than the
+// producer) can still update the "Сохраняю…" placeholder once the pipeline
+// finishes — see queue.ts.
+export interface QueueNotify {
+  chatId: string;
+  messageId: number;
+}
+
+// Body of a message on the "clipfeed-jobs" queue (see wrangler.toml
+// [[queues.producers/consumers]], queue.ts, index.ts's `queue` export).
+// 'process' runs the full fetch -> extract -> summarize pipeline for a
+// pending article; 'resummarize' re-runs only the summarize step. Kept
+// intentionally small (well under the 128KB Queues message-size limit) —
+// large payloads like extension-submitted HTML are handed off via KV
+// instead (see queue.ts's stashPendingHtml/takePendingHtml), and everything
+// else the consumer needs is re-read from the D1 row by articleId.
+export interface QueueMessage {
+  kind: "process" | "resummarize";
+  articleId: string;
+  notify?: QueueNotify;
+}

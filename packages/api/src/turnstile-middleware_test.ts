@@ -22,6 +22,10 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
         kv.set(key, value);
         return Promise.resolve();
       },
+      delete(key: string): Promise<void> {
+        kv.delete(key);
+        return Promise.resolve();
+      },
     },
     ASSETS: { fetch: () => Promise.resolve(new Response("not used")) },
     AI: { run: () => Promise.reject(new Error("AI.run should not be called in these tests")) },

@@ -14,21 +14,14 @@ import { buildDigestMessages } from "./telegram-digest.ts";
 import {
   AGENT_STARTED_TEXT,
   ALREADY_SAVED_TEXT,
-  failedText,
   HELP_TEXT,
   NO_DIGEST_ARTICLES_TEXT,
   NON_OWNER_REPLY,
-  readySuccessText,
   SAVING_TEXT,
 } from "./telegram-strings.ts";
 import { timingSafeEqualStrings } from "./telegram-secret.ts";
-import {
-  findArticleIdByUrl,
-  getArticleById,
-  insertPendingArticle,
-  listRecentReadyArticles,
-} from "./db.ts";
-import { runArticlePipeline } from "./pipeline.ts";
+import { findArticleIdByUrl, insertPendingArticle, listRecentReadyArticles } from "./db.ts";
+import { enqueueArticleJob } from "./queue.ts";
 import { sourceFromUrl } from "./validation.ts";
 import { runAgentJob } from "./agent.ts";
 
@@ -66,29 +59,6 @@ export async function sendMorningDigest(env: Env): Promise<void> {
   await buildAndSendDigest(env, config, null);
 }
 
-async function runPipelineAndNotify(
-  env: Env,
-  config: TelegramConfig,
-  articleId: string,
-  url: string,
-  messageId: number,
-): Promise<void> {
-  await runArticlePipeline(env, { id: articleId, url, requestTags: [] });
-
-  const article = await getArticleById(env.DB, articleId);
-  if (!article) return;
-
-  const text = article.status === "ready" && article.summary_json
-    ? readySuccessText(
-      article.summary_json.title_ru,
-      article.summary_json.tldr_ru,
-      env.PUBLIC_BASE_URL.trim() || null,
-    )
-    : failedText((article.error ?? "unknown error").slice(0, 200));
-
-  await editMessageText(config.botToken, config.ownerChatId, messageId, text).catch(() => {});
-}
-
 async function handleUrlMessage(
   c: Context<AppEnv>,
   config: TelegramConfig,
@@ -123,16 +93,13 @@ async function handleUrlMessage(
     added_at: new Date().toISOString(),
   });
 
-  if (sent) {
-    c.executionCtx.waitUntil(
-      runPipelineAndNotify(c.env, config, id, url, sent.message_id),
-    );
-  } else {
-    // Couldn't even send the "Сохраняю…" reply — still run the pipeline
-    // (the article shouldn't silently vanish), just with no message left
-    // to edit afterward.
-    c.executionCtx.waitUntil(runArticlePipeline(c.env, { id, url, requestTags: [] }));
-  }
+  // If "Сохраняю…" couldn't even be sent, the pipeline still runs (the
+  // article shouldn't silently vanish) — just with no notify target, so
+  // there's no message left to edit afterward. The edit-on-finish itself
+  // happens in the queue consumer (or its no-JOBS fallback), not here — see
+  // queue.ts's processQueueMessage/notifyTelegram.
+  const notify = sent ? { chatId: config.ownerChatId, messageId: sent.message_id } : undefined;
+  await enqueueArticleJob(c.env, c.executionCtx, { kind: "process", articleId: id, notify });
 
   return c.json({ ok: true });
 }

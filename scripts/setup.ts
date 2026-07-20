@@ -7,6 +7,7 @@
 const WRANGLER_TOML_PATH = "wrangler.toml";
 const D1_DB_NAME = "clipfeed";
 const KV_BINDING = "CACHE";
+const QUEUE_NAME = "clipfeed-jobs";
 
 interface WranglerResult {
   code: number;
@@ -78,6 +79,22 @@ export function findExistingKvId(
   binding: string,
 ): string | null {
   return namespaces.find((ns) => ns.title === binding)?.id ?? null;
+}
+
+// Unlike D1's database_id / KV's namespace id, a queue's name is not
+// account-scoped — it's the literal string already committed in
+// wrangler.toml ("clipfeed-jobs"), so there's no placeholder to patch here,
+// just an idempotent existence check against `wrangler queues list`'s
+// output. That command has no --json flag (unlike `d1 list`), so this
+// parses its box-drawing ASCII table instead: every real data/header row
+// uses "│" as the cell separator, so splitting on it and checking the
+// second column (the name) works; border rows (drawn with ─/┌/├/└, no "│")
+// naturally fail the length check below and are skipped.
+export function queueExistsInList(listOutput: string, name: string): boolean {
+  return listOutput.split("\n").some((line) => {
+    const cells = line.split("│").map((c) => c.trim()).filter((c) => c.length > 0);
+    return cells.length >= 2 && cells[1] === name;
+  });
 }
 
 // --- Orchestration ---
@@ -156,6 +173,22 @@ async function ensureKv(toml: string, created: string[], reused: string[]): Prom
   }
   created.push(`KV namespace for ${KV_BINDING} (${newId})`);
   return patchKvNamespaceId(toml, newId);
+}
+
+async function ensureQueue(created: string[], reused: string[]): Promise<void> {
+  const list = await runWrangler(["queues", "list"]);
+  if (list.code === 0 && queueExistsInList(list.stdout, QUEUE_NAME)) {
+    reused.push(`Queue "${QUEUE_NAME}" already exists`);
+    return;
+  }
+
+  const create = await runWrangler(["queues", "create", QUEUE_NAME]);
+  if (create.code !== 0) {
+    console.error(`Could not create queue "${QUEUE_NAME}":\n`);
+    console.error(create.stdout || create.stderr);
+    Deno.exit(1);
+  }
+  created.push(`Queue "${QUEUE_NAME}"`);
 }
 
 async function applyMigrations(): Promise<void> {
@@ -241,6 +274,7 @@ async function main(): Promise<void> {
   await Deno.writeTextFile(WRANGLER_TOML_PATH, toml);
   console.log("✓ wrangler.toml updated in place (left uncommitted — review before committing)\n");
 
+  await ensureQueue(created, reused);
   await applyMigrations();
   console.log();
   await reportSecrets();

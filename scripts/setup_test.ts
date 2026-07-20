@@ -6,6 +6,7 @@ import {
   findExistingKvId,
   patchD1DatabaseId,
   patchKvNamespaceId,
+  queueExistsInList,
   readD1DatabaseId,
   readKvNamespaceId,
 } from "./setup.ts";
@@ -142,4 +143,33 @@ Deno.test("findExistingKvId: does not match on a prefixed title", () => {
 
 Deno.test("findExistingKvId: returns null when no namespace matches", () => {
   assertEquals(findExistingKvId([], "CACHE"), null);
+});
+
+// Real `wrangler queues list` output (4.x) — an ASCII box-drawing table,
+// not JSON (unlike `d1 list --json`).
+const QUEUES_LIST_OUTPUT =
+  `┌──────────────────────────────────┬────────────────────────────┬─────────────────────────────┬─────────────────────────────┬───────────┬───────────┐
+│ id                               │ name                       │ created_on                  │ modified_on                 │ producers │ consumers │
+├──────────────────────────────────┼────────────────────────────┼─────────────────────────────┼─────────────────────────────┼───────────┼───────────┤
+│ e6d2bd58cdf642ebaca5c577685b1654 │ some-other-queue           │ 2026-07-09T15:13:20.561696Z │ 2026-07-09T15:13:20.561696Z │ 1         │ 1         │
+├──────────────────────────────────┼────────────────────────────┼─────────────────────────────┼─────────────────────────────┼───────────┼───────────┤
+│ 15ef7250faea4132b1a3814d27569438 │ clipfeed-jobs              │ 2026-07-09T15:36:59.050027Z │ 2026-07-09T15:36:59.050027Z │ 1         │ 1         │
+└──────────────────────────────────┴────────────────────────────┴─────────────────────────────┴─────────────────────────────┴───────────┴───────────┘
+`;
+
+Deno.test("queueExistsInList: finds the queue by exact name in a real `wrangler queues list` table", () => {
+  assertEquals(queueExistsInList(QUEUES_LIST_OUTPUT, "clipfeed-jobs"), true);
+});
+
+Deno.test("queueExistsInList: returns false when no row's name matches", () => {
+  assertEquals(queueExistsInList(QUEUES_LIST_OUTPUT, "some-unrelated-queue"), false);
+});
+
+Deno.test("queueExistsInList: does not match a substring of the id or another column", () => {
+  assertEquals(queueExistsInList(QUEUES_LIST_OUTPUT, "e6d2bd58cdf642ebaca5c577685b1654"), false);
+});
+
+Deno.test("queueExistsInList: returns false for empty/unparseable output", () => {
+  assertEquals(queueExistsInList("", "clipfeed-jobs"), false);
+  assertEquals(queueExistsInList("some unrelated wrangler output", "clipfeed-jobs"), false);
 });

@@ -80,16 +80,49 @@ the literal placeholder `"PLACEHOLDER"`, so if you're forking a repo with real i
 committed, reset both back to `"PLACEHOLDER"` in `wrangler.toml` first, then run `deno task setup`
 to create/reuse resources under your own login.
 
+## Queue-based pipeline execution
+
+Every article's fetch → extract → summarize → persist pipeline runs inside a Cloudflare Queues
+consumer, not inline in the request handler. The reason: `ctx.waitUntil()` (what earlier versions of
+this app used) hard-caps at 30 seconds after the response is sent, and an unsettled promise is
+cancelled outright at that point — a silent isolate teardown, not a catchable exception. Large
+articles' Workers AI summarization calls have been measured well past 30 seconds; every past
+`"timeout: processing did not complete"` incident traces back to this cap. A queue consumer
+invocation gets minutes of wall time instead, so the `LLM_CALL_TIMEOUT_MS` guard (see
+`summarize.ts`) can actually fire and turn a slow call into a clean `'failed'` row instead of the
+article getting stuck.
+
+Mutating endpoints and the scraping agent enqueue a small `{ kind, articleId, notify? }` message
+(see `QueueMessage` in `packages/shared/src/types.ts`) onto the `clipfeed-jobs` queue instead of
+running the pipeline directly; the same Worker's `queue()` export (`index.ts`) consumes it.
+`kind: 'process'` runs the full pipeline; `kind: 'resummarize'` re-runs just the summarize step.
+Extension-submitted HTML (up to 2MB) is too large for a Queues message body (128KB limit), so it's
+handed off through KV instead — see `queue.ts`'s `stashPendingHtml`/`takePendingHtml`. Batch size is
+1: one article per consumer invocation, so one slow summarization never blocks another queued
+article. The pipeline itself already guarantees a terminal `'ready'`/`'failed'` row (see
+`pipeline.ts`), so there's no dead-letter queue — a message that still fails after `max_retries` is
+an infrastructure error, not a normal failure mode.
+
+**Forkability / graceful degradation:** if the `JOBS` binding isn't available (the queue hasn't been
+provisioned yet, or any environment that hasn't wired `[[queues.producers]]`), the app falls back to
+the pre-Queues `ctx.waitUntil()` behavior with a logged warning (`queue.ts`'s `enqueueArticleJob`) —
+large articles may hit the 30s cap again in that mode, but nothing crashes. `deno task setup`
+provisions the queue (`wrangler queues create clipfeed-jobs`, reusing an existing one of that name
+if present) — **run it once, before your first deploy**, since `wrangler deploy` needs the queue to
+already exist to bind `[[queues.producers/consumers]]` to it. Cloudflare Queues is on the Workers
+free plan (10,000 operations/day across reads/writes/deletes, 24h max retention).
+
 ## Deploy your own (fork)
 
 ClipFeed is designed to be forked and run under your own Cloudflare account — nothing in this repo
 is tied to a specific account, domain, or Access team.
 
 1. Fork the repo.
-2. `deno run -A npm:wrangler login`, then `deno task setup` — creates (or reuses) your D1 database
-   and KV namespace, patches `wrangler.toml` with your real ids, and applies migrations to the
-   remote database. It never commits that patch for you; review and commit it yourself. It also
-   prints which of the secrets below are already set, without ever reading or printing their values.
+2. `deno run -A npm:wrangler login`, then `deno task setup` — creates (or reuses) your D1 database,
+   KV namespace, and the `clipfeed-jobs` queue (see "Queue-based pipeline execution" below), patches
+   `wrangler.toml` with your real D1/KV ids, and applies migrations to the remote database. It never
+   commits that patch for you; review and commit it yourself. It also prints which of the secrets
+   below are already set, without ever reading or printing their values.
 3. (Optional) Upgrade the LLM mode — ClipFeed already works out of the box on the free Workers AI
    default (see "LLM modes" above). To use a real Claude model instead, set one of:
    - **AI Gateway (recommended)** — gives you usage/cost visibility and lets you rotate or swap the

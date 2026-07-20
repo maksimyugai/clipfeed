@@ -2,6 +2,7 @@ import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { runAgentJob } from "./agent.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
+import { FakeQueue } from "./testing/fake_queue.ts";
 import type { SourceConfig } from "./agent-types.ts";
 
 // Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
@@ -171,6 +172,28 @@ Deno.test("runAgentJob: daily budget exhausted mid-run -> remaining picks land '
     const failed = agentRows.filter((r) => r.status === "failed" && r.error === "daily-limit");
     assertEquals(ready.length, 2);
     assertEquals(failed.length, 3);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("runAgentJob: with JOBS configured, enqueues one 'process' message per pick instead of running the pipeline inline", async () => {
+  const restore = stubFetch();
+  try {
+    const jobs = new FakeQueue();
+    const env = makeEnv({ JOBS: jobs });
+    await runAgentJob(env, FIVE_RSS_SOURCES);
+
+    const db = env.DB as unknown as FakeD1;
+    const agentRows = db.rows.filter((r) => r.added_via === "agent");
+    assertEquals(agentRows.length, 5);
+    // Still 'pending' — enqueued, not run inline.
+    assertEquals(agentRows.every((r) => r.status === "pending"), true);
+
+    assertEquals(jobs.sent.length, 5);
+    assertEquals(jobs.sent.every((m) => m.kind === "process"), true);
+    const enqueuedIds = new Set(jobs.sent.map((m) => m.articleId));
+    assertEquals(enqueuedIds, new Set(agentRows.map((r) => r.id as string)));
   } finally {
     restore();
   }

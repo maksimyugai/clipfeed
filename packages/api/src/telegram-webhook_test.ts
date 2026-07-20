@@ -2,6 +2,7 @@ import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
+import { FakeQueue } from "./testing/fake_queue.ts";
 import type { TelegramMessage, TelegramUpdate } from "./telegram-client.ts";
 
 const OWNER_CHAT_ID = "999";
@@ -45,6 +46,10 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
       },
       put(key: string, value: string): Promise<void> {
         kv.set(key, value);
+        return Promise.resolve();
+      },
+      delete(key: string): Promise<void> {
+        kv.delete(key);
         return Promise.resolve();
       },
     },
@@ -329,6 +334,37 @@ Deno.test("webhook: owner URL message -> immediate 'saving' reply, pipeline runs
     assertEquals(editCall !== undefined, true);
     assertEquals((editCall!.body.text as string).startsWith("✓ Заголовок"), true);
     assertEquals((editCall!.body.text as string).includes("Кратко об этом."), true);
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("webhook: with JOBS configured, enqueues a 'process' message carrying the notify target instead of running inline", async () => {
+  const stub = stubFetch();
+  try {
+    const jobs = new FakeQueue();
+    const env = makeEnv({ JOBS: jobs });
+    const { ctx, settle } = makeExecutionContext();
+
+    const res = await webhookRequest(
+      env,
+      ctx,
+      messageUpdate({ text: "https://example.com/tg-queued" }),
+    );
+    assertEquals(res.status, 200);
+    await settle();
+
+    assertEquals(stub.telegramCalls.length, 1);
+    assertEquals(stub.telegramCalls[0].body.text, "Сохраняю…");
+
+    const db = env.DB as FakeD1;
+    const row = db.rows[0];
+    assertEquals(row.status, "pending"); // no consumer ran — only enqueued
+
+    assertEquals(jobs.sent.length, 1);
+    assertEquals(jobs.sent[0].kind, "process");
+    assertEquals(jobs.sent[0].articleId, row.id);
+    assertEquals(jobs.sent[0].notify, { chatId: OWNER_CHAT_ID, messageId: 1000 });
   } finally {
     stub.restore();
   }
