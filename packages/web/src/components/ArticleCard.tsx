@@ -6,6 +6,7 @@ import { getArticle } from "../api.ts";
 import { selectSummaryFields } from "../lib/summaryFields.ts";
 import { formatDate } from "../lib/format.ts";
 import { nextPollDelayMs, pollReducer, type PollState } from "../lib/pollSchedule.ts";
+import { articleErrorText, isPermanentFailure } from "../lib/failureDisplay.ts";
 
 const JUST_READY_HIGHLIGHT_MS = 2000;
 
@@ -237,19 +238,31 @@ export function ArticleCard(props: ArticleCardProps) {
   }
 
   if (article.status === "failed") {
+    // A PERMANENT failure (thin/mirror page, 404, removed, ssrf-blocked)
+    // won't succeed on retry no matter how many times it's tried — hiding
+    // Retry and making Delete the obvious action is honest, not just a
+    // style choice; see failureDisplay.ts, which classifies from the same
+    // stored error text the pipeline itself used (see classify-failure.ts).
+    const permanent = isPermanentFailure(article.error);
     return (
       <article class="card card--failed">
         <div class="card-date">{formatDate(article.added_at, lang)}</div>
         <h3 class="card-title">{article.title}</h3>
-        <p class="error-text">{dict.errorPrefix}: {article.error ?? "—"}</p>
+        <p class="error-text">{articleErrorText(article.error, dict)}</p>
         {isOwner && (
           <div class="card-failed-actions">
-            <button type="button" class="retry-button" onClick={() => onRetry(article.id)}>
-              {dict.retryButton}
-            </button>
+            {!permanent && (
+              <button
+                type="button"
+                class="retry-button"
+                onClick={() => onRetry(article.id)}
+              >
+                {dict.retryButton}
+              </button>
+            )}
             <button
               type="button"
-              class="delete-button-outline"
+              class={permanent ? "delete-button-prominent" : "delete-button-outline"}
               onClick={() => {
                 if (confirm(dict.deleteConfirm)) onDelete(article.id);
               }}

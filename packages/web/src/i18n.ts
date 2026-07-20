@@ -30,6 +30,12 @@ export interface Dictionary {
   checkNowButton: string;
   retryButton: string;
   errorPrefix: string;
+  couldNotProcessLabel: string;
+  permanentFailurePrefix: string;
+  permanentReasonInsufficientText: string;
+  permanentReasonNotFound: string;
+  permanentReasonRemoved: string;
+  permanentReasonSsrfBlocked: string;
   readMore: string;
   tldrLabel: string;
   summaryByPrefix: string;
@@ -85,6 +91,12 @@ const ru: Dictionary = {
   checkNowButton: "Проверить",
   retryButton: "Повторить",
   errorPrefix: "Ошибка",
+  couldNotProcessLabel: "Не удалось обработать",
+  permanentFailurePrefix: "Не обработать",
+  permanentReasonInsufficientText: "на странице нет текста статьи",
+  permanentReasonNotFound: "страница не найдена",
+  permanentReasonRemoved: "страница удалена источником",
+  permanentReasonSsrfBlocked: "ссылка заблокирована политикой безопасности",
   readMore: "читать далее",
   tldrLabel: "TL;DR",
   summaryByPrefix: "Пересказ Claude по статье",
@@ -140,6 +152,12 @@ const en: Dictionary = {
   checkNowButton: "Check now",
   retryButton: "Retry",
   errorPrefix: "Error",
+  couldNotProcessLabel: "Could not be processed",
+  permanentFailurePrefix: "Could not process",
+  permanentReasonInsufficientText: "the page has no article text",
+  permanentReasonNotFound: "the page was not found",
+  permanentReasonRemoved: "the page was removed by the source",
+  permanentReasonSsrfBlocked: "the link was blocked by security policy",
   readMore: "read more",
   tldrLabel: "TL;DR",
   summaryByPrefix: "Summary by Claude from",
