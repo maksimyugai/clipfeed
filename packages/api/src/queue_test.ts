@@ -13,26 +13,42 @@ const VALID_SUMMARY = {
   title_ru: "Заголовок",
   title_en: "Example Title",
   tldr_ru:
-    "Кратко. Компания повысила стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик.",
+    "Кратко. Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса, а годовые подписчики получат отсрочку до продления плана.",
   tldr_en:
-    "Short summary. The company raised its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs.",
+    "Short summary. The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
+  body_ru: [
+    "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
+    "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
+  ],
+  body_en: [
+    "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
+    "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
+  ],
   bullets_ru: [
-    "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
-    "Годовые подписчики сохранят текущую цену до продления.",
-    "Компания откладывала повышение полтора года.",
+    "Цена вырастет с $5 до $8 в месяц — рост почти на 60% для новых платежей.",
+    "Годовые подписчики сохранят текущую цену до момента продления плана.",
+    "Компания откладывала повышение полтора года, опасаясь навредить малому бизнесу.",
+    "Рост издержек на серверы стал основной причиной, которую назвала компания.",
   ],
   bullets_en: [
-    "Point 1 covers pricing.",
-    "Point 2 covers rollout timing.",
-    "Point 3 covers scope.",
+    "Point 1 covers pricing: the new rate is nearly 60% higher than before.",
+    "Point 2 covers rollout timing: annual subscribers get a grace period.",
+    "Point 3 covers scope: the change applies to subscribers everywhere.",
+    "Point 4 covers the stated reason: rising server and bandwidth costs.",
   ],
   tags: ["technology"],
   lang_original: "en",
 };
 
+// Long enough that extraction clears pipeline.ts's MIN_EXTRACTED_TEXT_CHARS
+// (300) guard.
 const ARTICLE_HTML = "<html><head><title>Example</title></head><body><article><h1>Example</h1>" +
-  "<p>Hello world, this is the first paragraph of example content.</p>" +
-  "<p>Here is a second paragraph with more detail to summarize.</p></article></body></html>";
+  "<p>Hello world, this is the first paragraph of example content, with enough extra words to " +
+  "comfortably clear the minimum extraction length used by the pipeline's insufficient-text " +
+  "guard in tests.</p>" +
+  "<p>Here is a second paragraph with more detail to summarize, padded a little further so the " +
+  "combined extracted text safely stays well above that threshold even after Readability trims " +
+  "whitespace.</p></article></body></html>";
 
 class MapKv implements KVNamespace {
   store = new Map<string, string>();

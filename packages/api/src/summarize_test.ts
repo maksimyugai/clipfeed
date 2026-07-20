@@ -22,26 +22,37 @@ function makeStubAi(handler: (model: string, input: Record<string, unknown>) => 
   };
 }
 
-// Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
-// 20-220 chars and not duplicating the tldr, 1-6 tags) so it round-trips
-// through both the shape-only parsers and the full summarizeArticle*
-// validate-and-retry path used throughout this file.
+// Meets validateSummary's content bar (>=200 char tldrs, 4-7 bullets each
+// 40-220 chars, 2-4 body paragraphs each 300-700 chars, none duplicating the
+// tldr, 1-6 tags) so it round-trips through both the shape-only parsers and
+// the full summarizeArticle* validate-and-retry path used throughout this
+// file.
 const VALID_SUMMARY = {
   title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
   title_en: "Company Raises Subscription Price 60% Starting September 1",
   tldr_ru:
-    "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы. Изменение затронет около 2 миллионов подписчиков сервиса.",
+    "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса, а годовые подписчики получат отсрочку до продления плана.",
   tldr_en:
-    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server costs. The change affects roughly 2 million subscribers.",
+    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
+  body_ru: [
+    "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
+    "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
+  ],
+  body_en: [
+    "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
+    "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
+  ],
   bullets_ru: [
-    "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
-    "Годовые подписчики сохранят текущую цену до продления.",
-    "Компания откладывала повышение полтора года.",
+    "Те, кто уже на годовом плане, сохранят старую цену до момента продления плана.",
+    "Компания откладывала повышение цены более года из опасений навредить малому бизнесу.",
+    "Решение было принято только после того, как расходы на инфраструктуру продолжили расти.",
+    "Ни один из конкурентов пока не объявлял о похожем шаге.",
   ],
   bullets_en: [
-    "Price rises from $5 to $8 per month, a 60% increase.",
-    "Existing annual-plan subscribers keep their price until renewal.",
-    "The company delayed the increase for a year and a half.",
+    "Existing annual-plan subscribers keep their price until their plan comes up for renewal.",
+    "The company delayed the increase for over a year out of concern for small businesses.",
+    "Leadership only moved forward once infrastructure costs kept climbing regardless.",
+    "No competitor has announced a comparable price change so far.",
   ],
   tags: ["технологии", "google"],
   lang_original: "en",
@@ -356,18 +367,28 @@ const VALID_SUMMARY_2 = {
   title_ru: "Разработчики выпустили новую версию с поддержкой офлайн-режима",
   title_en: "Developers Ship New Version With Offline Mode Support",
   tldr_ru:
-    "Команда выпустила версию 4.0 с поддержкой офлайн-режима, позволяющей работать без подключения к интернету. Синхронизация данных происходит автоматически при восстановлении сети.",
+    "Команда выпустила версию 4.0 с поддержкой офлайн-режима, позволяющей работать без подключения к интернету. Синхронизация данных происходит автоматически при восстановлении сети, а конфликты правок разрешаются автоматически по времени сохранения.",
   tldr_en:
-    "The team shipped version 4.0 with offline mode support, letting users work without an internet connection. Data syncs automatically once the connection is restored.",
+    "The team shipped version 4.0 with offline mode support, letting users work without an internet connection. Data syncs automatically once the connection is restored, and edit conflicts are resolved automatically by save time.",
+  body_ru: [
+    "Новая версия позволяет продолжать работу даже без подключения к интернету, сохраняя все изменения локально до восстановления связи. Как только соединение появляется снова, приложение автоматически синхронизирует накопленные изменения с сервером без участия пользователя, обычно в течение нескольких секунд после восстановления сети.",
+    "Локальный кеш на устройстве ограничен объёмом в 500 мегабайт, чего разработчики считают достаточным для типичного сценария использования в течение нескольких дней офлайн-работы. Если во время автономной работы возникает конфликт правок между устройствами, система разрешает его в пользу версии с более поздней меткой сохранения. Обновление доступно всем пользователям бесплатно и устанавливается автоматически.",
+  ],
+  body_en: [
+    "The new version lets people keep working even without an internet connection, storing every change locally until connectivity returns. As soon as the connection comes back, the app automatically syncs the accumulated changes to the server without any user action required, usually within a few seconds of the network coming back online.",
+    "The on-device local cache is capped at 500 megabytes, which the developers consider enough for a typical multi-day offline session. If an edit conflict arises between devices during offline work, the system resolves it in favor of whichever version has the later save timestamp. The update is available to all users at no cost and installs automatically.",
+  ],
   bullets_ru: [
-    "Кеш ограничен 500 МБ на устройство.",
-    "Конфликты правок разрешаются в пользу последней сохранённой версии.",
-    "Обновление доступно всем пользователям бесплатно.",
+    "Локальный кеш ограничен объёмом 500 мегабайт на одно устройство.",
+    "Конфликты правок разрешаются в пользу более поздней сохранённой версии.",
+    "Синхронизация запускается автоматически сразу после восстановления связи.",
+    "Обновление доступно всем пользователям бесплатно и без отдельной оплаты.",
   ],
   bullets_en: [
-    "The local cache is capped at 500 MB per device.",
+    "The local cache is capped at 500 megabytes per device.",
     "Edit conflicts resolve in favor of the most recently saved version.",
-    "The update is available to all users at no cost.",
+    "Syncing kicks off automatically as soon as connectivity returns.",
+    "The update is available to every user at no additional cost.",
   ],
   tags: ["новости"],
   lang_original: "ru",
@@ -720,18 +741,28 @@ function makeValidSummary(overrides: Partial<SummaryJson> = {}): SummaryJson {
     title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
     title_en: "Company Raises Subscription Price 60% Starting September 1",
     tldr_ru:
-      "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы. Изменение затронет около 2 миллионов подписчиков сервиса.",
+      "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса, а годовые подписчики получат отсрочку до продления плана.",
     tldr_en:
-      "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server costs. The change affects roughly 2 million subscribers.",
+      "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
+    body_ru: [
+      "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
+      "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
+    ],
+    body_en: [
+      "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
+      "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
+    ],
     bullets_ru: [
-      "Цена вырастет с $5 до $8 в месяц — рост на 60%.",
-      "Годовые подписчики сохранят текущую цену до продления.",
-      "Компания откладывала повышение полтора года.",
+      "Те, кто уже на годовом плане, сохранят старую цену до момента продления плана.",
+      "Компания откладывала повышение цены более года из опасений навредить малому бизнесу.",
+      "Решение было принято только после того, как расходы на инфраструктуру продолжили расти.",
+      "Ни один из конкурентов пока не объявлял о похожем шаге.",
     ],
     bullets_en: [
-      "Price rises from $5 to $8 per month, a 60% increase.",
-      "Existing annual-plan subscribers keep their price until renewal.",
-      "The company delayed the increase for a year and a half.",
+      "Existing annual-plan subscribers keep their price until their plan comes up for renewal.",
+      "The company delayed the increase for over a year out of concern for small businesses.",
+      "Leadership only moved forward once infrastructure costs kept climbing regardless.",
+      "No competitor has announced a comparable price change so far.",
     ],
     tags: ["technology", "pricing"],
     lang_original: "en",
@@ -774,78 +805,88 @@ Deno.test("validateSummary: title at exactly 120 chars is fine (boundary)", () =
   assertEquals(result.ok, true);
 });
 
-Deno.test("validateSummary: tldr under 120 chars is a violation", () => {
+Deno.test("validateSummary: tldr under 200 chars is a violation", () => {
   const result = validateSummary(makeValidSummary({ tldr_ru: "Слишком коротко." }));
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("tldr_ru") && v.includes("120")),
+      result.violations.some((v) => v.includes("tldr_ru") && v.includes("200")),
       true,
     );
   }
 });
 
-Deno.test("validateSummary: tldr at exactly 120 chars is fine (boundary)", () => {
-  const result = validateSummary(makeValidSummary({ tldr_en: "x".repeat(120) }));
+Deno.test("validateSummary: tldr at exactly 200 chars is fine (boundary)", () => {
+  const result = validateSummary(makeValidSummary({ tldr_en: "x".repeat(200) }));
   assertEquals(result.ok, true);
 });
 
-Deno.test("validateSummary: fewer than 3 bullets is a violation", () => {
+Deno.test("validateSummary: fewer than 4 bullets is a violation", () => {
   const result = validateSummary(
-    makeValidSummary({ bullets_ru: ["Один пункт длиннее двадцати символов."] }),
+    makeValidSummary({
+      bullets_ru: [
+        "Один пункт длиннее сорока символов для проверки.",
+        "Второй пункт тоже достаточно длинный для правил.",
+      ],
+    }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
-    assertEquals(result.violations.some((v) => v.includes("bullets_ru") && v.includes("3")), true);
+    assertEquals(result.violations.some((v) => v.includes("bullets_ru") && v.includes("4")), true);
   }
 });
 
-Deno.test("validateSummary: more than 6 bullets is a violation", () => {
+Deno.test("validateSummary: more than 7 bullets is a violation", () => {
   const bullets = Array.from(
-    { length: 7 },
-    (_, i) => `Пункт номер ${i} с достаточной длиной текста.`,
+    { length: 8 },
+    (_, i) => `Пункт номер ${i} с вполне достаточной длиной текста для проверки.`,
   );
   const result = validateSummary(makeValidSummary({ bullets_ru: bullets }));
   assertEquals(result.ok, false);
   if (!result.ok) {
-    assertEquals(result.violations.some((v) => v.includes("bullets_ru") && v.includes("6")), true);
+    assertEquals(result.violations.some((v) => v.includes("bullets_ru") && v.includes("7")), true);
   }
 });
 
-Deno.test("validateSummary: exactly 3 and exactly 6 bullets are both fine (boundaries)", () => {
-  const three = validateSummary(
+Deno.test("validateSummary: exactly 4 and exactly 7 bullets are both fine (boundaries)", () => {
+  const four = validateSummary(
     makeValidSummary({
       bullets_en: [
-        "First concrete fact goes here now.",
-        "Second concrete fact goes here now.",
-        "Third concrete fact goes here now.",
+        "First concrete fact goes here now for the reader.",
+        "Second concrete fact goes here now for the reader.",
+        "Third concrete fact goes here now for the reader.",
+        "Fourth concrete fact goes here now for the reader.",
       ],
     }),
   );
-  assertEquals(three.ok, true);
+  assertEquals(four.ok, true, JSON.stringify(!four.ok ? four.violations : []));
 
-  const six = validateSummary(
+  const seven = validateSummary(
     makeValidSummary({
-      bullets_en: Array.from({ length: 6 }, (_, i) => `Concrete fact number ${i} in the list.`),
+      bullets_en: Array.from(
+        { length: 7 },
+        (_, i) => `Concrete fact number ${i} in the list for the reader to scan quickly.`,
+      ),
     }),
   );
-  assertEquals(six.ok, true);
+  assertEquals(seven.ok, true, JSON.stringify(!seven.ok ? seven.violations : []));
 });
 
-Deno.test("validateSummary: a bullet under 20 chars is a violation", () => {
+Deno.test("validateSummary: a bullet under 40 chars is a violation", () => {
   const result = validateSummary(
     makeValidSummary({
       bullets_en: [
         "Too short.",
-        "Second concrete fact goes here now.",
-        "Third concrete fact goes here now.",
+        "Second concrete fact goes here now for the reader.",
+        "Third concrete fact goes here now for the reader.",
+        "Fourth concrete fact goes here now for the reader.",
       ],
     }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("20")),
+      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("40")),
       true,
     );
   }
@@ -856,8 +897,9 @@ Deno.test("validateSummary: a bullet over 220 chars is a violation", () => {
     makeValidSummary({
       bullets_en: [
         "x".repeat(221),
-        "Second concrete fact goes here now.",
-        "Third concrete fact goes here now.",
+        "Second concrete fact goes here now for the reader.",
+        "Third concrete fact goes here now for the reader.",
+        "Fourth concrete fact goes here now for the reader.",
       ],
     }),
   );
@@ -872,7 +914,7 @@ Deno.test("validateSummary: a bullet over 220 chars is a violation", () => {
 
 Deno.test("validateSummary: a bullet duplicating the tldr (>=80% word overlap) is a violation", () => {
   const tldr =
-    "The company is raising its subscription price from five dollars to eight dollars a month starting soon.";
+    "The company is raising its subscription price from five dollars to eight dollars a month starting soon, according to a statement released to reporters on Tuesday afternoon this week.";
   const duplicateBullet =
     "The company is raising its subscription price from five dollars to eight.";
   const result = validateSummary(
@@ -880,8 +922,9 @@ Deno.test("validateSummary: a bullet duplicating the tldr (>=80% word overlap) i
       tldr_en: tldr,
       bullets_en: [
         duplicateBullet,
-        "Second concrete fact goes here now.",
-        "Third concrete fact goes here now.",
+        "Second concrete fact goes here now for the reader.",
+        "Third concrete fact goes here now for the reader.",
+        "Fourth concrete fact goes here now for the reader.",
       ],
     }),
   );
@@ -896,7 +939,95 @@ Deno.test("validateSummary: a bullet duplicating the tldr (>=80% word overlap) i
 
 Deno.test("validateSummary: a bullet sharing only a few words with the tldr is NOT flagged as a duplicate", () => {
   const result = validateSummary(makeValidSummary());
-  assertEquals(result.ok, true);
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
+// --- validateSummary: body paragraph rules ---
+
+Deno.test("validateSummary: fewer than 2 body paragraphs is a violation", () => {
+  const result = validateSummary(makeValidSummary({ body_en: [makeValidSummary().body_en[0]] }));
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations.some((v) => v.includes("body_en") && v.includes("2")), true);
+  }
+});
+
+Deno.test("validateSummary: more than 4 body paragraphs is a violation", () => {
+  const paragraph = "x".repeat(400);
+  const result = validateSummary(
+    makeValidSummary({ body_en: [paragraph, paragraph, paragraph, paragraph, paragraph] }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations.some((v) => v.includes("body_en") && v.includes("4")), true);
+  }
+});
+
+Deno.test("validateSummary: exactly 2 and exactly 4 body paragraphs are both fine (boundaries)", () => {
+  const paragraph = (n: number) =>
+    `Paragraph number ${n} with enough distinct words of its own to clear the minimum ` +
+    `paragraph length threshold and avoid tripping the tldr-overlap duplicate check by ` +
+    `bringing in genuinely new vocabulary that the short tldr sentence never mentions at all, ` +
+    `padded out with a bit more filler text here so the whole thing comfortably clears three ` +
+    `hundred characters with real headroom to spare for this specific boundary test case.`;
+
+  const two = validateSummary(makeValidSummary({ body_en: [paragraph(1), paragraph(2)] }));
+  assertEquals(two.ok, true, JSON.stringify(!two.ok ? two.violations : []));
+
+  const four = validateSummary(
+    makeValidSummary({ body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4)] }),
+  );
+  assertEquals(four.ok, true, JSON.stringify(!four.ok ? four.violations : []));
+});
+
+Deno.test("validateSummary: a body paragraph under 300 chars is a violation", () => {
+  const short = makeValidSummary().body_en[0].slice(0, 100);
+  const result = validateSummary(
+    makeValidSummary({ body_en: [short, makeValidSummary().body_en[1]] }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("body_en[0]") && v.includes("300")),
+      true,
+    );
+  }
+});
+
+Deno.test("validateSummary: a body paragraph over 700 chars is a violation", () => {
+  const tooLong = "x".repeat(701);
+  const result = validateSummary(
+    makeValidSummary({ body_en: [tooLong, makeValidSummary().body_en[1]] }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("body_en[0]") && v.includes("700")),
+      true,
+    );
+  }
+});
+
+Deno.test("validateSummary: a body paragraph duplicating the tldr (>=80% word overlap) is a violation", () => {
+  const tldr =
+    "The company is raising its subscription price from five dollars to eight dollars a month starting soon, according to a statement released to reporters on Tuesday afternoon this week.";
+  // Same words as the tldr, padded past 300 chars with filler that repeats
+  // short (<=2 char) tokens the overlap heuristic ignores, so the overlap
+  // ratio over the counted words stays >=80%.
+  const duplicateParagraph = `${tldr} ${tldr}`.slice(0, 380);
+  const result = validateSummary(
+    makeValidSummary({
+      tldr_en: tldr,
+      body_en: [duplicateParagraph, makeValidSummary().body_en[1]],
+    }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("body_en[0]") && v.includes("duplicates")),
+      true,
+    );
+  }
 });
 
 Deno.test("validateSummary: zero tags is a violation", () => {
@@ -978,8 +1109,8 @@ Deno.test("summarizeArticle: a content-quality failure retries with the violatio
     assertEquals(result, makeValidSummary());
     assertEquals(calls, 2);
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
-    assertEquals(secondMessage.includes("tldr_ru must be at least 120 characters"), true);
-    assertEquals(secondMessage.includes("tldr_en must be at least 120 characters"), true);
+    assertEquals(secondMessage.includes("tldr_ru must be at least 200 characters"), true);
+    assertEquals(secondMessage.includes("tldr_en must be at least 200 characters"), true);
   } finally {
     globalThis.fetch = originalFetch;
   }
