@@ -91,18 +91,25 @@ no separate "prompt number" and "validator number" that can drift out of sync wi
 how much summary you want to read — the target _total_ body length in characters, across all
 paragraphs, per language. Everything else derives from it:
 
-- **Paragraph count** widens as the target grows: 2 paragraphs up to 900 chars, 2–3 up to 2000, 3–4
-  beyond that.
-- **Per-paragraph length**: the prompt tells the model to aim for `target ÷ paragraph-count ± 25%`;
-  the validator's hard bounds widen that to `−40%/+40%` (so a first-attempt miss near the aim band
-  still passes), floored so even a small target still yields a real paragraph (STRICT ≥ 250 chars,
-  RELAXED ≥ 120) — no more silent, always-700 ceiling regardless of what you asked for.
+- **Paragraph count** widens as the target grows, based on the tier your target falls into (≤900,
+  ≤2000, beyond): STRICT gets 2, 2–3, or 3–4 paragraphs; RELAXED gets one extra paragraph of
+  headroom on the upper end of whichever tier STRICT lands in (2–3, 2–4, or 3–5) — Llama's shorter
+  natural paragraphs need more of them to add up to a comparable total.
+- **Per-paragraph length**: STRICT's per-paragraph target is `target ÷ paragraph-count`; RELAXED's
+  is computed from a _scaled-down_ effective target (`round(target × 0.7)`) instead of the raw
+  setting — Llama reliably writes shorter paragraphs than Claude given the same numbers, so RELAXED
+  asks for what it actually produces rather than a STRICT-shaped target under a different name. Both
+  tiers' prompts state `aim for ± 25%` of their own per-paragraph target. The validator's hard
+  bounds widen further: STRICT `−40%/+40%`, RELAXED `−55%/+40%` (more room below, not above — Llama
+  undershoots, it doesn't overshoot), both floored so even a small target still yields a real
+  paragraph (STRICT ≥ 250 chars, RELAXED ≥ 120) — no more silent, always-700 ceiling regardless of
+  what you asked for.
 - **tldr minimum**: STRICT is `max(150, 15% of target)` capped at 350 characters; RELAXED is 75% of
-  whatever STRICT computes to.
+  whatever STRICT computes to — from the raw target, not the scaled-down effective one.
 - **Bullets** don't scale with the target — they're about the _count_ of scannable facts, not prose
   volume, so both tiers keep their original ranges (STRICT 4–7 × 40–220 chars, RELAXED 3–7 × 30–220
   chars).
-- **`max_tokens`** scales with the target too (clamped to `[2500, 6000]`), so a larger requested
+- **`max_tokens`** scales with the raw target too (clamped to `[2500, 6000]`), so a larger requested
   digest doesn't get cut off mid-paragraph.
 
 A bad override (missing, non-numeric, or outside `[400, 4000]`) falls back to the `1200` default and
@@ -119,16 +126,25 @@ paragraph vs. a bullet vs. a tldr should look like), but its exact character cou
 target — the sizing block above it (the actual `{min}`–`{max}`, "aim for X–Y", "~N characters total"
 numbers) is what the model is expected to follow for the real request.
 
-**Why RELAXED exists at all:** live-testing against a real Wikipedia article in Workers AI mode
-during this feature's development still failed on paragraph-length undershoots in the 240–290
-character range at the default target — RELAXED's floor only diverges from STRICT's at very small
-targets (see the "Known edge case" above), so at the default 1200-char target the two tiers'
-body-paragraph bounds are nearly identical. This is a known, live-observed consequence of deriving
-both tiers from the same formula rather than keeping RELAXED permanently wide-open; if Workers AI's
-pass rate matters more than a single unified formula, lowering `SUMMARY_BODY_TARGET_CHARS` for a
-workers-ai-only deployment is the most direct lever available today. If quality matters more than
-staying on the free tier at all, set up AI Gateway or direct Anthropic (above) — gateway/direct
-summaries always use STRICT regardless of how good a given Llama response might have been.
+**Why RELAXED is genuinely relaxed (not just STRICT under a different name):** an earlier version of
+this derivation scaled both tiers off the _same_ raw target and only let RELAXED's floor differ from
+STRICT's — at the default 1200-char target that floor rarely bound, so the two tiers converged onto
+nearly identical body-paragraph bounds. Live-testing a real Wikipedia article in Workers AI mode
+caught this directly: 2/2 runs failed on paragraph-length undershoots in the 240–290 character range
+that a genuinely permissive RELAXED profile should accept. The fix is the effective-target scaling
+(RELAXED derives its per-paragraph size from `round(target × 0.7)`, not the raw target — Llama
+reliably writes shorter paragraphs than Claude given the same numbers) and wider paragraph-count
+range described above — RELAXED's bounds are now provably more permissive than STRICT's at every
+target (lower floor, wider paragraph-count range), not just at the smallest one, and a follow-up
+live-verify run (2 real articles, workers-ai mode, 3 total attempts including one retry) confirmed
+it: **zero of those attempts failed on a paragraph-length violation** — one article passed cleanly
+first-try with 162–225-char paragraphs that the old formula would have rejected outright; the other
+failed twice, but on unrelated validation rules (a bullet duplicating the tldr, then a paragraph/
+bullet _count_ miss) rather than length, meaning the specific regression this fix targets is
+resolved even though Workers AI's overall first-try pass rate on a harder article isn't 100%. If
+quality matters more than staying on the free tier at all, set up AI Gateway or direct Anthropic
+(above) — gateway/direct summaries always use STRICT regardless of how good a given Llama response
+might have been.
 
 **Rescuing a backlog after changing this setting:** articles that failed with a
 `'internal:

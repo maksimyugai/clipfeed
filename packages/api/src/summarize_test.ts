@@ -379,7 +379,7 @@ const VALID_SUMMARY_2 = {
     "The team shipped version 4.0 with offline mode support, letting users work without an internet connection. Data syncs automatically once the connection is restored, and edit conflicts are resolved automatically by save time.",
   body_ru: [
     "Новая версия позволяет продолжать работу даже без подключения к интернету, сохраняя все изменения локально до восстановления связи. Как только соединение появляется снова, приложение автоматически синхронизирует накопленные изменения с сервером без участия пользователя, обычно в течение нескольких секунд после восстановления сети.",
-    "Локальный кеш на устройстве ограничен объёмом в 500 мегабайт, чего разработчики считают достаточным для типичного сценария использования в течение нескольких дней офлайн-работы. Если во время автономной работы возникает конфликт правок между устройствами, система разрешает его в пользу версии с более поздней меткой сохранения. Обновление доступно всем пользователям бесплатно и устанавливается автоматически.",
+    "Локальный кеш на устройстве ограничен объёмом в 500 мегабайт, чего разработчики считают достаточным для типичного сценария использования в течение нескольких дней офлайн-работы. Если во время автономной работы возникает конфликт правок между устройствами, система разрешает его в пользу версии с более поздней меткой сохранения.",
   ],
   body_en: [
     "The new version lets people keep working even without an internet connection, storing every change locally until connectivity returns. As soon as the connection comes back, the app automatically syncs the accumulated changes to the server without any user action required, usually within a few seconds of the network coming back online.",
@@ -1122,39 +1122,57 @@ Deno.test("validateSummary (RELAXED): a 30-char bullet is fine, 29 chars is a vi
   assertEquals(twentyNine.ok, false);
 });
 
-Deno.test("validateSummary (RELAXED): 3 body paragraphs is fine, 4 is a violation (boundary; same paragraph-count range as STRICT at this target)", () => {
+Deno.test("validateSummary (RELAXED): 4 body paragraphs is fine, 5 is a violation (boundary; RELAXED gets one more paragraph of headroom than STRICT at this target)", () => {
   const paragraph = (n: number) =>
     `Paragraph number ${n} with enough distinct filler content padded out well past the default ` +
-    "target's minimum paragraph length of 288 characters so this boundary test isn't accidentally " +
-    "failing on length instead of count, with a bit more padding text here to comfortably clear " +
-    "that floor with real headroom to spare for this specific paragraph-count boundary test case.";
-  const three = validateSummary(
-    makeValidSummary({
-      body_en: [paragraph(1), paragraph(2), paragraph(3)],
-    }),
-    DEFAULT_RELAXED_SPEC,
-  );
-  assertEquals(three.ok, true, JSON.stringify(!three.ok ? three.violations : []));
-
+    "target minimum paragraph length so this boundary test isn't accidentally failing on length instead of count.";
   const four = validateSummary(
     makeValidSummary({
       body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4)],
     }),
     DEFAULT_RELAXED_SPEC,
   );
-  assertEquals(four.ok, false);
+  assertEquals(four.ok, true, JSON.stringify(!four.ok ? four.violations : []));
+
+  const five = validateSummary(
+    makeValidSummary({
+      body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4), paragraph(5)],
+    }),
+    DEFAULT_RELAXED_SPEC,
+  );
+  assertEquals(five.ok, false);
 });
 
-Deno.test("validateSummary: RELAXED's paragraph-length FLOOR only diverges from STRICT's at a small enough target (the default target's natural band already clears both floors)", () => {
-  // At targetTotalChars=400, STRICT's 250-char floor binds (400/2 * 0.6 =
-  // 120 < 250) but RELAXED's 120-char floor doesn't (120 == 120) — the one
-  // case in the derivation where the two profiles actually produce
-  // different minParagraphChars for the same target.
-  const strict400 = deriveSummarySpec(400, "strict");
-  const relaxed400 = deriveSummarySpec(400, "relaxed");
-  assertEquals(strict400.minParagraphChars, 250);
-  assertEquals(relaxed400.minParagraphChars, 120);
-  assertEquals(strict400.maxParagraphChars, relaxed400.maxParagraphChars);
+Deno.test("validateSummary: RELAXED is genuinely more permissive than STRICT at every target — lower floor, wider paragraph range", () => {
+  // Task 16.5: a profile-agnostic formula (Task 16) converged RELAXED onto
+  // nearly the same bounds as STRICT at the default target, which is why
+  // Llama failed 2/2 live runs on paragraphs the OLD (pre-Task-16) RELAXED
+  // profile passed 4/4. This is the regression test for that: RELAXED's
+  // effective-target scaling (see RELAXED_EFFECTIVE_TARGET_RATIO) and wider
+  // paragraph-count range must produce a strictly lower minParagraphChars
+  // and a paragraph-count range that's a proper superset of STRICT's, at
+  // every target — not just the smallest one.
+  for (const target of [400, 800, 1200, 2000, 4000] as const) {
+    const strict = deriveSummarySpec(target, "strict");
+    const relaxed = deriveSummarySpec(target, "relaxed");
+    assertEquals(relaxed.minParagraphChars < strict.minParagraphChars, true, `target=${target}`);
+    assertEquals(relaxed.minBodyParagraphs, strict.minBodyParagraphs, `target=${target}`);
+    assertEquals(relaxed.maxBodyParagraphs, strict.maxBodyParagraphs + 1, `target=${target}`);
+  }
+});
+
+Deno.test("validateSummary: a paragraph sample that the OLD RELAXED profile passed (240-290 chars x3) passes the NEW RELAXED profile at the default target", () => {
+  // The exact live-evidence shape from Task 16.5: Llama wrote 3 paragraphs
+  // in the 241-287 char range and failed against Task 16's profile-agnostic
+  // 288-char floor. The re-derived RELAXED profile must accept this again.
+  const paragraphs = [241, 265, 287].map((len, i) =>
+    `Paragraph ${i} content padded to an exact test length. `.padEnd(len, "x")
+  );
+  const result = validateSummary(
+    makeValidSummary({ body_en: paragraphs }),
+    DEFAULT_RELAXED_SPEC,
+  );
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
 });
 
 Deno.test("validateSummary: multiple simultaneous violations are all reported, not just the first", () => {
@@ -1498,24 +1516,84 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
   const expected: Record<number, { strict: Partial<SummarySpec>; relaxed: Partial<SummarySpec> }> =
     {
       400: {
-        strict: { minParagraphChars: 250, maxParagraphChars: 280, minTldrChars: 150 },
-        relaxed: { minParagraphChars: 120, maxParagraphChars: 280, minTldrChars: 113 },
+        strict: {
+          minParagraphChars: 250,
+          maxParagraphChars: 280,
+          minTldrChars: 150,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 2,
+        },
+        relaxed: {
+          minParagraphChars: 120,
+          maxParagraphChars: 157,
+          minTldrChars: 113,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 3,
+        },
       },
       800: {
-        strict: { minParagraphChars: 250, maxParagraphChars: 560, minTldrChars: 150 },
-        relaxed: { minParagraphChars: 240, maxParagraphChars: 560, minTldrChars: 113 },
+        strict: {
+          minParagraphChars: 250,
+          maxParagraphChars: 560,
+          minTldrChars: 150,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 2,
+        },
+        relaxed: {
+          minParagraphChars: 120,
+          maxParagraphChars: 314,
+          minTldrChars: 113,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 3,
+        },
       },
       1200: {
-        strict: { minParagraphChars: 288, maxParagraphChars: 672, minTldrChars: 180 },
-        relaxed: { minParagraphChars: 288, maxParagraphChars: 672, minTldrChars: 135 },
+        strict: {
+          minParagraphChars: 288,
+          maxParagraphChars: 672,
+          minTldrChars: 180,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 3,
+        },
+        relaxed: {
+          minParagraphChars: 126,
+          maxParagraphChars: 392,
+          minTldrChars: 135,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 4,
+        },
       },
       2000: {
-        strict: { minParagraphChars: 480, maxParagraphChars: 1120, minTldrChars: 300 },
-        relaxed: { minParagraphChars: 480, maxParagraphChars: 1120, minTldrChars: 225 },
+        strict: {
+          minParagraphChars: 480,
+          maxParagraphChars: 1120,
+          minTldrChars: 300,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 3,
+        },
+        relaxed: {
+          minParagraphChars: 210,
+          maxParagraphChars: 653,
+          minTldrChars: 225,
+          minBodyParagraphs: 2,
+          maxBodyParagraphs: 4,
+        },
       },
       4000: {
-        strict: { minParagraphChars: 686, maxParagraphChars: 1600, minTldrChars: 350 },
-        relaxed: { minParagraphChars: 686, maxParagraphChars: 1600, minTldrChars: 263 },
+        strict: {
+          minParagraphChars: 686,
+          maxParagraphChars: 1600,
+          minTldrChars: 350,
+          minBodyParagraphs: 3,
+          maxBodyParagraphs: 4,
+        },
+        relaxed: {
+          minParagraphChars: 315,
+          maxParagraphChars: 980,
+          minTldrChars: 263,
+          minBodyParagraphs: 3,
+          maxBodyParagraphs: 5,
+        },
       },
     };
 
