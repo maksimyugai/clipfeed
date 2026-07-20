@@ -100,8 +100,23 @@ export async function runSummarization(
 
 // Llama's context window is meaningfully smaller than what gateway/direct
 // Claude models accept — cap Workers AI's input text further than extract.ts's
-// general MAX_TEXT_CHARS to avoid an oversized-input failure on that path.
-const MAX_TEXT_CHARS_WORKERS_AI = 16_000;
+// general MAX_TEXT_CHARS (30k, unchanged) to avoid an oversized-input
+// failure on that path. Raised from 16k to 24k alongside the richer
+// body-paragraph summary schema (see summarize.ts) — more source text gives
+// the model more to draw the extra detail from; the queue consumer (not
+// ctx.waitUntil()) absorbs the resulting latency, see this task's latency
+// measurement note.
+const MAX_TEXT_CHARS_WORKERS_AI = 24_000;
+
+// Below this, there's nothing substantive to summarize — seen in practice on
+// link-post pages (a Twitter/X mirror like xcancel.com/nitter, a bare
+// redirect page, a JS-only SPA shell) where Readability's fallback to raw
+// body text still yields only nav/footer boilerplate. Sending that to the
+// LLM anyway produces either a fabricated summary (faithfulness violation)
+// or an opaque downstream failure; failing fast here instead gives a human
+// a clear, actionable reason (as opposed to a validation error whose real
+// cause — "there was nothing here" — is buried a level down).
+const MIN_EXTRACTED_TEXT_CHARS = 300;
 
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).length;
@@ -147,6 +162,15 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
       html_bytes: htmlBytes,
       text_chars: extracted.textContent.length,
     });
+
+    if (extracted.textContent.length < MIN_EXTRACTED_TEXT_CHARS) {
+      await markArticleFailed(
+        env.DB,
+        input.id,
+        `extraction: insufficient text (${extracted.textContent.length} chars)`,
+      );
+      return;
+    }
 
     const mode = selectProviderMode({
       aiGatewayUrl: env.AI_GATEWAY_URL,

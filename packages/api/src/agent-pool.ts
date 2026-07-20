@@ -5,6 +5,37 @@ import { findExistingUrls } from "./db.ts";
 const POOL_CAP = 120;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// Known thin/mirror hosts whose pages are link-posts, not articles — a
+// Twitter/X mirror or shortener yields ~0 chars of real extractable text
+// (Readability, and even the raw body-text fallback, mostly see nav/footer
+// chrome), which used to reach the LLM and either produce a hallucinated
+// summary or an opaque downstream failure (see pipeline.ts's
+// MIN_EXTRACTED_TEXT_CHARS guard, which now also catches this class at the
+// pipeline level — this filter just avoids spending a saved-article slot
+// and a pipeline run on a candidate that's guaranteed to hit it). Most HN
+// stories link to real articles, so this doesn't meaningfully shrink the
+// pool — extend as new thin hosts show up in practice.
+const THIN_HOST_DENYLIST = new Set([
+  "xcancel.com",
+  "nitter.net",
+  "twitter.com",
+  "x.com",
+  "t.co",
+]);
+
+function hostname(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return null;
+  }
+}
+
+function isThinHost(url: string): boolean {
+  const host = hostname(url);
+  return host !== null && THIN_HOST_DENYLIST.has(host);
+}
+
 function canonicalize(url: string): string {
   try {
     const u = new URL(url);
@@ -44,11 +75,19 @@ export async function buildCandidatePool(
   now: Date = new Date(),
 ): Promise<Candidate[]> {
   const fresh = candidates.filter((c) => isWithinWindow(c, now));
-  fresh.sort((a, b) => publishedAtMs(b) - publishedAtMs(a));
+
+  const substantial = fresh.filter((c) => {
+    if (isThinHost(c.url)) {
+      console.log(JSON.stringify({ event: "candidate_dropped_thin_host", url: c.url }));
+      return false;
+    }
+    return true;
+  });
+  substantial.sort((a, b) => publishedAtMs(b) - publishedAtMs(a));
 
   const seenCanonical = new Set<string>();
   const deduped: Candidate[] = [];
-  for (const candidate of fresh) {
+  for (const candidate of substantial) {
     const key = canonicalize(candidate.url);
     if (seenCanonical.has(key)) continue;
     seenCanonical.add(key);

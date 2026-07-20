@@ -170,8 +170,21 @@ export async function markArticleReady(
   ).run();
 }
 
+// Belt-and-braces: every call site today composes a guaranteed-non-empty
+// reason (an "internal: <stage>: <message>" prefix, a fixed string like
+// "daily-limit", etc.), so this coercion shouldn't currently trigger — but
+// a 'failed' row with an empty/whitespace error renders as a silent dash in
+// the SPA ("Ошибка: —") with zero diagnostic value, and there's no way to
+// recover the real cause after the fact. Coercing here means a FUTURE call
+// site that forgets this invariant (a new pipeline stage, a manual fix, a
+// regression) fails loudly in logs instead of silently in the UI.
 export async function markArticleFailed(db: D1Database, id: string, error: string): Promise<void> {
-  await db.prepare(`UPDATE articles SET status = 'failed', error = ? WHERE id = ?`).bind(error, id)
+  let reason = error.trim();
+  if (reason.length === 0) {
+    console.error(JSON.stringify({ event: "empty_failure_reason", id }));
+    reason = "unknown: no reason recorded (bug)";
+  }
+  await db.prepare(`UPDATE articles SET status = 'failed', error = ? WHERE id = ?`).bind(reason, id)
     .run();
 }
 

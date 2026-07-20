@@ -1,5 +1,5 @@
-import { assertEquals } from "@std/assert";
-import { buildListQuery, sweepStalePending } from "./db.ts";
+import { assertEquals, assertNotEquals } from "@std/assert";
+import { buildListQuery, markArticleFailed, sweepStalePending } from "./db.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 
 Deno.test("buildListQuery: no filters — base query, default limit + 1", () => {
@@ -92,4 +92,31 @@ Deno.test("sweepStalePending: timeout value is honored — a longer timeout spar
 
   await sweepStalePending(db, 10, now);
   assertEquals(db.rows[0].status, "failed");
+});
+
+// --- markArticleFailed: no code path may persist an empty/whitespace error ---
+
+Deno.test("markArticleFailed: a normal non-empty reason is stored as-is", async () => {
+  const db = new FakeD1();
+  db.rows.push({ id: "a1", status: "pending", error: null });
+  await markArticleFailed(db, "a1", "internal: fetch: network down");
+  assertEquals(db.rows[0].status, "failed");
+  assertEquals(db.rows[0].error, "internal: fetch: network down");
+});
+
+Deno.test("markArticleFailed: an empty string is coerced to a diagnostic fallback reason", async () => {
+  const db = new FakeD1();
+  db.rows.push({ id: "a2", status: "pending", error: null });
+  await markArticleFailed(db, "a2", "");
+  assertEquals(db.rows[0].status, "failed");
+  assertEquals(db.rows[0].error, "unknown: no reason recorded (bug)");
+  assertNotEquals(db.rows[0].error, "");
+  assertNotEquals(db.rows[0].error, null);
+});
+
+Deno.test("markArticleFailed: a whitespace-only string is coerced the same way", async () => {
+  const db = new FakeD1();
+  db.rows.push({ id: "a3", status: "pending", error: null });
+  await markArticleFailed(db, "a3", "   \n\t  ");
+  assertEquals(db.rows[0].error, "unknown: no reason recorded (bug)");
 });
