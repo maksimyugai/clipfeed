@@ -200,6 +200,9 @@ Deno.test("rankCandidates: does not touch env.CACHE (no daily budget consumption
         delete(): Promise<void> {
           throw new Error("CACHE should not be touched by ranking");
         },
+        list(): Promise<never> {
+          throw new Error("CACHE should not be touched by ranking");
+        },
       },
     });
     const picks = await rankCandidates(env, "interests", [makeCandidate({ id: "a" })]);

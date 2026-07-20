@@ -32,7 +32,7 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
   });
 
   const poolStart = performance.now();
-  const pool = await buildCandidatePool(env.DB, candidates, new Date());
+  const pool = await buildCandidatePool(env.DB, env.CACHE, candidates, new Date());
   logAgentStage("pool", {
     duration_ms: Math.round(performance.now() - poolStart),
     pool_size: pool.length,

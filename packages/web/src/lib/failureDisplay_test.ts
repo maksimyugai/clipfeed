@@ -1,0 +1,94 @@
+import { assertEquals } from "@std/assert";
+import { articleErrorText, isPermanentFailure } from "./failureDisplay.ts";
+
+const dict = {
+  errorPrefix: "Ошибка",
+  couldNotProcessLabel: "Не удалось обработать",
+  permanentFailurePrefix: "Не обработать",
+  permanentReasonInsufficientText: "на странице нет текста статьи",
+  permanentReasonNotFound: "страница не найдена",
+  permanentReasonRemoved: "страница удалена источником",
+  permanentReasonSsrfBlocked: "ссылка заблокирована политикой безопасности",
+};
+
+Deno.test("articleErrorText: a non-permanent (transient/unknown) error is prefixed and shown verbatim", () => {
+  assertEquals(
+    articleErrorText("internal: summarize: workers ai error: timed out after 90000ms", dict),
+    "Ошибка: internal: summarize: workers ai error: timed out after 90000ms",
+  );
+});
+
+// Regression for the live incident: a card that transitions pending ->
+// failed via a live poll merge (see usePendingPoll in ArticleCard.tsx)
+// only has `has_error`, never the raw string, so `article.error` stays
+// null even though the D1 row itself has a perfectly good message — this
+// must render an honest generic label, not a bare "Ошибка: —".
+Deno.test("articleErrorText: null error falls back to the generic label, not a bare dash", () => {
+  const text = articleErrorText(null, dict);
+  assertEquals(text, "Не удалось обработать");
+  assertEquals(text.includes("—"), false);
+});
+
+Deno.test("articleErrorText: empty-string error falls back to the generic label", () => {
+  assertEquals(articleErrorText("", dict), "Не удалось обработать");
+});
+
+Deno.test("articleErrorText: whitespace-only error falls back to the generic label", () => {
+  assertEquals(articleErrorText("   ", dict), "Не удалось обработать");
+});
+
+// --- permanent failures get a distinct, localized "couldn't process: <reason>" message ---
+
+Deno.test("articleErrorText: insufficient-text permanent failure shows the localized reason", () => {
+  assertEquals(
+    articleErrorText("extraction: insufficient text (7 chars)", dict),
+    "Не обработать: на странице нет текста статьи",
+  );
+});
+
+Deno.test("articleErrorText: a 404 permanent failure shows the localized reason", () => {
+  assertEquals(
+    articleErrorText("internal: fetch: upstream responded 404", dict),
+    "Не обработать: страница не найдена",
+  );
+});
+
+Deno.test("articleErrorText: a 410 permanent failure shows the localized reason", () => {
+  assertEquals(
+    articleErrorText("internal: fetch: upstream responded 410", dict),
+    "Не обработать: страница удалена источником",
+  );
+});
+
+Deno.test("articleErrorText: an ssrf-blocked permanent failure shows the localized reason", () => {
+  assertEquals(
+    articleErrorText("internal: fetch: blocked by ssrf policy", dict),
+    "Не обработать: ссылка заблокирована политикой безопасности",
+  );
+});
+
+Deno.test("articleErrorText: a raw technical error never leaks through for a permanent failure", () => {
+  const text = articleErrorText("extraction: insufficient text (7 chars)", dict);
+  assertEquals(text.includes("7 chars"), false);
+});
+
+// --- isPermanentFailure ---
+
+Deno.test("isPermanentFailure: true for a permanent-classified error", () => {
+  assertEquals(isPermanentFailure("extraction: insufficient text (3 chars)"), true);
+  assertEquals(isPermanentFailure("internal: fetch: upstream responded 404"), true);
+});
+
+Deno.test("isPermanentFailure: false for a transient or unknown error", () => {
+  assertEquals(isPermanentFailure("daily-limit"), false);
+  assertEquals(
+    isPermanentFailure("internal: summarize: summary validation: tldr too short"),
+    false,
+  );
+});
+
+Deno.test("isPermanentFailure: false (not true) for a null/empty error — unknown, not assumed permanent", () => {
+  assertEquals(isPermanentFailure(null), false);
+  assertEquals(isPermanentFailure(""), false);
+  assertEquals(isPermanentFailure("   "), false);
+});

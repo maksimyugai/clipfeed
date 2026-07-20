@@ -9,6 +9,7 @@ import {
 } from "./summarize.ts";
 import { tryConsumeSummaryBudget } from "./cost-guard.ts";
 import { markArticleFailed, markArticleReady } from "./db.ts";
+import { recordThinHostFailure } from "./thin-host-learning.ts";
 
 export interface PipelineInput {
   id: string;
@@ -169,6 +170,12 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
         input.id,
         `extraction: insufficient text (${extracted.textContent.length} chars)`,
       );
+      // Teaches the agent's candidate-pool filter to avoid this host next
+      // time (see thin-host-learning.ts) — recorded regardless of
+      // added_via, but only ever consulted for agent candidates, so a
+      // manual/extension/telegram save of the same thin host is never
+      // blocked by this.
+      await recordThinHostFailure(env.CACHE, input.url);
       return;
     }
 

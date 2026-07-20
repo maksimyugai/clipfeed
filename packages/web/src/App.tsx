@@ -165,6 +165,8 @@ export function App() {
           status: created.status,
           archived: false,
           error: null,
+          fail_class: null,
+          heal_attempts: 0,
         },
         ...current,
       ]);

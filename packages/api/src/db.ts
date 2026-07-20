@@ -4,12 +4,15 @@ import type {
   Article,
   ArticleListItem,
   ArticleStatus,
+  FailureClass,
   PublicArticle,
   SummaryJson,
 } from "@clipfeed/shared/types";
+import { classifyFailure } from "../../shared/src/classify-failure.ts";
 
-// Raw D1 row shape — matches migrations/0001_init.sql + 0002_*.sql exactly.
-// `tags` and `summary_json` are stored as JSON text; `archived` as 0/1.
+// Raw D1 row shape — matches migrations/0001_init.sql through 0003_*.sql
+// exactly. `tags` and `summary_json` are stored as JSON text; `archived` as
+// 0/1.
 interface ArticleRow {
   id: string;
   url: string;
@@ -29,6 +32,8 @@ interface ArticleRow {
   status: string;
   archived: number;
   error: string | null;
+  fail_class: string | null;
+  heal_attempts: number;
 }
 
 type ArticleRowNoText = Omit<ArticleRow, "full_text">;
@@ -86,6 +91,8 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     status: row.status as ArticleStatus,
     archived: row.archived === 1,
     error: row.error,
+    fail_class: row.fail_class as FailureClass | null,
+    heal_attempts: row.heal_attempts,
   };
 }
 
@@ -155,7 +162,8 @@ export async function markArticleReady(
   await db.prepare(
     `UPDATE articles
      SET full_text = ?, title = ?, author = ?, lang_original = ?, summary_ru = ?, summary_en = ?,
-         summary_json = ?, tags = ?, status = 'ready', error = NULL
+         summary_json = ?, tags = ?, status = 'ready', error = NULL, fail_class = NULL,
+         heal_attempts = 0
      WHERE id = ?`,
   ).bind(
     update.full_text,
@@ -178,14 +186,157 @@ export async function markArticleReady(
 // recover the real cause after the fact. Coercing here means a FUTURE call
 // site that forgets this invariant (a new pipeline stage, a manual fix, a
 // regression) fails loudly in logs instead of silently in the UI.
+//
+// Every 'failed' write is classified here (see classify-failure.ts) so
+// fail_class is populated immediately, without waiting for the hourly
+// healing sweep to backfill it. A PERMANENT failure on an agent-picked
+// article (the system chose it, not the owner) auto-archives in the same
+// write — burying the agent's own mistake is safe; the owner's manually
+// added/captured articles are never auto-archived, see healing.ts.
 export async function markArticleFailed(db: D1Database, id: string, error: string): Promise<void> {
   let reason = error.trim();
   if (reason.length === 0) {
     console.error(JSON.stringify({ event: "empty_failure_reason", id }));
     reason = "unknown: no reason recorded (bug)";
   }
-  await db.prepare(`UPDATE articles SET status = 'failed', error = ? WHERE id = ?`).bind(reason, id)
+  const { class: failClass } = classifyFailure(reason);
+
+  const existing = await db.prepare("SELECT added_via FROM articles WHERE id = ?").bind(id).first<
+    { added_via: string }
+  >();
+  const shouldAutoArchive = failClass === "permanent" && existing?.added_via === "agent";
+
+  await db.prepare(
+    `UPDATE articles SET status = 'failed', error = ?, fail_class = ?${
+      shouldAutoArchive ? ", archived = 1" : ""
+    } WHERE id = ?`,
+  ).bind(reason, failClass, id).run();
+
+  if (shouldAutoArchive) {
+    console.log(JSON.stringify({ event: "heal_archived", articleId: id }));
+  }
+}
+
+// --- Healing (see healing.ts for the hourly sweep orchestration) ---
+
+export interface HealableArticle {
+  id: string;
+  fail_class: FailureClass;
+  heal_attempts: number;
+}
+
+export interface HealCaps {
+  transient: number;
+  unknown: number;
+}
+
+// Candidates for an automatic retry — PERMANENT is deliberately excluded
+// entirely (its cap is 0, meaning "never"), rather than expressed as
+// `heal_attempts < 0` which would just always be false; excluding it from
+// the query is clearer and doesn't rely on that always-false trick holding.
+// `archived = 0`: healing must never touch an archived row (task
+// constraint) — an archived article is considered dealt with, whether that
+// was the owner's choice or an earlier auto-archive.
+export async function listHealableFailedArticles(
+  db: D1Database,
+  caps: HealCaps,
+  maxRows: number,
+): Promise<HealableArticle[]> {
+  const result = await db.prepare(
+    `SELECT id, fail_class, heal_attempts FROM articles
+     WHERE status = 'failed' AND archived = 0
+       AND (
+         (fail_class = 'transient' AND heal_attempts < ?) OR
+         (fail_class = 'unknown' AND heal_attempts < ?)
+       )
+     ORDER BY added_at ASC
+     LIMIT ?`,
+  ).bind(caps.transient, caps.unknown, maxRows).all<
+    { id: string; fail_class: string; heal_attempts: number }
+  >();
+  return (result.results ?? []).map((row) => ({
+    id: row.id,
+    fail_class: row.fail_class as FailureClass,
+    heal_attempts: row.heal_attempts,
+  }));
+}
+
+export async function incrementHealAttempts(db: D1Database, id: string): Promise<void> {
+  await db.prepare("UPDATE articles SET heal_attempts = heal_attempts + 1 WHERE id = ?").bind(id)
     .run();
+}
+
+export interface UnclassifiedFailure {
+  id: string;
+  url: string;
+  error: string | null;
+  added_via: string;
+}
+
+// 'failed' rows from before the fail_class column existed (migration
+// 0003) — the hourly healing sweep classifies these lazily instead of a
+// one-off backfill script, since migrations only alter schema, never run
+// application logic.
+export async function listUnclassifiedFailures(db: D1Database): Promise<UnclassifiedFailure[]> {
+  const result = await db.prepare(
+    `SELECT id, url, error, added_via FROM articles
+     WHERE status = 'failed' AND fail_class IS NULL AND archived = 0`,
+  ).all<UnclassifiedFailure>();
+  return result.results ?? [];
+}
+
+// Classifies a pre-existing failed row and applies the same
+// permanent+agent-picked -> auto-archive rule markArticleFailed applies to
+// fresh failures — see that function's doc comment for the reasoning.
+export async function classifyAndMaybeArchive(
+  db: D1Database,
+  id: string,
+  error: string | null,
+  addedVia: string,
+): Promise<FailureClass> {
+  const { class: failClass } = classifyFailure(error ?? "");
+  const shouldAutoArchive = failClass === "permanent" && addedVia === "agent";
+
+  await db.prepare(
+    `UPDATE articles SET fail_class = ?${shouldAutoArchive ? ", archived = 1" : ""} WHERE id = ?`,
+  ).bind(failClass, id).run();
+
+  if (shouldAutoArchive) {
+    console.log(JSON.stringify({ event: "heal_archived", articleId: id }));
+  }
+  return failClass;
+}
+
+export interface FailureStats {
+  failed_by_class: Record<string, number>;
+  heal_attempts_totals: Record<string, number>;
+}
+
+// Powers GET /api/admin/health-report — counts only, no article content.
+export async function getFailureStats(db: D1Database): Promise<FailureStats> {
+  const result = await db.prepare(
+    `SELECT fail_class, COUNT(*) as count, SUM(heal_attempts) as attempts
+     FROM articles WHERE status = 'failed' GROUP BY fail_class`,
+  ).all<{ fail_class: string | null; count: number; attempts: number | null }>();
+
+  const failed_by_class: Record<string, number> = {};
+  const heal_attempts_totals: Record<string, number> = {};
+  for (const row of result.results ?? []) {
+    const key = row.fail_class ?? "unclassified";
+    failed_by_class[key] = row.count;
+    heal_attempts_totals[key] = row.attempts ?? 0;
+  }
+  return { failed_by_class, heal_attempts_totals };
+}
+
+// Cheap proxy for "when did the agent last do anything" — the most recent
+// added_at among agent-picked articles — rather than standing up dedicated
+// last-run tracking state (KV/D1) just for this health-report field.
+export async function getLastAgentActivity(db: D1Database): Promise<string | null> {
+  const row = await db.prepare(
+    `SELECT MAX(added_at) as last_added_at FROM articles WHERE added_via = 'agent'`,
+  ).first<{ last_added_at: string | null }>();
+  return row?.last_added_at ?? null;
 }
 
 // Backstop for a Workers CPU-time kill, which can terminate the isolate
@@ -231,7 +382,7 @@ export interface ListArticlesResult {
 }
 
 const LIST_COLUMNS =
-  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error";
+  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts";
 
 export interface ListQuery {
   sql: string;

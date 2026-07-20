@@ -10,6 +10,7 @@
   --tag-bg: #EEEDFE;
   --tag-tx: #534AB7;
   --acc: #7F77DD;
+  --danger: #D64545;
 
   --grad-brand: linear-gradient(90deg, #7F77DD, #D4537E);
   --grad-action: linear-gradient(135deg, #7F77DD, #534AB7);
@@ -32,6 +33,7 @@
   --tag-bg: #26215C;
   --tag-tx: #CECBF6;
   --acc: #AFA9EC;
+  --danger: #E5726B;
 
   --grad-brand: linear-gradient(90deg, #AFA9EC, #ED93B1);
 
@@ -824,6 +826,22 @@ ul {
 .delete-button-outline:hover {
   border-color: var(--mut);
   color: var(--txt);
+}
+
+/* Permanent failure, no Retry offered — Delete is the only action, so it's
+   filled/solid rather than the quieter outline style above. */
+.delete-button-prominent {
+  border: none;
+  color: #fff;
+  background: var(--danger);
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.delete-button-prominent:hover {
+  opacity: 0.9;
 }
 
 /* --- Modal --- */

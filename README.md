@@ -449,6 +449,44 @@ real extractable text (see `agent-pool.ts`'s `THIN_HOST_DENYLIST`, extend it if 
 shows up in practice). Most Hacker News stories link to real articles, so this rarely shrinks the
 pool.
 
+That static list isn't the only filter, though — the pool-building stage also consults a **learned**
+blocklist in KV (see `thin-host-learning.ts`): any host that produces 2+
+`'extraction: insufficient
+text'` failures within a rolling 30-day window is filtered automatically,
+no code change needed. This is populated both by fresh pipeline failures and by the hourly
+self-healing sweep re-classifying older rows (see "Self-healing failures" below) — it only ever
+filters _agent_ candidates, never a manually/extension/Telegram-added article, so a link you
+deliberately save is never silently blocked by what the agent has learned to avoid.
+
+### Self-healing failures
+
+Every 'failed' article is classified into one of three healing strategies the moment it fails (see
+`classify-failure.ts`, shared between the API and SPA) — the classification is a small, explicit
+vocabulary over this codebase's own error strings, not a generic parser:
+
+- **transient** (llm timeouts, gateway/Anthropic 5xx, rate limits, dead-lettered queue messages,
+  daily budget exhaustion) — worth retrying; the daily-budget case in particular always resolves
+  itself the next day.
+- **permanent** (insufficient extracted text, a 404/410 source, an SSRF-blocked url) — retrying
+  can't help; the article is surfaced honestly with no Retry button (see the SPA's `ArticleCard`)
+  instead of pretending a retry might work.
+- **unknown** (anything else, mainly content-shaped `summary validation` failures) — might pass on
+  retry, might not; gets one lower-confidence attempt rather than the full transient budget.
+
+An hourly job (part of the existing cron tick, no separate schedule to configure — see `healing.ts`)
+retries transient/unknown failures automatically, capped at 2 and 1 attempts respectively and never
+more than 5 retries in a single tick, and classifies any older 'failed' rows that predate this
+feature. A **permanent** failure on an agent-picked article auto-archives itself (the system chose
+it, so burying its own mistake is safe); the same failure on an article you added yourself is never
+auto-archived — it stays in your feed, clearly marked, for you to delete or leave as-is. Archived
+articles are never touched by healing, and healing never bypasses the daily summarization budget — a
+retried article goes through the exact same queue path (and the same budget check) as any other
+pipeline run.
+
+`GET /api/admin/health-report` (owner-only) returns a JSON snapshot of all this — failure counts by
+class, total heal attempts by class, the current learned thin-host list, and a cheap proxy for "when
+did the agent last do anything" — meant for curl/owner tooling, not a dedicated SPA page (yet).
+
 ### Interests (`INTEREST_TOPICS`)
 
 One `[vars]` string — free text describing what you want surfaced, sent straight into the ranking

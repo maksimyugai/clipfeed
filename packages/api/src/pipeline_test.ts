@@ -509,6 +509,33 @@ Deno.test("runArticlePipeline: extraction under 300 chars -> 'failed' with a cle
   assertEquals(llmCalled, false);
 });
 
+// Regression: a fresh insufficient-text failure teaches the agent's
+// learned thin-host blocklist, not just the healing job's backfill pass
+// for pre-existing rows (see healing_test.ts for that half) — see
+// thin-host-learning.ts's recordThinHostFailure, called right alongside
+// markArticleFailed in this exact guard.
+Deno.test("runArticlePipeline: extraction under 300 chars also records a thin-host learning hit", async () => {
+  const thinHtml = `<html><head><title>Some Post</title></head><body><nav>xcancel</nav>` +
+    `<div id="app"></div>` +
+    `<footer>xcancel is an alternative front-end for X.</footer></body></html>`;
+
+  const db = new ControllableD1();
+  const cache = new FakeKV();
+  const env = makePipelineEnv({
+    DB: db as unknown as D1Database,
+    CACHE: cache as unknown as KVNamespace,
+  });
+
+  await runArticlePipeline(env, {
+    id: "p-thin-2",
+    url: "https://mirror.example/someuser/status/123",
+    html: thinHtml,
+    requestTags: [],
+  });
+
+  assertEquals(await cache.get("thinhost:mirror.example"), "1");
+});
+
 Deno.test("runArticlePipeline: extraction exactly at 300 chars passes the guard (boundary)", async () => {
   const body = "A".repeat(300);
   const html =

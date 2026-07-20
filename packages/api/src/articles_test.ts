@@ -153,6 +153,9 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
         kv.delete(key);
         return Promise.resolve();
       },
+      list(): Promise<{ keys: { name: string }[]; list_complete: boolean }> {
+        return Promise.resolve({ keys: [], list_complete: true });
+      },
     },
     ASSETS: { fetch: () => Promise.resolve(new Response("not used")) },
     AI: {

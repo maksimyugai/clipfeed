@@ -1,6 +1,7 @@
 import "./env.d.ts";
 import type { Candidate } from "./agent-types.ts";
 import { findExistingUrls } from "./db.ts";
+import { isLearnedThinHost } from "./thin-host-learning.ts";
 
 const POOL_CAP = 120;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -14,7 +15,9 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 // pipeline level — this filter just avoids spending a saved-article slot
 // and a pipeline run on a candidate that's guaranteed to hit it). Most HN
 // stories link to real articles, so this doesn't meaningfully shrink the
-// pool — extend as new thin hosts show up in practice.
+// pool — extend as new hosts show up repeatedly in practice, though most of
+// that job is now automatic: see thin-host-learning.ts, consulted below
+// alongside this static list.
 const THIN_HOST_DENYLIST = new Set([
   "xcancel.com",
   "nitter.net",
@@ -31,9 +34,11 @@ function hostname(url: string): string | null {
   }
 }
 
-function isThinHost(url: string): boolean {
+async function isThinHost(cache: KVNamespace, url: string): Promise<boolean> {
   const host = hostname(url);
-  return host !== null && THIN_HOST_DENYLIST.has(host);
+  if (host === null) return false;
+  if (THIN_HOST_DENYLIST.has(host)) return true;
+  return await isLearnedThinHost(cache, host);
 }
 
 function canonicalize(url: string): string {
@@ -71,13 +76,15 @@ function publishedAtMs(candidate: Candidate): number {
 // genuinely new candidates, not ones that'll be dropped anyway.
 export async function buildCandidatePool(
   db: D1Database,
+  cache: KVNamespace,
   candidates: Candidate[],
   now: Date = new Date(),
 ): Promise<Candidate[]> {
   const fresh = candidates.filter((c) => isWithinWindow(c, now));
 
-  const substantial = fresh.filter((c) => {
-    if (isThinHost(c.url)) {
+  const thinChecks = await Promise.all(fresh.map((c) => isThinHost(cache, c.url)));
+  const substantial = fresh.filter((c, i) => {
+    if (thinChecks[i]) {
       console.log(JSON.stringify({ event: "candidate_dropped_thin_host", url: c.url }));
       return false;
     }
