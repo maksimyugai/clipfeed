@@ -75,39 +75,69 @@ Every summary is checked against a content-quality bar before it's persisted (ti
 length, bullet count/length, body paragraph count/length, and a duplicate-content heuristic — see
 `validateSummary` in `packages/api/src/summarize.ts`) — an LLM response that fails gets one
 corrective retry naming the specific violations, then the article is marked `'failed'` rather than
-storing a substandard summary. There are two named bars, not one:
+storing a substandard summary. There are two named tiers, not one: **STRICT** (gateway/direct,
+Claude-class models) and **RELAXED** (Workers AI's free-tier Llama default) — Claude-class models
+reliably clear STRICT on the first attempt, but Llama 3.3 70B needs a more forgiving floor to get a
+usable first/second-attempt success rate.
 
-|                 | **STRICT** (gateway / direct)     | **RELAXED** (Workers AI)          |
-| --------------- | --------------------------------- | --------------------------------- |
-| tldr            | ≥ 200 characters                  | ≥ 150 characters                  |
-| body paragraphs | 2–4, each 300–700 characters      | 2–6, each 150–700 characters      |
-| bullets         | 4–7 items, each 40–220 characters | 3–7 items, each 30–220 characters |
+**Neither tier is a fixed table of numbers anymore.** Both are _derived_ from one owner setting —
+`SUMMARY_BODY_TARGET_CHARS` — by `deriveSummarySpec()` in `summarize.ts`, and the exact same derived
+object feeds both the prompt (`buildSystemPrompt`) and the validator (`validateSummary`), so there's
+no separate "prompt number" and "validator number" that can drift out of sync with each other.
 
-**Why two bars:** this is a genuine instruction-following gap, not a formatting quirk. Claude-class
-models (gateway/direct) reliably clear STRICT on the first attempt. Llama 3.3 70B (Workers AI's
-free-tier default) passed STRICT only ~1 time in 6 live attempts in earlier testing — every failed
-attempt still costs a real queue slot (roughly 2–3 minutes of Workers AI call time before the
-corrective retry gives up), so a summary that could have been "good enough" under a more realistic
-bar was instead thrown away and the article marked `'failed'`. Live-verifying RELAXED itself (2 real
-articles, 2 runs each, against the real Workers AI binding — not a simulation): **4/4 runs passed on
-the first attempt**, 144–197 seconds each. Every one of those 4 summaries was also checked against
-STRICT purely for measurement (not enforcement, since workers-ai always validates against RELAXED) —
-all 4 would have failed STRICT, mostly on bullet count (3 items instead of 4–7) or a body paragraph
-running under 300 characters, confirming the two bars are actually selecting different, real
-outcomes rather than one being redundant.
+### Summary length (`SUMMARY_BODY_TARGET_CHARS`)
 
-**The prompt is a single template, parameterized by whichever profile is active** (see
-`buildSystemPrompt` in `summarize.ts`) — so the numbers the model is told to hit always match the
-numbers `validateSummary` actually enforces for that mode; there's no separate "workers-ai prompt"
-to drift out of sync.
+`SUMMARY_BODY_TARGET_CHARS` ([vars] in `wrangler.toml`, default `1200`, valid range `400`–`4000`) is
+how much summary you want to read — the target _total_ body length in characters, across all
+paragraphs, per language. Everything else derives from it:
 
-**The tradeoff, plainly:** RELAXED summaries are shorter and can have thinner body paragraphs or
-fewer bullets than STRICT ones — genuinely lower quality by design, not a bug. It exists so a fork
-running on the free Workers AI tier gets a usably high first/second-attempt success rate instead of
-habitually exhausting both attempts and falling through to a generic validation-failure error. If
-quality matters more than staying on the free tier, set up AI Gateway or direct Anthropic (above) —
-gateway/direct summaries always use STRICT regardless of how good a given Llama response might have
-been.
+- **Paragraph count** widens as the target grows: 2 paragraphs up to 900 chars, 2–3 up to 2000, 3–4
+  beyond that.
+- **Per-paragraph length**: the prompt tells the model to aim for `target ÷ paragraph-count ± 25%`;
+  the validator's hard bounds widen that to `−40%/+40%` (so a first-attempt miss near the aim band
+  still passes), floored so even a small target still yields a real paragraph (STRICT ≥ 250 chars,
+  RELAXED ≥ 120) — no more silent, always-700 ceiling regardless of what you asked for.
+- **tldr minimum**: STRICT is `max(150, 15% of target)` capped at 350 characters; RELAXED is 75% of
+  whatever STRICT computes to.
+- **Bullets** don't scale with the target — they're about the _count_ of scannable facts, not prose
+  volume, so both tiers keep their original ranges (STRICT 4–7 × 40–220 chars, RELAXED 3–7 × 30–220
+  chars).
+- **`max_tokens`** scales with the target too (clamped to `[2500, 6000]`), so a larger requested
+  digest doesn't get cut off mid-paragraph.
+
+A bad override (missing, non-numeric, or outside `[400, 4000]`) falls back to the `1200` default and
+logs a warning naming the rejected value — never a broken or nonsensical prompt.
+
+**Known edge case:** at the smallest allowed target (`400`), STRICT's 250-character paragraph floor
+sits _above_ the prompt's own "aim for 150–250" band — the enforced minimum and the suggested target
+briefly disagree at that one boundary. Harmless (the model still has a valid 250–280 range to land
+in) but worth knowing if you dial the setting all the way down.
+
+**The few-shot example in the prompt is calibrated for the _default_ target (1200).** With a heavily
+non-default `SUMMARY_BODY_TARGET_CHARS`, it still illustrates the right _structure_ (what a
+paragraph vs. a bullet vs. a tldr should look like), but its exact character counts won't match your
+target — the sizing block above it (the actual `{min}`–`{max}`, "aim for X–Y", "~N characters total"
+numbers) is what the model is expected to follow for the real request.
+
+**Why RELAXED exists at all:** live-testing against a real Wikipedia article in Workers AI mode
+during this feature's development still failed on paragraph-length undershoots in the 240–290
+character range at the default target — RELAXED's floor only diverges from STRICT's at very small
+targets (see the "Known edge case" above), so at the default 1200-char target the two tiers'
+body-paragraph bounds are nearly identical. This is a known, live-observed consequence of deriving
+both tiers from the same formula rather than keeping RELAXED permanently wide-open; if Workers AI's
+pass rate matters more than a single unified formula, lowering `SUMMARY_BODY_TARGET_CHARS` for a
+workers-ai-only deployment is the most direct lever available today. If quality matters more than
+staying on the free tier at all, set up AI Gateway or direct Anthropic (above) — gateway/direct
+summaries always use STRICT regardless of how good a given Llama response might have been.
+
+**Rescuing a backlog after changing this setting:** articles that failed with a
+`'internal:
+summarize: summary validation'` error under the _old_ bounds might well pass under new
+ones. `POST
+/api/admin/heal/revalidate-failed` (owner-only) re-enqueues every such article
+regardless of its healing attempt count, resetting that count first — run it once after changing
+`SUMMARY_BODY_TARGET_CHARS` (or after any prompt/validation change) to sweep up the backlog instead
+of retrying each one by hand. Responds `202 {count}`.
 
 ## Database
 
@@ -343,11 +373,21 @@ messages simply omit the link when it's empty.
 
 ### Setup
 
+Get your chat id **before** registering the webhook — `getUpdates` (used to look it up) and a live
+webhook can't both be active for the same bot, so doing this after step 5 below means untangling a
+409 instead (see "Finding your chat id"):
+
 1. Talk to [@BotFather](https://t.me/BotFather), `/newbot`, follow the prompts — it gives you a bot
    token shaped like `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`.
-2. `deno task deploy` first, if you haven't already — the webhook needs a live URL to register
+2. Message your new bot once (anything — even just `/start`), then find your chat id:
+   ```
+   deno task telegram:setup --get-chat-id
+   ```
+   Prints every chat id seen in recent messages — use the one for your own private chat as
+   `TELEGRAM_OWNER_CHAT_ID` below. (See "Finding your chat id" if this fails with a 409.)
+3. `deno task deploy` first, if you haven't already — the webhook needs a live URL to register
    against.
-3. Set the three secrets:
+4. Set the three secrets:
    ```
    deno run -A npm:wrangler secret put TELEGRAM_BOT_TOKEN
    deno run -A npm:wrangler secret put TELEGRAM_WEBHOOK_SECRET
@@ -355,17 +395,17 @@ messages simply omit the link when it's empty.
    ```
    (Optionally also `deno run -A npm:wrangler secret put PUBLIC_BASE_URL`, or add it to
    `wrangler.toml`'s `[vars]` — it's not sensitive.)
-4. Register the webhook with Telegram:
+5. Register the webhook with Telegram:
    ```
    deno task telegram:setup
    ```
    Prompts for the bot token, a webhook secret (press Enter to have it generate one — copy that
-   value into step 3's `TELEGRAM_WEBHOOK_SECRET` if you do), and your deployed instance's public
+   value into step 4's `TELEGRAM_WEBHOOK_SECRET` if you do), and your deployed instance's public
    base URL; then calls Telegram's `setWebhook` and prints `getWebhookInfo` so you can confirm it
    took. (Deno's `prompt()` needs a real terminal — `--token=`/`--secret=`/`--base-url=` flags are
    also accepted for non-interactive use, but note those land in shell history, so prefer the
    prompts for a one-off run.)
-5. Message your bot: `/start` for help, paste a link to save it, `/digest` for an on-demand summary,
+6. Message your bot: `/start` for help, paste a link to save it, `/digest` for an on-demand summary,
    `/scrape` to run the daily scraping agent right now.
 
 **Finding your chat id:** message your bot at least once (anything — even just `/start`), then run:
@@ -375,7 +415,16 @@ deno task telegram:setup --get-chat-id
 ```
 
 It calls `getUpdates` and prints every chat id seen in recent messages — use the one for your own
-private chat.
+private chat. If this fails with **409**, a webhook is already registered for this bot — Telegram
+refuses `getUpdates` while a webhook is active (this is why step 2 above runs before step 5). Either
+message [@userinfobot](https://t.me/userinfobot) for your numeric id instead, or temporarily remove
+the webhook:
+
+```
+deno task telegram:setup --delete-webhook   # asks for confirmation first; add --yes to skip it
+deno task telegram:setup --get-chat-id
+deno task telegram:setup                    # re-registers the webhook once you have the id
+```
 
 ### The morning digest (cron)
 

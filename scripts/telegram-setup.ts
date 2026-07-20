@@ -12,7 +12,12 @@
 // has to be shown at least once so it can be copied into `wrangler secret
 // put`.
 
-import { getUpdates, getWebhookInfo, setWebhook } from "../packages/api/src/telegram-client.ts";
+import {
+  deleteWebhook,
+  getUpdates,
+  getWebhookInfo,
+  setWebhook,
+} from "../packages/api/src/telegram-client.ts";
 
 const WEBHOOK_PATH = "/api/telegram/webhook";
 
@@ -51,7 +56,19 @@ async function runGetChatId(): Promise<void> {
   try {
     updates = await getUpdates(botToken);
   } catch (err) {
-    console.error(`\n✗ getUpdates failed: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("status 409")) {
+      console.error(
+        "\n✗ getUpdates failed (409): a webhook is currently registered for this bot — " +
+          "Telegram forbids getUpdates (long-polling) while a webhook is active.\n" +
+          "  Either message @userinfobot on Telegram for your numeric id, or run:\n" +
+          "    deno task telegram:setup --delete-webhook\n" +
+          "  then retry --get-chat-id, then re-run `deno task telegram:setup` (no flags) " +
+          "to restore the webhook.",
+      );
+    } else {
+      console.error(`\n✗ getUpdates failed: ${message}`);
+    }
     Deno.exit(1);
   }
   if (updates.length === 0) {
@@ -73,6 +90,39 @@ async function runGetChatId(): Promise<void> {
     console.log("  (none of the recent updates were messages)");
   }
   console.log("\nUse the numeric id for your own private chat as TELEGRAM_OWNER_CHAT_ID.");
+}
+
+// Removes the currently-registered webhook so --get-chat-id's getUpdates
+// call is allowed to run (see the 409 explanation above) — a real
+// papercut hit during live setup, where the 409 gave no hint at all about
+// what to do next. Confirms first (webhook goes away until setup is
+// re-run) unless --yes is passed for scripted use.
+async function runDeleteWebhook(): Promise<void> {
+  console.log("ClipFeed Telegram — delete the registered webhook\n");
+  const botToken = readRequired("token", "Bot token (from @BotFather):");
+
+  if (!Deno.args.includes("--yes")) {
+    const proceed = confirm(
+      "This removes the webhook Telegram has registered for this bot — the bot stops " +
+        "receiving messages until you re-run `deno task telegram:setup` afterward. Continue?",
+    );
+    if (!proceed) {
+      console.log("Cancelled — webhook left untouched.");
+      return;
+    }
+  }
+
+  try {
+    const ok = await deleteWebhook(botToken);
+    console.log(ok ? "\n✓ Webhook deleted." : "\n✗ deleteWebhook returned false.");
+  } catch (err) {
+    console.error(`\n✗ deleteWebhook failed: ${err instanceof Error ? err.message : String(err)}`);
+    Deno.exit(1);
+  }
+  console.log(
+    "\nYou can now run --get-chat-id. Once you have the chat id, re-run " +
+      "`deno task telegram:setup` (no flags) to restore the webhook.",
+  );
 }
 
 async function runSetup(): Promise<void> {
@@ -134,6 +184,10 @@ async function runSetup(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (Deno.args.includes("--delete-webhook")) {
+    await runDeleteWebhook();
+    return;
+  }
   if (Deno.args.includes("--get-chat-id")) {
     await runGetChatId();
     return;

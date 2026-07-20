@@ -95,6 +95,15 @@ declare global {
     ANTHROPIC_API_KEY?: string;
     AI_GATEWAY_URL?: string;
     CF_AIG_TOKEN?: string;
+    // Owner-tunable summary length: total body characters (all paragraphs,
+    // per language) to aim for. [vars] string (like AGENT_HOUR_UTC below),
+    // parsed defensively by summarize.ts's parseSummaryBodyTargetChars — a
+    // missing/non-numeric/out-of-[400,4000]-range value falls back to the
+    // 1200 default. Both the prompt and validateSummary() derive every
+    // other numeric bound from this single setting (see
+    // summarize.ts's deriveSummarySpec), so there's no separate "prompt
+    // number" and "validator number" to keep in sync.
+    SUMMARY_BODY_TARGET_CHARS: string;
     // Cloudflare Access protection: optional, var or secret. Auth middleware
     // activates only when BOTH are set (trimmed non-empty) — otherwise the
     // Worker serves openly (fork/dev bootstrap mode).

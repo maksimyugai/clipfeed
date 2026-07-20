@@ -3,6 +3,7 @@ import type { SummaryJson } from "@clipfeed/shared/types";
 import { safeFetchText } from "./ssrf.ts";
 import { extractArticle } from "./extract.ts";
 import {
+  parseSummaryBodyTargetChars,
   renderSummaryMarkdown,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
@@ -64,6 +65,7 @@ async function runSummarizationForMode(
   title: string,
   text: string,
 ): Promise<SummaryJson> {
+  const targetTotalChars = parseSummaryBodyTargetChars(env.SUMMARY_BODY_TARGET_CHARS);
   if (mode === "gateway") {
     return await summarizeArticle(
       {
@@ -74,6 +76,7 @@ async function runSummarizationForMode(
       },
       title,
       text,
+      targetTotalChars,
     );
   }
   if (mode === "direct") {
@@ -81,9 +84,16 @@ async function runSummarizationForMode(
       { apiKey: env.ANTHROPIC_API_KEY, model: env.SUMMARY_MODEL },
       title,
       text,
+      targetTotalChars,
     );
   }
-  return await summarizeArticleWithWorkersAi(env.AI, env.WORKERS_AI_MODEL, title, text);
+  return await summarizeArticleWithWorkersAi(
+    env.AI,
+    env.WORKERS_AI_MODEL,
+    title,
+    text,
+    targetTotalChars,
+  );
 }
 
 export async function runSummarization(

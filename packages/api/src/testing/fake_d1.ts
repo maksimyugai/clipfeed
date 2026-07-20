@@ -137,6 +137,10 @@ export class FakeD1 implements D1Database {
         row.heal_attempts = (row.heal_attempts as number) + 1;
         return;
       }
+      if (sql === "UPDATE articles SET heal_attempts = 0 WHERE id = ?") {
+        row.heal_attempts = 0;
+        return;
+      }
 
       // Dynamic PATCH: SET col = ?[, col = ?...] WHERE id = ?
       const setClause = sql.slice("UPDATE articles SET ".length, sql.indexOf(" WHERE"));
@@ -173,9 +177,23 @@ export class FakeD1 implements D1Database {
       return row ? [{ id: row.id }] : [];
     }
 
+    if (sql === "SELECT id, tags FROM articles") {
+      return this.rows.map((r) => ({ id: r.id, tags: r.tags }));
+    }
+
     if (sql === "SELECT added_via FROM articles WHERE id = ?") {
       const row = this.rows.find((r) => r.id === values[0]);
       return row ? [{ added_via: row.added_via }] : [];
+    }
+
+    if (
+      sql ===
+        "SELECT id FROM articles WHERE status = 'failed' AND archived = 0 AND error LIKE 'internal: summarize: summary validation%'"
+    ) {
+      const test = likeTest("internal: summarize: summary validation%");
+      return this.rows
+        .filter((r) => r.status === "failed" && r.archived === 0 && test(r.error))
+        .map((r) => ({ id: r.id }));
     }
 
     if (sql.startsWith("SELECT id, fail_class, heal_attempts FROM articles")) {

@@ -3,6 +3,7 @@ import { assertEquals } from "@std/assert";
 import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { insertPendingArticle, markArticleFailed } from "./db.ts";
+import { FakeQueue } from "./testing/fake_queue.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";
@@ -135,6 +136,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     ANTHROPIC_API_KEY: "test-key",
     ...overrides,
@@ -222,6 +224,8 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
     ["POST", "/api/admin/articles/some-id/resummarize"],
     ["POST", "/api/admin/agent/run"],
     ["GET", "/api/admin/health-report"],
+    ["POST", "/api/admin/heal/revalidate-failed"],
+    ["POST", "/api/admin/tags/normalize"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -244,6 +248,8 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     ["POST", "/api/admin/articles/some-id/resummarize"],
     ["POST", "/api/admin/agent/run"],
     ["GET", "/api/admin/health-report"],
+    ["POST", "/api/admin/heal/revalidate-failed"],
+    ["POST", "/api/admin/tags/normalize"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -290,6 +296,110 @@ Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-hea
   assertEquals(body.heal_attempts_totals.transient, 0);
   assertEquals(body.learned_thinhosts, [{ host: "learned.example.com", count: 3 }]);
   assertEquals(body.last_agent_run.last_added_at, "2026-01-01T00:00:00.000Z");
+});
+
+Deno.test("POST /api/admin/heal/revalidate-failed: re-enqueues every summary-validation failure regardless of heal_attempts, resets the count first", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const ctx = makeExecutionContext().ctx;
+
+  // Already at its heal cap (unknown class -> cap 1) — the normal healing
+  // sweep would never retry this again, but the rescue endpoint ignores
+  // the cap entirely for exactly this failure shape.
+  await insertPendingArticle(env.DB, {
+    id: "sv1",
+    url: "https://example.com/sv1",
+    title: "sv1",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleFailed(
+    env.DB,
+    "sv1",
+    "internal: summarize: summary validation: body_en[0] must be between 300 and 700 characters (got 737)",
+  );
+  const rowsOf = () => (env.DB as unknown as { rows: Record<string, unknown>[] }).rows;
+  rowsOf().find((r) => r.id === "sv1")!.heal_attempts = 1;
+
+  // A different failure shape — must be left alone.
+  await insertPendingArticle(env.DB, {
+    id: "other-fail",
+    url: "https://example.com/other-fail",
+    title: "other-fail",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleFailed(env.DB, "other-fail", "daily-limit");
+
+  const res = await app.request(
+    "/api/admin/heal/revalidate-failed",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 202);
+  const body = await res.json();
+  assertEquals(body.count, 1);
+
+  assertEquals(jobs.sent, [{ kind: "process", articleId: "sv1" }]);
+  const sv1 = rowsOf().find((r) => r.id === "sv1")!;
+  assertEquals(sv1.heal_attempts, 0);
+  assertEquals(sv1.status, "pending");
+});
+
+Deno.test("POST /api/admin/heal/revalidate-failed: no-op (count 0) when there's nothing to rescue", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const ctx = makeExecutionContext().ctx;
+
+  const res = await app.request(
+    "/api/admin/heal/revalidate-failed",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 202);
+  assertEquals(await res.json(), { count: 0 });
+  assertEquals(jobs.sent, []);
+});
+
+Deno.test("POST /api/admin/tags/normalize: backfills existing rows, returns {updated: n}, idempotent second run", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  await insertPendingArticle(env.DB, {
+    id: "tn1",
+    url: "https://example.com/tn1",
+    title: "tn1",
+    source: "example.com",
+    tags: [], // normalized on insert already — bypass that by writing raw below
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  const rowsOf = () => (env.DB as unknown as { rows: Record<string, unknown>[] }).rows;
+  rowsOf().find((r) => r.id === "tn1")!.tags = JSON.stringify(["ИИ", "ai", "таймаут"]);
+
+  const first = await app.request(
+    "/api/admin/tags/normalize",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(first.status, 200);
+  assertEquals(await first.json(), { updated: 1 });
+  assertEquals(JSON.parse(rowsOf().find((r) => r.id === "tn1")!.tags as string), ["ai"]);
+
+  const second = await app.request(
+    "/api/admin/tags/normalize",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(await second.json(), { updated: 0 });
 });
 
 Deno.test("POST /api/admin/agent/run: 202 for the owner, runs the agent job via waitUntil", async () => {

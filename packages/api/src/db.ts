@@ -9,6 +9,7 @@ import type {
   SummaryJson,
 } from "@clipfeed/shared/types";
 import { classifyFailure } from "../../shared/src/classify-failure.ts";
+import { normalizeTags } from "./tags.ts";
 
 // Raw D1 row shape — matches migrations/0001_init.sql through 0003_*.sql
 // exactly. `tags` and `summary_json` are stored as JSON text; `archived` as
@@ -139,7 +140,7 @@ export async function insertPendingArticle(
     input.source,
     input.added_at,
     input.added_via,
-    JSON.stringify(input.tags),
+    JSON.stringify(normalizeTags(input.tags)),
   ).run();
 }
 
@@ -173,7 +174,7 @@ export async function markArticleReady(
     update.summary_ru,
     update.summary_en,
     JSON.stringify(update.summary_json),
-    JSON.stringify(update.tags),
+    JSON.stringify(normalizeTags(update.tags)),
     id,
   ).run();
 }
@@ -337,6 +338,53 @@ export async function getLastAgentActivity(db: D1Database): Promise<string | nul
     `SELECT MAX(added_at) as last_added_at FROM articles WHERE added_via = 'agent'`,
   ).first<{ last_added_at: string | null }>();
   return row?.last_added_at ?? null;
+}
+
+// One-time rescue for the summary-validation backlog left behind by a prompt
+// recalibration (see summarize.ts's SummarySpec/deriveSummarySpec) — these
+// rows failed against the OLD, now-corrected bounds, so they're worth
+// retrying regardless of heal_attempts/cap. `error LIKE` (not `classify
+// Failure`) because we want exactly this one failure shape, not every
+// 'unknown'-classified row. Excludes archived rows for the same reason the
+// hourly healing sweep does — an archived row is considered dealt with.
+export async function listSummaryValidationFailures(
+  db: D1Database,
+): Promise<{ id: string }[]> {
+  const result = await db.prepare(
+    `SELECT id FROM articles
+     WHERE status = 'failed' AND archived = 0
+       AND error LIKE 'internal: summarize: summary validation%'`,
+  ).all<{ id: string }>();
+  return result.results ?? [];
+}
+
+export async function resetHealAttempts(db: D1Database, id: string): Promise<void> {
+  await db.prepare("UPDATE articles SET heal_attempts = 0 WHERE id = ?").bind(id).run();
+}
+
+// One-time backfill for POST /api/admin/tags/normalize — insertPendingArticle
+// and markArticleReady already normalize on every NEW write (see
+// tags.ts), so this only needs to touch pre-existing rows. Idempotent: a
+// row whose tags are already normalized produces an identical JSON string
+// and is skipped, so `updated` only ever counts rows that actually
+// changed, and a second run always returns 0.
+export async function backfillNormalizedTags(db: D1Database): Promise<number> {
+  const result = await db.prepare("SELECT id, tags FROM articles").all<
+    { id: string; tags: string | null }
+  >();
+
+  let updated = 0;
+  for (const row of result.results ?? []) {
+    const current = parseTags(row.tags);
+    const normalized = normalizeTags(current);
+    if (JSON.stringify(normalized) === JSON.stringify(current)) continue;
+
+    await db.prepare("UPDATE articles SET tags = ? WHERE id = ?")
+      .bind(JSON.stringify(normalized), row.id)
+      .run();
+    updated += 1;
+  }
+  return updated;
 }
 
 // Backstop for a Workers CPU-time kill, which can terminate the isolate

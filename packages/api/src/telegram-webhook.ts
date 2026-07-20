@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "./access-middleware.ts";
 import {
   editMessageText,
+  missingTelegramSecretNames,
   readTelegramConfig,
   sendMessage,
   type TelegramConfig,
@@ -140,9 +141,31 @@ async function handleOwnerMessage(
 // Access identity, so this path is intentionally public (not mounted under
 // /api/admin/*) — its own auth is the secret header below, compared in
 // constant time, plus the owner-chat gate on every message.
+// Module-level: survives across requests within the same isolate, resets
+// only on a fresh isolate spin-up ("once per isolate", not "once ever" or
+// "once per request"). A webhook registered with Telegram but missing one
+// of the three TELEGRAM_* secrets otherwise 404s on every single delivery
+// with zero diagnostic trail — this warn (names only, never values) is the
+// only signal an owner gets short of noticing pending_update_count climb
+// in getWebhookInfo. Exported so tests can reset it between cases.
+let warnedMissingTelegramSecrets = false;
+
+export function resetMissingTelegramSecretsWarningForTest(): void {
+  warnedMissingTelegramSecrets = false;
+}
+
+function warnMissingTelegramSecretsOnce(env: Env): void {
+  if (warnedMissingTelegramSecrets) return;
+  const missing = missingTelegramSecretNames(env);
+  if (missing.length === 0) return;
+  warnedMissingTelegramSecrets = true;
+  console.warn(JSON.stringify({ event: "telegram_webhook_inactive_missing_secrets", missing }));
+}
+
 export async function handleTelegramWebhook(c: Context<AppEnv>): Promise<Response> {
   const config = readTelegramConfig(c.env);
   if (!config) {
+    warnMissingTelegramSecretsOnce(c.env);
     return c.json({ error: "not found" }, 404);
   }
 

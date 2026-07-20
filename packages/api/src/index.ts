@@ -5,6 +5,7 @@ import type { QueueMessage } from "@clipfeed/shared/types";
 import { accessAuth, type AppEnv } from "./access-middleware.ts";
 import { readTurnstileConfig } from "./turnstile-middleware.ts";
 import {
+  backfillNormalizedTags,
   deleteArticle,
   findArticleIdByUrl,
   getArticleById,
@@ -12,8 +13,10 @@ import {
   getLastAgentActivity,
   insertPendingArticle,
   listArticles,
+  listSummaryValidationFailures,
   markArticlePending,
   patchArticle,
+  resetHealAttempts,
   sweepStalePending,
   toPublicArticle,
 } from "./db.ts";
@@ -284,6 +287,34 @@ app.get("/api/admin/health-report", async (c) => {
     learned_thinhosts: learnedThinhosts,
     last_agent_run: { last_added_at: lastAgentActivity },
   });
+});
+
+// One-time rescue for the summary-validation backlog left behind by the
+// prompt/spec recalibration in this same task (see summarize.ts's
+// deriveSummarySpec) — those rows failed against the OLD, now-corrected
+// bounds and would otherwise sit capped at heal_attempts=1 (class
+// 'unknown') until the owner manually retried each one. Ignores the normal
+// healing cap entirely: resets heal_attempts to 0 first, then re-enqueues
+// through the regular queue path (same budget/pipeline as any other run).
+// Meant to be run once, by the owner, right after this PR merges.
+app.post("/api/admin/heal/revalidate-failed", async (c) => {
+  const rows = await listSummaryValidationFailures(c.env.DB);
+  for (const row of rows) {
+    await resetHealAttempts(c.env.DB, row.id);
+    await markArticlePending(c.env.DB, row.id);
+    await enqueueArticleJob(c.env, c.executionCtx, { kind: "process", articleId: row.id });
+  }
+  return c.json({ count: rows.length }, 202);
+});
+
+// One-time backfill for the tag-normalization fix (see tags.ts) — every
+// NEW write already normalizes automatically (insertPendingArticle,
+// markArticleReady), so this only needs running once, by the owner, to
+// clean up tags on rows written before this fix shipped. Idempotent: a
+// second run always returns {updated: 0}.
+app.post("/api/admin/tags/normalize", async (c) => {
+  const updated = await backfillNormalizedTags(c.env.DB);
+  return c.json({ updated });
 });
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));

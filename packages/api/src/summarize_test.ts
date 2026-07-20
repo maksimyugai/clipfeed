@@ -4,14 +4,18 @@ import {
   buildAnthropicRequest,
   buildSystemPrompt,
   callLlm,
+  DEFAULT_RELAXED_SPEC,
+  DEFAULT_STRICT_SPEC,
+  DEFAULT_SUMMARY_BODY_TARGET_CHARS,
+  deriveSummarySpec,
   FEW_SHOT_EXAMPLE_SUMMARY,
+  parseSummaryBodyTargetChars,
   parseSummaryJson,
   parseWorkersAiResult,
-  RELAXED_PROFILE,
   renderSummaryMarkdown,
-  STRICT_PROFILE,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
+  type SummarySpec,
   validateSummary,
   withTimeout,
 } from "./summarize.ts";
@@ -25,11 +29,11 @@ function makeStubAi(handler: (model: string, input: Record<string, unknown>) => 
   };
 }
 
-// Meets validateSummary's content bar (>=200 char tldrs, 4-7 bullets each
-// 40-220 chars, 2-4 body paragraphs each 300-700 chars, none duplicating the
-// tldr, 1-6 tags) so it round-trips through both the shape-only parsers and
-// the full summarizeArticle* validate-and-retry path used throughout this
-// file.
+// Meets validateSummary's content bar at the DEFAULT spec (>=180 char
+// tldrs, 4-7 bullets each 40-220 chars, 2-3 body paragraphs each 288-672
+// chars, none duplicating the tldr, 1-6 tags) so it round-trips through
+// both the shape-only parsers and the full summarizeArticle*
+// validate-and-retry path used throughout this file.
 const VALID_SUMMARY = {
   title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
   title_en: "Company Raises Subscription Price 60% Starting September 1",
@@ -523,6 +527,7 @@ function makeLlmEnv(overrides: Partial<Env> = {}): Env {
     PENDING_TIMEOUT_MIN: 10,
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     PUBLIC_BASE_URL: "",
     ...overrides,
@@ -808,20 +813,22 @@ Deno.test("validateSummary: title at exactly 120 chars is fine (boundary)", () =
   assertEquals(result.ok, true);
 });
 
-Deno.test("validateSummary: tldr under 200 chars is a violation", () => {
+Deno.test("validateSummary: tldr under the default STRICT minimum (180 chars) is a violation", () => {
   const result = validateSummary(makeValidSummary({ tldr_ru: "Слишком коротко." }));
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("tldr_ru") && v.includes("200")),
+      result.violations.some((v) => v.includes("tldr_ru") && v.includes("180")),
       true,
     );
   }
 });
 
-Deno.test("validateSummary: tldr at exactly 200 chars is fine (boundary)", () => {
-  const result = validateSummary(makeValidSummary({ tldr_en: "x".repeat(200) }));
-  assertEquals(result.ok, true);
+Deno.test("validateSummary: tldr at exactly 180 chars is fine, 179 is a violation (boundary)", () => {
+  const at180 = validateSummary(makeValidSummary({ tldr_en: "x".repeat(180) }));
+  assertEquals(at180.ok, true);
+  const at179 = validateSummary(makeValidSummary({ tldr_en: "x".repeat(179) }));
+  assertEquals(at179.ok, false);
 });
 
 Deno.test("validateSummary: fewer than 4 bullets is a violation", () => {
@@ -955,35 +962,35 @@ Deno.test("validateSummary: fewer than 2 body paragraphs is a violation", () => 
   }
 });
 
-Deno.test("validateSummary: more than 4 body paragraphs is a violation", () => {
+Deno.test("validateSummary: more than 3 body paragraphs is a violation (default STRICT max)", () => {
   const paragraph = "x".repeat(400);
   const result = validateSummary(
-    makeValidSummary({ body_en: [paragraph, paragraph, paragraph, paragraph, paragraph] }),
+    makeValidSummary({ body_en: [paragraph, paragraph, paragraph, paragraph] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
-    assertEquals(result.violations.some((v) => v.includes("body_en") && v.includes("4")), true);
+    assertEquals(result.violations.some((v) => v.includes("body_en") && v.includes("3")), true);
   }
 });
 
-Deno.test("validateSummary: exactly 2 and exactly 4 body paragraphs are both fine (boundaries)", () => {
+Deno.test("validateSummary: exactly 2 and exactly 3 body paragraphs are both fine (boundaries)", () => {
   const paragraph = (n: number) =>
     `Paragraph number ${n} with enough distinct words of its own to clear the minimum ` +
     `paragraph length threshold and avoid tripping the tldr-overlap duplicate check by ` +
     `bringing in genuinely new vocabulary that the short tldr sentence never mentions at all, ` +
-    `padded out with a bit more filler text here so the whole thing comfortably clears three ` +
-    `hundred characters with real headroom to spare for this specific boundary test case.`;
+    `padded out with a bit more filler text here so the whole thing comfortably clears the ` +
+    `default minimum paragraph length with real headroom to spare for this boundary test case.`;
 
   const two = validateSummary(makeValidSummary({ body_en: [paragraph(1), paragraph(2)] }));
   assertEquals(two.ok, true, JSON.stringify(!two.ok ? two.violations : []));
 
-  const four = validateSummary(
-    makeValidSummary({ body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4)] }),
+  const three = validateSummary(
+    makeValidSummary({ body_en: [paragraph(1), paragraph(2), paragraph(3)] }),
   );
-  assertEquals(four.ok, true, JSON.stringify(!four.ok ? four.violations : []));
+  assertEquals(three.ok, true, JSON.stringify(!three.ok ? three.violations : []));
 });
 
-Deno.test("validateSummary: a body paragraph under 300 chars is a violation", () => {
+Deno.test("validateSummary: a body paragraph under the default STRICT minimum (288 chars) is a violation", () => {
   const short = makeValidSummary().body_en[0].slice(0, 100);
   const result = validateSummary(
     makeValidSummary({ body_en: [short, makeValidSummary().body_en[1]] }),
@@ -991,21 +998,21 @@ Deno.test("validateSummary: a body paragraph under 300 chars is a violation", ()
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("body_en[0]") && v.includes("300")),
+      result.violations.some((v) => v.includes("body_en[0]") && v.includes("288")),
       true,
     );
   }
 });
 
-Deno.test("validateSummary: a body paragraph over 700 chars is a violation", () => {
-  const tooLong = "x".repeat(701);
+Deno.test("validateSummary: a body paragraph over the default STRICT maximum (672 chars) is a violation", () => {
+  const tooLong = "x".repeat(673);
   const result = validateSummary(
     makeValidSummary({ body_en: [tooLong, makeValidSummary().body_en[1]] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("body_en[0]") && v.includes("700")),
+      result.violations.some((v) => v.includes("body_en[0]") && v.includes("672")),
       true,
     );
   }
@@ -1053,51 +1060,49 @@ Deno.test("validateSummary: 1 and 6 tags are both fine (boundaries)", () => {
   );
 });
 
-Deno.test("validateSummary: RELAXED profile lowers the tldr bar relative to STRICT", () => {
-  // 150-199 chars: fails STRICT (>=200) but clears RELAXED (>=150).
-  const midLengthTldr = "x".repeat(180);
+Deno.test("validateSummary: RELAXED spec lowers the tldr bar relative to STRICT (same default target)", () => {
+  // 160 chars: fails STRICT's default 180-char floor but clears RELAXED's 135.
+  const midLengthTldr = "x".repeat(160);
   const summary = makeValidSummary({ tldr_ru: midLengthTldr, tldr_en: midLengthTldr });
-  assertEquals(validateSummary(summary, STRICT_PROFILE).ok, false);
-  assertEquals(validateSummary(summary, RELAXED_PROFILE).ok, true);
+  assertEquals(validateSummary(summary, DEFAULT_STRICT_SPEC).ok, false);
+  assertEquals(validateSummary(summary, DEFAULT_RELAXED_SPEC).ok, true);
 });
 
-Deno.test("validateSummary: profile defaults to STRICT when omitted", () => {
-  const midLengthTldr = "x".repeat(180);
+Deno.test("validateSummary: defaults to the default-target STRICT spec when omitted", () => {
+  const midLengthTldr = "x".repeat(160);
   const summary = makeValidSummary({ tldr_ru: midLengthTldr, tldr_en: midLengthTldr });
-  assertEquals(validateSummary(summary).ok, validateSummary(summary, STRICT_PROFILE).ok);
+  assertEquals(validateSummary(summary).ok, validateSummary(summary, DEFAULT_STRICT_SPEC).ok);
 });
 
-// --- RELAXED profile boundaries (workers-ai) ---
+// --- RELAXED spec boundaries (workers-ai), at the default 1200-char target ---
 
-Deno.test("validateSummary (RELAXED): tldr at exactly 150 chars is fine (boundary)", () => {
-  const tldr = "x".repeat(150);
-  const result = validateSummary(
-    makeValidSummary({ tldr_ru: tldr, tldr_en: tldr }),
-    RELAXED_PROFILE,
+Deno.test("validateSummary (RELAXED): tldr at exactly 135 chars is fine, 134 is a violation (boundary)", () => {
+  const tldr135 = "x".repeat(135);
+  const at135 = validateSummary(
+    makeValidSummary({ tldr_ru: tldr135, tldr_en: tldr135 }),
+    DEFAULT_RELAXED_SPEC,
   );
-  assertEquals(result.ok, true);
-});
+  assertEquals(at135.ok, true);
 
-Deno.test("validateSummary (RELAXED): tldr at 149 chars is a violation", () => {
-  const tldr = "x".repeat(149);
-  const result = validateSummary(
-    makeValidSummary({ tldr_ru: tldr, tldr_en: tldr }),
-    RELAXED_PROFILE,
+  const tldr134 = "x".repeat(134);
+  const at134 = validateSummary(
+    makeValidSummary({ tldr_ru: tldr134, tldr_en: tldr134 }),
+    DEFAULT_RELAXED_SPEC,
   );
-  assertEquals(result.ok, false);
+  assertEquals(at134.ok, false);
 });
 
 Deno.test("validateSummary (RELAXED): 3 bullets is fine, 2 is a violation (boundary)", () => {
   const base = makeValidSummary();
   const threeBullets = validateSummary(
     makeValidSummary({ bullets_en: base.bullets_en.slice(0, 3) }),
-    RELAXED_PROFILE,
+    DEFAULT_RELAXED_SPEC,
   );
   assertEquals(threeBullets.ok, true);
 
   const twoBullets = validateSummary(
     makeValidSummary({ bullets_en: base.bullets_en.slice(0, 2) }),
-    RELAXED_PROFILE,
+    DEFAULT_RELAXED_SPEC,
   );
   assertEquals(twoBullets.ok, false);
 });
@@ -1106,59 +1111,50 @@ Deno.test("validateSummary (RELAXED): a 30-char bullet is fine, 29 chars is a vi
   const base = makeValidSummary();
   const thirty = validateSummary(
     makeValidSummary({ bullets_en: ["x".repeat(30), ...base.bullets_en.slice(1)] }),
-    RELAXED_PROFILE,
+    DEFAULT_RELAXED_SPEC,
   );
   assertEquals(thirty.ok, true);
 
   const twentyNine = validateSummary(
     makeValidSummary({ bullets_en: ["x".repeat(29), ...base.bullets_en.slice(1)] }),
-    RELAXED_PROFILE,
+    DEFAULT_RELAXED_SPEC,
   );
   assertEquals(twentyNine.ok, false);
 });
 
-Deno.test("validateSummary (RELAXED): 6 body paragraphs is fine, 7 is a violation (boundary)", () => {
+Deno.test("validateSummary (RELAXED): 3 body paragraphs is fine, 4 is a violation (boundary; same paragraph-count range as STRICT at this target)", () => {
   const paragraph = (n: number) =>
-    `Paragraph number ${n} with enough distinct filler content padded out well past the RELAXED ` +
-    "profile's 150-character minimum so this boundary test isn't accidentally failing on length instead of count.";
-  const six = validateSummary(
+    `Paragraph number ${n} with enough distinct filler content padded out well past the default ` +
+    "target's minimum paragraph length of 288 characters so this boundary test isn't accidentally " +
+    "failing on length instead of count, with a bit more padding text here to comfortably clear " +
+    "that floor with real headroom to spare for this specific paragraph-count boundary test case.";
+  const three = validateSummary(
     makeValidSummary({
-      body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4), paragraph(5), paragraph(6)],
+      body_en: [paragraph(1), paragraph(2), paragraph(3)],
     }),
-    RELAXED_PROFILE,
+    DEFAULT_RELAXED_SPEC,
   );
-  assertEquals(six.ok, true);
+  assertEquals(three.ok, true, JSON.stringify(!three.ok ? three.violations : []));
 
-  const seven = validateSummary(
+  const four = validateSummary(
     makeValidSummary({
-      body_en: [
-        paragraph(1),
-        paragraph(2),
-        paragraph(3),
-        paragraph(4),
-        paragraph(5),
-        paragraph(6),
-        paragraph(7),
-      ],
+      body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4)],
     }),
-    RELAXED_PROFILE,
+    DEFAULT_RELAXED_SPEC,
   );
-  assertEquals(seven.ok, false);
+  assertEquals(four.ok, false);
 });
 
-Deno.test("validateSummary (RELAXED): a 150-char paragraph is fine, 149 chars is a violation (boundary)", () => {
-  const base = makeValidSummary();
-  const at150 = validateSummary(
-    makeValidSummary({ body_en: ["x".repeat(150), base.body_en[1]] }),
-    RELAXED_PROFILE,
-  );
-  assertEquals(at150.ok, true);
-
-  const at149 = validateSummary(
-    makeValidSummary({ body_en: ["x".repeat(149), base.body_en[1]] }),
-    RELAXED_PROFILE,
-  );
-  assertEquals(at149.ok, false);
+Deno.test("validateSummary: RELAXED's paragraph-length FLOOR only diverges from STRICT's at a small enough target (the default target's natural band already clears both floors)", () => {
+  // At targetTotalChars=400, STRICT's 250-char floor binds (400/2 * 0.6 =
+  // 120 < 250) but RELAXED's 120-char floor doesn't (120 == 120) — the one
+  // case in the derivation where the two profiles actually produce
+  // different minParagraphChars for the same target.
+  const strict400 = deriveSummarySpec(400, "strict");
+  const relaxed400 = deriveSummarySpec(400, "relaxed");
+  assertEquals(strict400.minParagraphChars, 250);
+  assertEquals(relaxed400.minParagraphChars, 120);
+  assertEquals(strict400.maxParagraphChars, relaxed400.maxParagraphChars);
 });
 
 Deno.test("validateSummary: multiple simultaneous violations are all reported, not just the first", () => {
@@ -1171,45 +1167,72 @@ Deno.test("validateSummary: multiple simultaneous violations are all reported, n
   }
 });
 
-Deno.test("validateSummary: the prompt's own few-shot example passes STRICT (guards against prompt/validator drift)", () => {
-  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY, STRICT_PROFILE);
+Deno.test("validateSummary: the prompt's own few-shot example passes STRICT at the default target (guards against prompt/validator drift)", () => {
+  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY, DEFAULT_STRICT_SPEC);
   assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
 });
 
-Deno.test("validateSummary: the prompt's own few-shot example ALSO passes RELAXED (same example serves both tiers)", () => {
-  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY, RELAXED_PROFILE);
+Deno.test("validateSummary: the prompt's own few-shot example ALSO passes RELAXED at the default target (same example serves both tiers)", () => {
+  const result = validateSummary(FEW_SHOT_EXAMPLE_SUMMARY, DEFAULT_RELAXED_SPEC);
   assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
 });
 
-// --- Prompt parameterization: no drift between the prompt text and the profile it was built from ---
+// --- Prompt parameterization: no drift between the prompt text and the spec it was built from ---
 
-Deno.test("buildSystemPrompt: STRICT prompt states STRICT's own numbers", () => {
-  const prompt = buildSystemPrompt(STRICT_PROFILE);
-  assertEquals(prompt.includes("at least 200 characters"), true);
-  assertEquals(prompt.includes("2-4 self-contained"), true);
-  assertEquals(prompt.includes("300-700 characters"), true);
+Deno.test("buildSystemPrompt: STRICT prompt at the default target states the spec's own numbers", () => {
+  const prompt = buildSystemPrompt(DEFAULT_STRICT_SPEC);
+  assertEquals(prompt.includes("at least 180 characters"), true);
+  assertEquals(prompt.includes("2-3 self-contained"), true);
+  assertEquals(prompt.includes("between 288 and 672"), true);
+  assertEquals(prompt.includes("aim for 360-600"), true);
+  assertEquals(prompt.includes("~1200 characters across all paragraphs"), true);
   assertEquals(prompt.includes("4-7 items"), true);
   assertEquals(prompt.includes("40-220 characters each"), true);
 });
 
-Deno.test("buildSystemPrompt: RELAXED prompt states RELAXED's own numbers, not STRICT's", () => {
-  const prompt = buildSystemPrompt(RELAXED_PROFILE);
-  assertEquals(prompt.includes("at least 150 characters"), true);
-  assertEquals(prompt.includes("2-6 self-contained"), true);
-  assertEquals(prompt.includes("150-700 characters"), true);
+Deno.test("buildSystemPrompt: RELAXED prompt at the default target states RELAXED's own tldr/bullet numbers, not STRICT's", () => {
+  const prompt = buildSystemPrompt(DEFAULT_RELAXED_SPEC);
+  assertEquals(prompt.includes("at least 135 characters"), true);
   assertEquals(prompt.includes("3-7 items"), true);
   assertEquals(prompt.includes("30-220 characters each"), true);
-  assertEquals(prompt.includes("at least 200 characters"), false);
-  assertEquals(prompt.includes("2-4 self-contained"), false);
+  assertEquals(prompt.includes("at least 180 characters"), false);
+  assertEquals(prompt.includes("4-7 items"), false);
+});
+
+Deno.test("buildSystemPrompt: a custom spec's numbers all flow into the rendered text (no hardcoded fallback)", () => {
+  const custom: SummarySpec = {
+    profileKind: "strict",
+    targetTotalChars: 4321,
+    minBodyParagraphs: 5,
+    maxBodyParagraphs: 6,
+    paragraphTargetLow: 111,
+    paragraphTargetHigh: 222,
+    minParagraphChars: 333,
+    maxParagraphChars: 444,
+    minTldrChars: 555,
+    minBullets: 6,
+    maxBullets: 8,
+    minBulletChars: 77,
+    maxBulletChars: 888,
+    maxTokens: 5555,
+  };
+  const prompt = buildSystemPrompt(custom);
+  assertEquals(prompt.includes("at least 555 characters"), true);
+  assertEquals(prompt.includes("5-6 self-contained"), true);
+  assertEquals(prompt.includes("between 333 and 444"), true);
+  assertEquals(prompt.includes("aim for 111-222"), true);
+  assertEquals(prompt.includes("~4321 characters across all paragraphs"), true);
+  assertEquals(prompt.includes("6-8 items"), true);
+  assertEquals(prompt.includes("77-888 characters each"), true);
 });
 
 // --- Profile selection is fixed per summarize function, not a caller option ---
 
 Deno.test("summarizeArticleWithWorkersAi accepts a summary that clears RELAXED but would fail STRICT", async () => {
-  // 160-char tldr: fails STRICT's 200-char floor, clears RELAXED's 150.
+  // 160-char tldr: fails STRICT's default 180-char floor, clears RELAXED's 135.
   const relaxedOnly = { ...makeValidSummary(), tldr_ru: "x".repeat(160), tldr_en: "x".repeat(160) };
-  assertEquals(validateSummary(relaxedOnly, STRICT_PROFILE).ok, false);
-  assertEquals(validateSummary(relaxedOnly, RELAXED_PROFILE).ok, true);
+  assertEquals(validateSummary(relaxedOnly, DEFAULT_STRICT_SPEC).ok, false);
+  assertEquals(validateSummary(relaxedOnly, DEFAULT_RELAXED_SPEC).ok, true);
 
   const ai = makeStubAi(() => ({ response: relaxedOnly }));
   const result = await summarizeArticleWithWorkersAi(ai, "model", "Title", "text");
@@ -1272,9 +1295,294 @@ Deno.test("summarizeArticle: a content-quality failure retries with the violatio
     assertEquals(result, makeValidSummary());
     assertEquals(calls, 2);
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
-    assertEquals(secondMessage.includes("tldr_ru must be at least 200 characters"), true);
-    assertEquals(secondMessage.includes("tldr_en must be at least 200 characters"), true);
+    assertEquals(secondMessage.includes("tldr_ru must be at least 180 characters"), true);
+    assertEquals(secondMessage.includes("tldr_en must be at least 180 characters"), true);
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+Deno.test("summarizeArticle: a body-paragraph OVERSHOOT retries with a 'rewrite paragraph N' instruction, not the generic message", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedSecondBody: { messages: { content: string }[] } | undefined;
+  let calls = 0;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    if (calls === 1) {
+      // body_en[0] overshoots DEFAULT_STRICT_SPEC's 672-char max.
+      const tooLong = {
+        ...makeValidSummary(),
+        body_en: ["x".repeat(700), makeValidSummary().body_en[1]],
+      };
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(tooLong) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    capturedSecondBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const result = await summarizeArticle(
+      { apiKey: "sk-direct", model: "test-model" },
+      "Title",
+      "Body",
+    );
+    assertEquals(result, makeValidSummary());
+    assertEquals(calls, 2);
+    const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
+    assertEquals(
+      secondMessage.includes(
+        "rewrite body_en paragraph 1 to 360-600 characters; keep the most important facts, cut examples first",
+      ),
+      true,
+    );
+    // Not the generic "must be between X and Y (got Z)" phrasing for this violation.
+    assertEquals(secondMessage.includes("body_en[0] must be between"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: a body-paragraph UNDERSHOOT still gets the generic phrasing (only overshoots get the rewrite instruction)", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedSecondBody: { messages: { content: string }[] } | undefined;
+  let calls = 0;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    if (calls === 1) {
+      const tooShort = {
+        ...makeValidSummary(),
+        body_en: ["x".repeat(50), makeValidSummary().body_en[1]],
+      };
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(tooShort) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    capturedSecondBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    await summarizeArticle({ apiKey: "sk-direct", model: "test-model" }, "Title", "Body");
+    const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
+    assertEquals(secondMessage.includes("body_en[0] must be between 288 and 672"), true);
+    assertEquals(secondMessage.includes("rewrite body_en paragraph"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// --- deriveSummarySpec: single source of truth for both the prompt's sizing
+// block and validateSummary()'s hard bounds ---
+
+const TEST_TARGETS = [400, 800, 1200, 2000, 4000] as const;
+
+Deno.test("deriveSummarySpec: paragraph/tldr/max_tokens numbers are monotonically non-decreasing as the target grows (both profiles)", () => {
+  for (const profileKind of ["strict", "relaxed"] as const) {
+    let prevMaxParagraph = 0;
+    let prevTldr = 0;
+    let prevMaxTokens = 0;
+    for (const target of TEST_TARGETS) {
+      const spec = deriveSummarySpec(target, profileKind);
+      assertEquals(spec.maxParagraphChars >= prevMaxParagraph, true, `${profileKind}@${target}`);
+      assertEquals(spec.minTldrChars >= prevTldr, true, `${profileKind}@${target}`);
+      assertEquals(spec.maxTokens >= prevMaxTokens, true, `${profileKind}@${target}`);
+      prevMaxParagraph = spec.maxParagraphChars;
+      prevTldr = spec.minTldrChars;
+      prevMaxTokens = spec.maxTokens;
+    }
+  }
+});
+
+Deno.test("deriveSummarySpec: minParagraphChars <= maxParagraphChars and the target band sits at/under the hard ceiling, for every target x profile", () => {
+  for (const profileKind of ["strict", "relaxed"] as const) {
+    for (const target of TEST_TARGETS) {
+      const spec = deriveSummarySpec(target, profileKind);
+      assertEquals(
+        spec.minParagraphChars <= spec.maxParagraphChars,
+        true,
+        `${profileKind}@${target}`,
+      );
+      assertEquals(
+        spec.paragraphTargetHigh <= spec.maxParagraphChars,
+        true,
+        `${profileKind}@${target}`,
+      );
+      assertEquals(
+        spec.paragraphTargetLow <= spec.paragraphTargetHigh,
+        true,
+        `${profileKind}@${target}`,
+      );
+    }
+  }
+});
+
+Deno.test("deriveSummarySpec: STRICT's 250-char paragraph floor binds only at the smallest allowed target (400) — an accepted edge case, see README", () => {
+  const spec400 = deriveSummarySpec(400, "strict");
+  // At this one boundary, the floor (250) sits ABOVE the natural "aim for"
+  // low end (150) — the model is told to aim for 150-250 but the enforced
+  // minimum is 250; still self-consistent (250 <= max 280), just a narrow
+  // band. Every other target in the table doesn't hit this case.
+  assertEquals(spec400.minParagraphChars, 250);
+  assertEquals(spec400.paragraphTargetLow, 150);
+  assertEquals(spec400.minParagraphChars > spec400.paragraphTargetLow, true);
+
+  for (const target of [800, 1200, 2000, 4000] as const) {
+    const spec = deriveSummarySpec(target, "strict");
+    assertEquals(spec.minParagraphChars <= spec.paragraphTargetLow, true, `strict@${target}`);
+  }
+});
+
+Deno.test("deriveSummarySpec: tldr floor clamp (150) and cap (350) both apply on the STRICT side", () => {
+  // 400 * 0.15 = 60, below the 150 floor.
+  assertEquals(deriveSummarySpec(400, "strict").minTldrChars, 150);
+  // 4000 * 0.15 = 600, above the 350 cap.
+  assertEquals(deriveSummarySpec(4000, "strict").minTldrChars, 350);
+});
+
+Deno.test("deriveSummarySpec: RELAXED's tldr minimum is always 75% of STRICT's, at every target", () => {
+  for (const target of TEST_TARGETS) {
+    const strict = deriveSummarySpec(target, "strict");
+    const relaxed = deriveSummarySpec(target, "relaxed");
+    assertEquals(relaxed.minTldrChars, Math.round(strict.minTldrChars * 0.75), `target=${target}`);
+  }
+});
+
+Deno.test("deriveSummarySpec: max_tokens is clamped to [2500, 6000] regardless of target", () => {
+  assertEquals(deriveSummarySpec(400, "strict").maxTokens >= 2500, true);
+  assertEquals(deriveSummarySpec(4000, "strict").maxTokens, 6000);
+});
+
+Deno.test("deriveSummarySpec: bullet ranges are fixed per profile, independent of target", () => {
+  for (const target of TEST_TARGETS) {
+    const strict = deriveSummarySpec(target, "strict");
+    const relaxed = deriveSummarySpec(target, "relaxed");
+    assertEquals(strict.minBullets, 4);
+    assertEquals(strict.maxBullets, 7);
+    assertEquals(strict.minBulletChars, 40);
+    assertEquals(strict.maxBulletChars, 220);
+    assertEquals(relaxed.minBullets, 3);
+    assertEquals(relaxed.maxBullets, 7);
+    assertEquals(relaxed.minBulletChars, 30);
+    assertEquals(relaxed.maxBulletChars, 220);
+  }
+});
+
+Deno.test("deriveSummarySpec: paragraph count widens in three steps as the target grows", () => {
+  assertEquals(deriveSummarySpec(400, "strict").maxBodyParagraphs, 2);
+  assertEquals(deriveSummarySpec(900, "strict").maxBodyParagraphs, 2);
+  assertEquals(deriveSummarySpec(901, "strict").maxBodyParagraphs, 3);
+  assertEquals(deriveSummarySpec(2000, "strict").maxBodyParagraphs, 3);
+  assertEquals(deriveSummarySpec(2001, "strict").maxBodyParagraphs, 4);
+  assertEquals(deriveSummarySpec(4000, "strict").maxBodyParagraphs, 4);
+});
+
+Deno.test("deriveSummarySpec: the exact spec table for the required test targets, both profiles (documents the derivation)", () => {
+  const expected: Record<number, { strict: Partial<SummarySpec>; relaxed: Partial<SummarySpec> }> =
+    {
+      400: {
+        strict: { minParagraphChars: 250, maxParagraphChars: 280, minTldrChars: 150 },
+        relaxed: { minParagraphChars: 120, maxParagraphChars: 280, minTldrChars: 113 },
+      },
+      800: {
+        strict: { minParagraphChars: 250, maxParagraphChars: 560, minTldrChars: 150 },
+        relaxed: { minParagraphChars: 240, maxParagraphChars: 560, minTldrChars: 113 },
+      },
+      1200: {
+        strict: { minParagraphChars: 288, maxParagraphChars: 672, minTldrChars: 180 },
+        relaxed: { minParagraphChars: 288, maxParagraphChars: 672, minTldrChars: 135 },
+      },
+      2000: {
+        strict: { minParagraphChars: 480, maxParagraphChars: 1120, minTldrChars: 300 },
+        relaxed: { minParagraphChars: 480, maxParagraphChars: 1120, minTldrChars: 225 },
+      },
+      4000: {
+        strict: { minParagraphChars: 686, maxParagraphChars: 1600, minTldrChars: 350 },
+        relaxed: { minParagraphChars: 686, maxParagraphChars: 1600, minTldrChars: 263 },
+      },
+    };
+
+  for (const target of TEST_TARGETS) {
+    const strict = deriveSummarySpec(target, "strict");
+    const relaxed = deriveSummarySpec(target, "relaxed");
+    for (const [key, value] of Object.entries(expected[target].strict)) {
+      assertEquals(
+        (strict as unknown as Record<string, unknown>)[key],
+        value,
+        `strict@${target}.${key}`,
+      );
+    }
+    for (const [key, value] of Object.entries(expected[target].relaxed)) {
+      assertEquals(
+        (relaxed as unknown as Record<string, unknown>)[key],
+        value,
+        `relaxed@${target}.${key}`,
+      );
+    }
+  }
+});
+
+// --- parseSummaryBodyTargetChars: defensive [vars] parsing ---
+
+function withCapturedWarnings<T>(fn: () => T): { result: T; warnings: unknown[][] } {
+  const original = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  try {
+    return { result: fn(), warnings };
+  } finally {
+    console.warn = original;
+  }
+}
+
+Deno.test("parseSummaryBodyTargetChars: undefined/empty falls back to the default, no warning", () => {
+  const { result: undef, warnings: w1 } = withCapturedWarnings(() =>
+    parseSummaryBodyTargetChars(undefined)
+  );
+  assertEquals(undef, DEFAULT_SUMMARY_BODY_TARGET_CHARS);
+  assertEquals(w1.length, 0);
+
+  const { result: empty, warnings: w2 } = withCapturedWarnings(() =>
+    parseSummaryBodyTargetChars("  ")
+  );
+  assertEquals(empty, DEFAULT_SUMMARY_BODY_TARGET_CHARS);
+  assertEquals(w2.length, 0);
+});
+
+Deno.test("parseSummaryBodyTargetChars: a valid in-range value is used as-is, no warning", () => {
+  const { result, warnings } = withCapturedWarnings(() => parseSummaryBodyTargetChars("800"));
+  assertEquals(result, 800);
+  assertEquals(warnings.length, 0);
+});
+
+Deno.test("parseSummaryBodyTargetChars: non-numeric, below-min, and above-max all fall back WITH a warning", () => {
+  for (const bad of ["not a number", "399", "4001", "-100"]) {
+    const { result, warnings } = withCapturedWarnings(() => parseSummaryBodyTargetChars(bad));
+    assertEquals(result, DEFAULT_SUMMARY_BODY_TARGET_CHARS, bad);
+    assertEquals(warnings.length, 1, bad);
+  }
+});
+
+Deno.test("parseSummaryBodyTargetChars: the boundary values 400 and 4000 are both accepted", () => {
+  assertEquals(parseSummaryBodyTargetChars("400"), 400);
+  assertEquals(parseSummaryBodyTargetChars("4000"), 4000);
 });
