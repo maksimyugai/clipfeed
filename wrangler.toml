@@ -43,6 +43,33 @@ migrations_dir = "migrations"
 binding = "CACHE"
 id = "8e4fddfbda204322a609830cc771124f"
 
+# Article pipeline execution (fetch -> extract -> summarize -> persist) runs
+# in the queue consumer below, not in the request handler's ctx.waitUntil()
+# — that has a hard 30-second cap after the response is sent, and large
+# articles' Workers AI summarization calls have been measured well past
+# that (see README "Queue-based pipeline execution"). A consumer invocation
+# gets minutes of wall time instead. max_batch_size = 1 keeps one article
+# per invocation, so one slow summarization never blocks another queued
+# article's budget. No dead_letter_queue: the pipeline itself guarantees a
+# terminal 'ready'/'failed' row (see pipeline.ts), so a message that still
+# fails after max_retries is a genuine infrastructure error, not a normal
+# failure mode worth a separate queue to inspect.
+#
+# The queue itself isn't provisioned by this config — a forker runs
+# `deno task setup` once (or `wrangler queues create clipfeed-jobs`) before
+# their first deploy. If the JOBS binding isn't available (queue missing,
+# or any environment that hasn't set this up), the app falls back to the
+# pre-Queues ctx.waitUntil() behavior — see queue.ts's enqueueArticleJob.
+[[queues.producers]]
+binding = "JOBS"
+queue = "clipfeed-jobs"
+
+[[queues.consumers]]
+queue = "clipfeed-jobs"
+max_batch_size = 1
+max_retries = 2
+max_batch_timeout = 5
+
 # invocation_logs writes one line per request; lower head_sampling_rate if
 # public traffic grows.
 [observability]

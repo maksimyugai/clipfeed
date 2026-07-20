@@ -1,6 +1,7 @@
 import "./env.d.ts";
 import { Hono } from "hono";
 import type { Context } from "hono";
+import type { QueueMessage } from "@clipfeed/shared/types";
 import { accessAuth, type AppEnv } from "./access-middleware.ts";
 import { readTurnstileConfig } from "./turnstile-middleware.ts";
 import {
@@ -14,7 +15,7 @@ import {
   sweepStalePending,
   toPublicArticle,
 } from "./db.ts";
-import { runArticlePipeline, runResummarization } from "./pipeline.ts";
+import { enqueueArticleJob, processQueueMessage, stashPendingHtml } from "./queue.ts";
 import {
   MAX_BODY_BYTES,
   sourceFromUrl,
@@ -171,15 +172,10 @@ app.post("/api/admin/articles", async (c) => {
     added_at: new Date().toISOString(),
   });
 
-  c.executionCtx.waitUntil(
-    runArticlePipeline(c.env, {
-      id,
-      url,
-      html,
-      requestTitle: title,
-      requestTags: tags ?? [],
-    }),
-  );
+  if (html !== undefined) {
+    await stashPendingHtml(c.env.CACHE, id, html);
+  }
+  await enqueueArticleJob(c.env, c.executionCtx, { kind: "process", articleId: id });
 
   return c.json({ id, status: "pending" }, 202);
 });
@@ -224,15 +220,10 @@ app.post("/api/admin/articles/:id/retry", async (c) => {
 
   await markArticlePending(c.env.DB, id);
 
-  c.executionCtx.waitUntil(
-    runArticlePipeline(c.env, {
-      id,
-      url: article.url,
-      html: htmlResult.value,
-      requestTitle: article.title,
-      requestTags: article.tags,
-    }),
-  );
+  if (htmlResult.value !== undefined) {
+    await stashPendingHtml(c.env.CACHE, id, htmlResult.value);
+  }
+  await enqueueArticleJob(c.env, c.executionCtx, { kind: "process", articleId: id });
 
   return c.json({ id, status: "pending" }, 202);
 });
@@ -253,24 +244,7 @@ app.post("/api/admin/articles/:id/resummarize", async (c) => {
   }
 
   await markArticlePending(c.env.DB, id);
-
-  const hasFullText = article.full_text !== null && article.full_text.trim().length > 0;
-  c.executionCtx.waitUntil(
-    hasFullText
-      ? runResummarization(c.env, {
-        id,
-        title: article.title,
-        author: article.author,
-        fullText: article.full_text as string,
-        requestTags: article.tags,
-      })
-      : runArticlePipeline(c.env, {
-        id,
-        url: article.url,
-        requestTitle: article.title,
-        requestTags: article.tags,
-      }),
-  );
+  await enqueueArticleJob(c.env, c.executionCtx, { kind: "resummarize", articleId: id });
 
   return c.json({ id, status: "pending" }, 202);
 });
@@ -300,5 +274,33 @@ export default {
     ctx: ExecutionContext,
   ): void {
     ctx.waitUntil(handleScheduled(env, controller.scheduledTime));
+  },
+  // Consumer for the "clipfeed-jobs" queue (see wrangler.toml
+  // [[queues.consumers]], queue.ts) — a consumer invocation gets minutes of
+  // wall time, unlike the 30s hard cap on ctx.waitUntil(), which is what
+  // this task exists to route around for large-article summarization.
+  // processQueueMessage() owns the terminal-state guarantee (it delegates
+  // to runArticlePipeline/runResummarization, whose own top-level
+  // try/catch already turns any failure into a 'failed' row) — so a throw
+  // reaching this loop means something unexpected (e.g. D1 itself
+  // erroring), not a normal pipeline failure; only that case is retried.
+  async queue(
+    batch: MessageBatch<QueueMessage>,
+    env: Env,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        await processQueueMessage(env, message.body);
+        message.ack();
+      } catch (err) {
+        console.warn(JSON.stringify({
+          event: "queue_message_unexpected_throw",
+          id: message.body.articleId,
+          error: err instanceof Error ? err.message : String(err),
+        }));
+        message.retry();
+      }
+    }
   },
 };

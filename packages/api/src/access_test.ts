@@ -62,6 +62,10 @@ function makeFakeKv(initial: Record<string, string> = {}): KVNamespace {
       store.set(key, value);
       return Promise.resolve();
     },
+    delete(key: string): Promise<void> {
+      store.delete(key);
+      return Promise.resolve();
+    },
   };
 }
 

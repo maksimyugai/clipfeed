@@ -2,6 +2,8 @@
 // wrangler.toml. Deno's own lib already covers standard fetch/Request/Response,
 // so we only stub the Workers-specific runtime APIs we actually call — extend
 // as later tasks start reading/writing through DB and CACHE.
+import type { QueueMessage } from "@clipfeed/shared/types";
+
 declare global {
   interface Fetcher {
     fetch(request: Request): Promise<Response>;
@@ -27,10 +29,34 @@ declare global {
   interface KVNamespace {
     get(key: string): Promise<string | null>;
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+    delete(key: string): Promise<void>;
   }
 
   interface Ai {
     run(model: string, input: unknown): Promise<unknown>;
+  }
+
+  // Producer side of a Cloudflare Queue binding (see wrangler.toml
+  // [[queues.producers]]).
+  interface Queue<Body = unknown> {
+    send(body: Body): Promise<void>;
+  }
+
+  // Consumer-side message shape (see index.ts's `queue` export).
+  interface Message<Body = unknown> {
+    readonly id: string;
+    readonly timestamp: Date;
+    readonly body: Body;
+    readonly attempts: number;
+    ack(): void;
+    retry(options?: { delaySeconds?: number }): void;
+  }
+
+  interface MessageBatch<Body = unknown> {
+    readonly queue: string;
+    readonly messages: readonly Message<Body>[];
+    ackAll(): void;
+    retryAll(options?: { delaySeconds?: number }): void;
   }
 
   interface ExecutionContext {
@@ -98,6 +124,12 @@ declare global {
     // that job never fires. Both are UTC hours (0-23).
     AGENT_HOUR_UTC: string;
     DIGEST_HOUR_UTC: string;
+    // Article pipeline job queue (see wrangler.toml [[queues.producers]],
+    // queue.ts) — optional so a fork that hasn't run `deno task setup` yet
+    // (or any environment missing the binding) degrades gracefully to the
+    // pre-Queues ctx.waitUntil() behavior instead of crashing; see
+    // queue.ts's enqueueArticleJob.
+    JOBS?: Queue<QueueMessage>;
   }
 }
 

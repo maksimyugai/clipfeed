@@ -4,7 +4,7 @@ import { fetchAllCandidates, SOURCES } from "./sources.ts";
 import { buildCandidatePool } from "./agent-pool.ts";
 import { rankCandidates } from "./ranking.ts";
 import { findArticleIdByUrl, insertPendingArticle } from "./db.ts";
-import { runArticlePipeline } from "./pipeline.ts";
+import { enqueueArticleJob } from "./queue.ts";
 import { sourceFromUrl } from "./validation.ts";
 
 // Structured, category-level stage log for the agent job — counts and ids
@@ -77,8 +77,14 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
     // Sequential, not parallel — stays well inside CPU limits. The
     // pipeline's own daily-budget check handles exhaustion mid-run: once
     // the budget runs out, remaining picks land as 'failed: daily-limit',
-    // same as any other over-budget save (see pipeline.ts).
-    await runArticlePipeline(env, { id, url: pick.url, requestTags: [pick.sourceId] });
+    // same as any other over-budget save (see pipeline.ts). No ExecutionContext
+    // is threaded through here — this whole job already runs inside a
+    // waitUntil()'d task at every call site (cron, manual trigger, /scrape),
+    // so when JOBS isn't configured, enqueueArticleJob's fallback just awaits
+    // the pipeline inline, same as it always has; when JOBS *is* configured
+    // (the intended path), each pick is a fast enqueue and this loop finishes
+    // quickly, matching the "fetch+rank only" goal for this job's own runtime.
+    await enqueueArticleJob(env, undefined, { kind: "process", articleId: id });
     picksRun += 1;
   }
 
