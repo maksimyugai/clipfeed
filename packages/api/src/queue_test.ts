@@ -91,7 +91,8 @@ function stubFetch(opts: { anthropicText?: string } = {}): {
       return Promise.resolve(Response.json({ ok: true, result: { message_id: 1 } }));
     }
 
-    if (url.startsWith("https://api.anthropic.com")) {
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol === "https:" && parsedUrl.hostname === "api.anthropic.com") {
       return Promise.resolve(
         new Response(
           JSON.stringify({
