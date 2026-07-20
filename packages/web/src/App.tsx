@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useReducer, useState } from "preact/hooks";
 import type { AddedVia, ArticleListItem } from "@clipfeed/shared/types";
 import { dictionaries, type Lang, readStoredLang, writeStoredLang } from "./i18n.ts";
 import { useTheme } from "./theme.ts";
@@ -14,10 +14,10 @@ import {
 } from "./api.ts";
 import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
+import { EMPTY_FILTER_STATE, filterReducer } from "./lib/filterState.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
-import { Sidebar } from "./components/Sidebar.tsx";
-import { SourcePills } from "./components/Sidebar.tsx";
+import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
 import { Feed } from "./components/Feed.tsx";
 import { Toast } from "./components/Toast.tsx";
 
@@ -53,9 +53,8 @@ export function App() {
   const dict = dictionaries[lang];
 
   const [searchInput, setSearchInput] = useState("");
-  const [query, setQuery] = useState("");
-  const [activeTag, setActiveTag] = useState<string | null>(null);
-  const [activeSource, setActiveSource] = useState<string | null>(null);
+  const [filters, dispatchFilter] = useReducer(filterReducer, EMPTY_FILTER_STATE);
+  const { tag: activeTag, source: activeSource, query } = filters;
   const [archivedView, setArchivedView] = useState(false);
 
   const [articles, setArticles] = useState<ArticleListItem[]>([]);
@@ -92,7 +91,10 @@ export function App() {
 
   // Debounce the raw search input into the value that actually drives fetches.
   useEffect(() => {
-    const timer = setTimeout(() => setQuery(searchInput), SEARCH_DEBOUNCE_MS);
+    const timer = setTimeout(
+      () => dispatchFilter({ type: "set-query", query: searchInput }),
+      SEARCH_DEBOUNCE_MS,
+    );
     return () => clearTimeout(timer);
   }, [searchInput]);
 
@@ -220,6 +222,22 @@ export function App() {
     setArticles((current) => current.map((a) => (a.id === updated.id ? updated : a)));
   };
 
+  const handleTagClick = (tag: string | null) => dispatchFilter({ type: "set-tag", tag });
+  const handleSourceClick = (source: string | null) =>
+    dispatchFilter({ type: "set-source", source });
+  // The "все"/"all" pill: unlike toggling a single pill off, this resets
+  // the whole filter set at once — tag, source, AND the search box, since
+  // a visitor landing here from a source/tag filter with no way back
+  // (previously the actual bug) should get a genuinely empty feed view.
+  const handleClearAll = () => {
+    dispatchFilter({ type: "clear-all" });
+    setSearchInput("");
+  };
+  const handleSearchClear = () => {
+    setSearchInput("");
+    dispatchFilter({ type: "set-query", query: "" });
+  };
+
   const tagFacets = useMemo(() => computeTagFacets(articles), [articles]);
   const sourceFacets = useMemo(() => computeSourceFacets(articles), [articles]);
   const pickOfDayId = useMemo(() => {
@@ -238,6 +256,7 @@ export function App() {
         onThemeToggle={toggleTheme}
         searchValue={searchInput}
         onSearchChange={setSearchInput}
+        onSearchClear={handleSearchClear}
         onAddClick={() => setModalOpen(true)}
         isOwner={isOwner}
       />
@@ -245,29 +264,28 @@ export function App() {
       <div class="layout">
         <main class="main-column">
           <div class="filter-row-mobile">
-            <button
-              type="button"
-              class={`pill${activeTag === null ? " pill--active" : ""}`}
-              onClick={() => setActiveTag(null)}
-            >
-              {dict.sidebarAllPill}
-            </button>
-            {tagFacets.map(({ tag }) => (
-              <button
-                key={tag}
-                type="button"
-                class={`pill${activeTag === tag ? " pill--active" : ""}`}
-                onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-              >
-                {tag}
-              </button>
-            ))}
+            <TopicPills
+              dict={dict}
+              tags={tagFacets}
+              activeTag={activeTag}
+              onTagClick={handleTagClick}
+              onClearAll={handleClearAll}
+            />
             <SourcePills
               sources={sourceFacets}
               activeSource={activeSource}
-              onSourceClick={setActiveSource}
+              onSourceClick={handleSourceClick}
             />
           </div>
+
+          <ActiveFilterChips
+            activeTag={activeTag}
+            activeSource={activeSource}
+            onClearTag={() => handleTagClick(null)}
+            onClearSource={() => handleSourceClick(null)}
+            clearTagAria={dict.clearTagFilterAria}
+            clearSourceAria={dict.clearSourceFilterAria}
+          />
 
           <Feed
             dict={dict}
@@ -275,8 +293,8 @@ export function App() {
             articles={articles}
             expandedId={expandedId}
             onToggleExpand={(id) => setExpandedId((current) => (current === id ? null : id))}
-            onTagClick={(tag) => setActiveTag(tag)}
-            onSourceClick={(source) => setActiveSource(source)}
+            onTagClick={handleTagClick}
+            onSourceClick={handleSourceClick}
             onArchiveToggle={handleArchiveToggle}
             onDelete={handleDelete}
             onRetry={handleRetry}
@@ -295,10 +313,11 @@ export function App() {
           dict={dict}
           tags={tagFacets}
           activeTag={activeTag}
-          onTagClick={setActiveTag}
+          onTagClick={handleTagClick}
+          onClearAll={handleClearAll}
           sources={sourceFacets}
           activeSource={activeSource}
-          onSourceClick={setActiveSource}
+          onSourceClick={handleSourceClick}
           totalCount={articles.length}
           archivedView={archivedView}
           onArchiveToggle={() => {

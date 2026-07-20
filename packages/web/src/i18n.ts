@@ -51,6 +51,9 @@ export interface Dictionary {
   turnstileClientError: string;
   signIn: string;
   visitorFeedHint: string;
+  clearSearchAria: string;
+  clearTagFilterAria: string;
+  clearSourceFilterAria: string;
 }
 
 const ru: Dictionary = {
@@ -102,6 +105,9 @@ const ru: Dictionary = {
   turnstileClientError: "Не удалось выполнить проверку — попробуйте ещё раз.",
   signIn: "войти",
   visitorFeedHint: "Публичная лента ClipFeed",
+  clearSearchAria: "Очистить поиск",
+  clearTagFilterAria: "Сбросить фильтр по тегу",
+  clearSourceFilterAria: "Сбросить фильтр по источнику",
 };
 
 const en: Dictionary = {
@@ -154,6 +160,9 @@ const en: Dictionary = {
   turnstileClientError: "Could not complete the verification check — please try again.",
   signIn: "sign in",
   visitorFeedHint: "Public ClipFeed feed",
+  clearSearchAria: "Clear search",
+  clearTagFilterAria: "Clear tag filter",
+  clearSourceFilterAria: "Clear source filter",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };
