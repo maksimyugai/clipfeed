@@ -53,8 +53,15 @@ const VALID_SUMMARY = {
 function stubFetch(): () => void {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = ((input: string | URL | Request) => {
-    const url = input.toString();
-    if (url.startsWith("https://api.anthropic.com")) {
+    let isAnthropicApi = false;
+    try {
+      const parsed = new URL(input.toString());
+      isAnthropicApi = parsed.protocol === "https:" && parsed.hostname === "api.anthropic.com";
+    } catch {
+      isAnthropicApi = false;
+    }
+
+    if (isAnthropicApi) {
       return Promise.resolve(
         new Response(
           JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
