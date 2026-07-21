@@ -22,6 +22,9 @@ export interface Dictionary {
   sidebarArchiveLink: string;
   sidebarBackToFeed: string;
   showMore: string;
+  sectionToday: string;
+  sectionYesterday: string;
+  sectionEarlier: string;
   emptyFeedTitle: string;
   emptyFeedHint: string;
   emptyArchiveTitle: string;
@@ -85,6 +88,9 @@ const ru: Dictionary = {
   sidebarArchiveLink: "Архив",
   sidebarBackToFeed: "К ленте",
   showMore: "Показать ещё",
+  sectionToday: "Сегодня",
+  sectionYesterday: "Вчера",
+  sectionEarlier: "Ранее",
   emptyFeedTitle: "Пока пусто",
   emptyFeedHint: "Нажмите «+», чтобы добавить первую статью",
   emptyArchiveTitle: "В архиве пока ничего нет",
@@ -148,6 +154,9 @@ const en: Dictionary = {
   sidebarArchiveLink: "Archive",
   sidebarBackToFeed: "Back to feed",
   showMore: "Show more",
+  sectionToday: "Today",
+  sectionYesterday: "Yesterday",
+  sectionEarlier: "Earlier",
   emptyFeedTitle: "Nothing here yet",
   emptyFeedHint: 'Press "+" to add your first article',
   emptyArchiveTitle: "Nothing archived yet",

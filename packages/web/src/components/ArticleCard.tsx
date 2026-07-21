@@ -13,6 +13,7 @@ import {
   isPermanentFailure,
   visitorFailureText,
 } from "../lib/failureDisplay.ts";
+import { scrollTitleIntoView } from "../lib/scroll.ts";
 
 const JUST_READY_HIGHLIGHT_MS = 2000;
 
@@ -219,6 +220,14 @@ export function ArticleCard(props: ArticleCardProps) {
   const justReady = useJustReadyHighlight(article.status);
   const givenUpPolling = pollState === "given-up";
 
+  // Only scroll on the transition INTO expanded — collapsing must stay put
+  // (jumpy otherwise), and this only fires on the `expanded` flip, not on
+  // every render while already expanded.
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (expanded) scrollTitleIntoView(titleRef.current);
+  }, [expanded]);
+
   if (article.status === "pending") {
     return (
       <article class="card card--pending">
@@ -307,7 +316,7 @@ export function ArticleCard(props: ArticleCardProps) {
       <div class="card-date">{formatDate(article.added_at, lang)}</div>
 
       <button type="button" class="card-title-button" onClick={() => onToggleExpand(article.id)}>
-        <h3 class="card-title">{fields.title}</h3>
+        <h3 class="card-title" ref={titleRef}>{fields.title}</h3>
       </button>
 
       {!expanded && (
