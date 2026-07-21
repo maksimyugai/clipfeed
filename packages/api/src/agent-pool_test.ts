@@ -101,10 +101,10 @@ Deno.test("buildCandidatePool: drops candidates whose exact URL already exists i
   assertEquals(pool.map((c) => c.id), ["new"]);
 });
 
-Deno.test("buildCandidatePool: caps at 120, newest first", async () => {
+Deno.test("buildCandidatePool: caps at 160, newest first", async () => {
   const db = new FakeD1();
   const kv = new FakeKv();
-  const candidates: Candidate[] = Array.from({ length: 150 }, (_, i) =>
+  const candidates: Candidate[] = Array.from({ length: 200 }, (_, i) =>
     makeCandidate({
       id: `c${i}`,
       url: `https://example.com/${i}`,
@@ -112,9 +112,9 @@ Deno.test("buildCandidatePool: caps at 120, newest first", async () => {
     }));
 
   const pool = await buildCandidatePool(db, kv, candidates, NOW);
-  assertEquals(pool.length, 120);
+  assertEquals(pool.length, 160);
   assertEquals(pool[0].id, "c0");
-  assertEquals(pool[119].id, "c119");
+  assertEquals(pool[159].id, "c159");
 });
 
 Deno.test("buildCandidatePool: empty input yields an empty pool without querying D1 for nothing", async () => {

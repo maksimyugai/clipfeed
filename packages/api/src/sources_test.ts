@@ -16,8 +16,8 @@ function stubFetch(handler: (url: string) => Response): () => void {
   };
 }
 
-Deno.test("SOURCES: loaded from sources.json, matches the documented six entries", () => {
-  assertEquals(SOURCES.length, 6);
+Deno.test("SOURCES: loaded from sources.json, matches the documented ten entries", () => {
+  assertEquals(SOURCES.length, 10);
   assertEquals(SOURCES.map((s) => s.id), [
     "hn",
     "arstechnica",
@@ -25,6 +25,10 @@ Deno.test("SOURCES: loaded from sources.json, matches the documented six entries
     "simonwillison",
     "cloudflare",
     "mittr",
+    "tomshardware",
+    "phoronix",
+    "lwn",
+    "servethehome",
   ]);
   assertEquals(SOURCES[0].type, "hackernews");
   assertEquals(SOURCES[1].type, "rss");

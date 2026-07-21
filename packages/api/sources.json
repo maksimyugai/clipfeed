@@ -24,5 +24,25 @@
     "id": "mittr",
     "type": "rss",
     "url": "https://www.technologyreview.com/feed/"
+  },
+  {
+    "id": "tomshardware",
+    "type": "rss",
+    "url": "https://www.tomshardware.com/feeds.xml"
+  },
+  {
+    "id": "phoronix",
+    "type": "rss",
+    "url": "https://www.phoronix.com/rss.php"
+  },
+  {
+    "id": "lwn",
+    "type": "rss",
+    "url": "https://lwn.net/headlines/rss"
+  },
+  {
+    "id": "servethehome",
+    "type": "rss",
+    "url": "https://www.servethehome.com/feed/"
   }
 ]
