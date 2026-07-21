@@ -3,8 +3,10 @@ import type { Dictionary, Lang } from "../i18n.ts";
 import { DATE_SECTIONS, type DateSection, groupArticlesBySection } from "../lib/dateGrouping.ts";
 import { isSectionOpenTodayEmptyAware, type SectionOpenState } from "../lib/sectionState.ts";
 import { scrollElementIntoView } from "../lib/scroll.ts";
+import { computeAgentBatchIndicator, shouldShowEmptyCountdown } from "../lib/agentBatch.ts";
 import { ArticleCard } from "./ArticleCard.tsx";
 import { TodayEmptyState } from "./TodayEmptyState.tsx";
+import { AgentBatchIndicator } from "./AgentBatchIndicator.tsx";
 
 export interface FeedProps {
   dict: Dictionary;
@@ -70,7 +72,13 @@ export function Feed(props: FeedProps) {
   // for "today" specifically — but only in the normal feed view; an
   // archived view showing "new articles soon" would be nonsensical, and the
   // all-articles-empty case above already has its own dedicated empty state.
-  const todayIsEmpty = !archivedView && grouped.today.length === 0;
+  //
+  // Task 25 precedence: shouldShowEmptyCountdown accounts for the case
+  // where Today has agent-pending articles but nothing visible YET (they
+  // render as null — see ArticleCard.tsx's Part A branch) — in that case
+  // the AgentBatchIndicator below takes over the "something is happening"
+  // signal instead of the countdown (see lib/agentBatch.ts's doc comment).
+  const todayIsEmpty = !archivedView && shouldShowEmptyCountdown(grouped.today);
 
   const handleReadYesterday = () => {
     scrollElementIntoView(document.getElementById("feed-section-yesterday"));
@@ -91,6 +99,13 @@ export function Feed(props: FeedProps) {
         if (items.length === 0 && !isEarlierPending && !isTodayEmptyState) return null;
 
         const open = isSectionOpenTodayEmptyAware(section, sectionOpen, isSearching, todayIsEmpty);
+        // Task 25 Part A: the header count reflects what's actually
+        // visible, not the raw row count — an agent-pending row renders as
+        // null (see ArticleCard.tsx), so counting it here would show e.g.
+        // "12" when only 2 cards and a "0 of 10 ready" indicator are on
+        // screen.
+        const agentBatch = computeAgentBatchIndicator(items);
+        const visibleCount = items.length - (agentBatch.total - agentBatch.ready);
 
         return (
           <div class="feed-section" key={section} id={`feed-section-${section}`}>
@@ -103,7 +118,7 @@ export function Feed(props: FeedProps) {
               <span class="feed-section-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>
               <span class="feed-section-label">{sectionLabel[section]}</span>
               <span class="feed-section-count">
-                {isTodayEmptyState ? "—" : items.length}
+                {isTodayEmptyState ? "—" : visibleCount}
               </span>
             </button>
 
@@ -114,6 +129,15 @@ export function Feed(props: FeedProps) {
                     dict={dict}
                     agentHourUtc={agentHourUtc}
                     onReadYesterday={handleReadYesterday}
+                  />
+                )}
+
+                {agentBatch.visible && (
+                  <AgentBatchIndicator
+                    dict={dict}
+                    lang={props.lang}
+                    ready={agentBatch.ready}
+                    total={agentBatch.total}
                   />
                 )}
 

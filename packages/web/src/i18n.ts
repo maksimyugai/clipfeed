@@ -79,6 +79,11 @@ export interface Dictionary {
   todayCountdownLessThanMinute: string;
   todayAgentDisabled: string;
   todayReadYesterdayLink: string;
+  agentBatchPreparingPrefix: string;
+  agentBatchPreparingSuffix: string;
+  agentBatchReadyLabel: string;
+  agentBatchOfLabel: string;
+  pendingProcessingCaption: string;
 }
 
 const ru: Dictionary = {
@@ -158,6 +163,11 @@ const ru: Dictionary = {
   todayCountdownLessThanMinute: "Свежие статьи вот-вот появятся",
   todayAgentDisabled: "Автоподбор отключён",
   todayReadYesterdayLink: "Пока почитайте вчерашние",
+  agentBatchPreparingPrefix: "Готовится",
+  agentBatchPreparingSuffix: "свежих выжимок…",
+  agentBatchReadyLabel: "готово",
+  agentBatchOfLabel: "из",
+  pendingProcessingCaption: "Обрабатывается…",
 };
 
 const en: Dictionary = {
@@ -238,6 +248,11 @@ const en: Dictionary = {
   todayCountdownLessThanMinute: "New articles any moment now",
   todayAgentDisabled: "Auto-picks are off",
   todayReadYesterdayLink: "Read yesterday's meanwhile",
+  agentBatchPreparingPrefix: "Preparing",
+  agentBatchPreparingSuffix: "fresh summaries…",
+  agentBatchReadyLabel: "ready",
+  agentBatchOfLabel: "of",
+  pendingProcessingCaption: "Processing…",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };

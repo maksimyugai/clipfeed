@@ -840,6 +840,31 @@ the agent is effectively disabled) and `agent_daily_picks` — this is what powe
 agent run (computed client-side from the visitor's own local clock) instead of just disappearing,
 and falls back to a neutral "auto-picks are off" message when the hour is `null`.
 
+**Pending-article UX (agent batch vs. an owner's own add):** a batch of freshly-scraped agent picks
+used to appear as ten individual half-finished cards, each showing the raw English source title and
+a spinner until summarization flipped it to the real (Russian/English) title — visually noisy, and a
+jarring title flip once each one finished. Now the two capture paths render differently while
+`status === 'pending'`:
+
+- **Agent-added** (`added_via: 'agent'`): not rendered as an individual card at all. Instead, one
+  aggregate indicator appears at the top of whichever section the batch's articles fall into
+  (normally "Today"): "Preparing N fresh summaries… M of N ready", ticking down as each one
+  finishes. It disappears once every agent article in that section has left `'pending'` (whether by
+  finishing or failing) — see `lib/agentBatch.ts`'s `computeAgentBatchIndicator`. A failed
+  agent-pending article is excluded from the indicator's count entirely (it was never "coming") and
+  still renders as a normal failed card, same as any other failure. If the batch has started but
+  nothing is ready yet, this indicator takes precedence over the empty-Today countdown above — see
+  `shouldShowEmptyCountdown` for the exact rule.
+- **Owner-added** (`manual` / `extension` / `telegram`): renders as a skeleton card — pulsing
+  placeholder blocks, never the raw source title (so there's no title flip once it's ready) — with a
+  "Processing…" caption, or the existing "taking a while / Check now" note if polling gives up.
+
+Both the skeleton and the indicator share one shimmer CSS component, fully disabled under
+`prefers-reduced-motion` (a static placeholder instead — see `lib/motion.ts` and the
+`prefers-reduced-motion` blocks in `styles.css`). A card that finishes while visible (agent or
+owner) gets a brief slide+fade-in on top of the existing "just became ready" highlight, also skipped
+under reduced motion.
+
 ## Chrome extension
 
 `packages/extension/` is a Manifest V3 extension that saves the **current tab's rendered HTML** (not
