@@ -11,6 +11,7 @@
   --tag-tx: #534AB7;
   --acc: #7F77DD;
   --danger: #D64545;
+  --warn: #A8720A;
 
   --grad-brand: linear-gradient(90deg, #7F77DD, #D4537E);
   --grad-action: linear-gradient(135deg, #7F77DD, #534AB7);
@@ -34,6 +35,7 @@
   --tag-tx: #CECBF6;
   --acc: #AFA9EC;
   --danger: #E5726B;
+  --warn: #E0B84B;
 
   --grad-brand: linear-gradient(90deg, #AFA9EC, #ED93B1);
 
@@ -641,6 +643,13 @@ ul {
   }
 }
 
+.card-badges-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
 .pick-chip {
   display: inline-block;
   font-size: 0.6875rem;
@@ -649,7 +658,34 @@ ul {
   background: var(--grad-highlight);
   border-radius: 999px;
   padding: 3px 10px;
-  margin-bottom: 8px;
+}
+
+/* Caution signal for a 'weak'/'fail' faithfulness verdict — deliberately
+   NOT the brand gradient (that's reserved for the pick-of-day highlight)
+   and NOT --danger (reserved for a destructive/permanent-failure action) —
+   amber reads as "worth a second look", not an error. 'weak' stays a plain
+   outline; 'fail' is filled/solid, a mild severity step up without being
+   alarming. */
+.faithfulness-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--warn);
+  background: transparent;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.faithfulness-badge--fail {
+  color: #fff;
+  background: var(--warn);
+  border-color: transparent;
+}
+
+.faithfulness-footnote {
+  color: var(--warn);
 }
 
 .card-date {

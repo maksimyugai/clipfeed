@@ -14,6 +14,7 @@ import {
   visitorFailureText,
 } from "../lib/failureDisplay.ts";
 import { scrollTitleIntoView } from "../lib/scroll.ts";
+import { faithfulnessCounts } from "../lib/faithfulness.ts";
 
 const JUST_READY_HIGHLIGHT_MS = 2000;
 
@@ -310,9 +311,30 @@ export function ArticleCard(props: ArticleCardProps) {
     justReady ? " card--just-ready" : ""
   }`;
 
+  // 'pass' and null (check disabled/not run) get no badge at all — only
+  // 'weak'/'fail' are worth a reader's attention. Shown in BOTH owner and
+  // visitor mode (transparency is the point); the per-claim detail line
+  // below it is owner-only.
+  const verdict = article.faithfulness_verdict;
+  const faithfulnessBadgeText = verdict === "weak"
+    ? dict.faithfulnessBadgeWeak
+    : verdict === "fail"
+    ? dict.faithfulnessBadgeFail
+    : null;
+  const faithfulnessDetailCounts = faithfulnessCounts(article.faithfulness_json);
+
   return (
     <article class={cardClass} aria-expanded={expanded}>
-      {isPickOfDay && <span class="pick-chip">{dict.pickOfDay}</span>}
+      {(isPickOfDay || faithfulnessBadgeText) && (
+        <div class="card-badges-row">
+          {isPickOfDay && <span class="pick-chip">{dict.pickOfDay}</span>}
+          {faithfulnessBadgeText && (
+            <span class={`faithfulness-badge faithfulness-badge--${verdict}`}>
+              {faithfulnessBadgeText}
+            </span>
+          )}
+        </div>
+      )}
       <div class="card-date">{formatDate(article.added_at, lang)}</div>
 
       <button type="button" class="card-title-button" onClick={() => onToggleExpand(article.id)}>
@@ -387,6 +409,13 @@ export function ArticleCard(props: ArticleCardProps) {
               {" "}
               {dict.summaryAddedVia} {viaLabel(dict, article.added_via)}
             </p>
+            {isOwner && faithfulnessBadgeText && faithfulnessDetailCounts && (
+              <p class="card-footer-text faithfulness-footnote">
+                {dict.faithfulnessDetailLabel}: {faithfulnessBadgeText} —{" "}
+                {dict.faithfulnessUnsupportedLabel} {faithfulnessDetailCounts.unsupported},{" "}
+                {dict.faithfulnessContradictedLabel} {faithfulnessDetailCounts.contradicted}
+              </p>
+            )}
             <div class="card-footer-actions">
               {isOwner && (
                 <button

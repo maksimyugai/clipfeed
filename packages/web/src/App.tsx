@@ -51,13 +51,15 @@ function computeTagFacets(articles: ArticleListItem[]) {
     .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
-// Owner mode fetches the full row (real `error` included) from
-// /api/admin/articles; visitor mode fetches the redacted public shape from
-// /api/articles and fills in `error: null` since it genuinely isn't
-// available — ArticleCard never renders that field directly in visitor
-// mode (it uses fail_class instead, which both shapes carry), so this
-// null is inert, not a re-introduction of the stale-empty-error bug this
-// same field once had.
+// Owner mode fetches the full row (real `error`/`faithfulness_json`
+// included) from /api/admin/articles; visitor mode fetches the redacted
+// public shape from /api/articles and fills in `error: null` and
+// `faithfulness_json: null` since neither is genuinely available —
+// ArticleCard never renders either field directly in visitor mode (error
+// uses fail_class instead, which both shapes carry; faithfulness_json's
+// per-claim detail is owner-mode-only, see ArticleCard's
+// faithfulness-footnote), so these nulls are inert, not a re-introduction
+// of the stale-empty-error bug this same field once had.
 async function fetchArticleList(
   isOwner: boolean,
   params: ArticlesQueryParams,
@@ -65,7 +67,7 @@ async function fetchArticleList(
   if (isOwner) return await listAdminArticles(params);
   const res = await listArticles(params);
   return {
-    items: res.items.map((item) => ({ ...item, error: null })),
+    items: res.items.map((item) => ({ ...item, error: null, faithfulness_json: null })),
     next_cursor: res.next_cursor,
   };
 }
@@ -240,6 +242,9 @@ export function App() {
           error: null,
           fail_class: null,
           heal_attempts: 0,
+          faithfulness_verdict: null,
+          faithfulness_json: null,
+          faithfulness_checked_at: null,
         },
         ...current,
       ]);
