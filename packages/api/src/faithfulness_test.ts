@@ -308,7 +308,11 @@ Deno.test("runFaithfulnessCheck: unparseable first response retries once with a 
 Deno.test("runFaithfulnessCheck: Workers AI returning response as an object (not a string) still parses", async () => {
   const ai = fakeAi([{
     response: {
-      claims: SUMMARY.bullets_en.map((_t, i) => ({ i: i + 1, verdict: "supported", evidence: "x" })),
+      claims: SUMMARY.bullets_en.map((_t, i) => ({
+        i: i + 1,
+        verdict: "supported",
+        evidence: "x",
+      })),
       notes: "ok",
     },
   }]);

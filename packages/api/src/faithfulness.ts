@@ -110,9 +110,10 @@ export function parseJudgeResponse(
   raw: unknown,
 ): { claims: FaithfulnessClaimResult[]; notes: string } | null {
   try {
-    const parsed = (typeof raw === "string"
-      ? JSON.parse(stripJsonFences(raw))
-      : raw) as Record<string, unknown>;
+    const parsed = (typeof raw === "string" ? JSON.parse(stripJsonFences(raw)) : raw) as Record<
+      string,
+      unknown
+    >;
     if (typeof parsed !== "object" || parsed === null) return null;
     if (!Array.isArray(parsed.claims)) return null;
 
