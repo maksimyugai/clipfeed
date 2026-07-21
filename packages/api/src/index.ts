@@ -1,7 +1,7 @@
 import "./env.d.ts";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { QueueMessage } from "@clipfeed/shared/types";
+import type { DuplicateArticleResponse, QueueMessage } from "@clipfeed/shared/types";
 import { accessAuth, type AppEnv } from "./access-middleware.ts";
 import { readTurnstileConfig } from "./turnstile-middleware.ts";
 import type { ListArticlesParams } from "./db.ts";
@@ -9,6 +9,7 @@ import {
   backfillNormalizedTags,
   deleteArticle,
   findArticleIdByUrl,
+  findRecentTitlesForDedup,
   getArticleById,
   getFailureStats,
   getFaithfulnessStats,
@@ -18,12 +19,14 @@ import {
   listSummaryValidationFailures,
   markArticlePending,
   patchArticle,
+  RECENT_TITLES_DEDUP_WINDOW_MS,
   resetHealAttempts,
   sweepStalePending,
   toPublicArticle,
   toPublicListItem,
   updateFaithfulnessOnly,
 } from "./db.ts";
+import { normalizeTitleExact } from "./title-similarity.ts";
 import {
   DEAD_LETTER_QUEUE_NAME,
   enqueueArticleJob,
@@ -40,7 +43,8 @@ import {
 } from "./validation.ts";
 import { handleTelegramWebhook } from "./telegram-webhook.ts";
 import { runAgentJob } from "./agent.ts";
-import { handleScheduled } from "./scheduled.ts";
+import { handleScheduled, parseHour } from "./scheduled.ts";
+import { parseAgentDailyPicks } from "./ranking.ts";
 import { listLearnedThinHosts } from "./thin-host-learning.ts";
 import { readSummaryBudgetUsage } from "./cost-guard.ts";
 import {
@@ -59,9 +63,21 @@ const app = new Hono<AppEnv>();
 // for it to guard; the module, its tests, and /api/config stay in place
 // dormant in case a public interaction (e.g. "suggest a link") shows up
 // later.
+//
+// agent_hour_utc/agent_daily_picks (Task 24 Part D): exposed so the SPA can
+// render a live "new articles in Xh Ym" countdown when today's section is
+// empty, computed client-side from the browser's own local timezone (see
+// packages/web/src/lib/agentSchedule.ts) — same parseHour() the scheduled
+// dispatcher itself uses, so "disabled" here means exactly the same thing
+// it means for the cron (an empty/invalid AGENT_HOUR_UTC), never null vs.
+// some other silently-different definition of "off".
 app.get("/api/config", (c) => {
   const config = readTurnstileConfig(c.env);
-  return c.json({ turnstile_site_key: config?.siteKey ?? null });
+  return c.json({
+    turnstile_site_key: config?.siteKey ?? null,
+    agent_hour_utc: parseHour(c.env.AGENT_HOUR_UTC),
+    agent_daily_picks: parseAgentDailyPicks(c.env.AGENT_DAILY_PICKS),
+  });
 });
 
 app.get("/api/health", (c) => {
@@ -200,7 +216,34 @@ app.post("/api/admin/articles", async (c) => {
 
   const existingId = await findArticleIdByUrl(c.env.DB, url);
   if (existingId) {
-    return c.json({ id: existingId, error: "duplicate" }, 409);
+    return c.json(
+      { id: existingId, error: "duplicate" } satisfies DuplicateArticleResponse,
+      409,
+    );
+  }
+
+  // Task 24 Part C: a different URL whose normalized title exactly matches
+  // something added in the last 72h — likely the same story re-submitted
+  // under a mirror/syndicated link. Only exact normalized-title, no Jaccard
+  // fuzziness here (unlike agent-pool.ts's pre-scrape pool dedup) — owner
+  // intent overrides for a deliberate manual/extension re-add, so this only
+  // blocks a near-certain duplicate, never a merely-similar one. Skipped
+  // entirely when no title was supplied (nothing to compare).
+  if (title) {
+    const sinceIso = new Date(Date.now() - RECENT_TITLES_DEDUP_WINDOW_MS).toISOString();
+    const recentRows = await findRecentTitlesForDedup(c.env.DB, sinceIso);
+    const normalizedTitle = normalizeTitleExact(title);
+    const similar = recentRows.find((row) => normalizeTitleExact(row.title) === normalizedTitle);
+    if (similar) {
+      return c.json(
+        {
+          id: similar.id,
+          error: "duplicate",
+          reason: "similar_title",
+        } satisfies DuplicateArticleResponse,
+        409,
+      );
+    }
   }
 
   const id = crypto.randomUUID();

@@ -205,3 +205,43 @@ Deno.test("GET /api/config: reachable with no identity at all, even when Access 
   const body = await res.json();
   assertEquals(typeof body.turnstile_site_key, "string");
 });
+
+// --- Task 24 Part D: agent_hour_utc/agent_daily_picks — plumbing only
+// (parseHour/parseAgentDailyPicks themselves are tested in
+// scheduled_test.ts/ranking_test.ts; this just checks the route wires their
+// return values straight through). ---
+
+Deno.test("GET /api/config: exposes agent_hour_utc/agent_daily_picks from a valid AGENT_HOUR_UTC/AGENT_DAILY_PICKS", async () => {
+  const env = makeEnv({ AGENT_HOUR_UTC: "5", AGENT_DAILY_PICKS: "12" });
+  const res = await app.request("/api/config", {}, env, makeExecutionContext());
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.agent_hour_utc, 5);
+  assertEquals(body.agent_daily_picks, 12);
+});
+
+Deno.test("GET /api/config: agent_hour_utc is null when the agent is effectively disabled (empty/invalid AGENT_HOUR_UTC)", async () => {
+  const disabledEmpty = makeEnv({ AGENT_HOUR_UTC: "" });
+  const resEmpty = await app.request("/api/config", {}, disabledEmpty, makeExecutionContext());
+  assertEquals((await resEmpty.json()).agent_hour_utc, null);
+
+  const disabledInvalid = makeEnv({ AGENT_HOUR_UTC: "not-a-number" });
+  const resInvalid = await app.request("/api/config", {}, disabledInvalid, makeExecutionContext());
+  assertEquals((await resInvalid.json()).agent_hour_utc, null);
+
+  const disabledOutOfRange = makeEnv({ AGENT_HOUR_UTC: "24" });
+  const resOutOfRange = await app.request(
+    "/api/config",
+    {},
+    disabledOutOfRange,
+    makeExecutionContext(),
+  );
+  assertEquals((await resOutOfRange.json()).agent_hour_utc, null);
+});
+
+Deno.test("GET /api/config: agent_daily_picks falls back to the default for an invalid AGENT_DAILY_PICKS", async () => {
+  const env = makeEnv({ AGENT_DAILY_PICKS: "not-a-number" });
+  const res = await app.request("/api/config", {}, env, makeExecutionContext());
+  const body = await res.json();
+  assertEquals(body.agent_daily_picks, 10);
+});
