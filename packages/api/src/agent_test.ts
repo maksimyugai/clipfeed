@@ -296,16 +296,17 @@ Deno.test("runAgentJob: pool-stage title duplicates are counted and logged in th
     `</channel></rss>`;
 
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
-    const url = input.toString();
-    if (url.includes("feeds.example.com")) {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const hostname = new URL(url).hostname;
+    if (hostname === "feeds.example.com") {
       return Promise.resolve(new Response(duplicateTitleFeed, { status: 200 }));
     }
-    if (url.includes("api.anthropic.com")) {
+    if (hostname === "api.anthropic.com") {
       const body = JSON.parse(String(init?.body)) as { system: string };
       if (body.system.includes("rank")) return Promise.resolve(anthropicText("not valid json"));
       return Promise.resolve(anthropicText(JSON.stringify(VALID_SUMMARY)));
     }
-    if (url.includes("articles.example.com")) {
+    if (hostname === "articles.example.com") {
       return Promise.resolve(
         new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }),
       );
