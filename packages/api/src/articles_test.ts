@@ -169,6 +169,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     PENDING_TIMEOUT_MIN: 10,
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    AGENT_DAILY_PICKS: "10",
     SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     PUBLIC_BASE_URL: "",

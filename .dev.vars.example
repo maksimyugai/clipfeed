@@ -21,7 +21,7 @@
 # Optional local overrides of the [vars] defaults in wrangler.toml.
 # SUMMARY_MODEL=claude-haiku-4-5-20251001
 # WORKERS_AI_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
-# DAILY_SUMMARY_LIMIT=50
+# DAILY_SUMMARY_LIMIT=80
 # PENDING_TIMEOUT_MIN=10
 
 # How much summary you want to read: target TOTAL body length in characters
@@ -35,10 +35,13 @@
 # packages/api/sources.json, not here). INTEREST_TOPICS steers the ranking
 # call's taste — free text, edit to match what you actually want surfaced.
 # AGENT_HOUR_UTC/DIGEST_HOUR_UTC are UTC hours (0-23); clearing either to an
-# empty string disables that job.
-# INTEREST_TOPICS=AI/LLMs and their engineering, software development, Cloudflare and edge computing, programming languages, security, notable science/tech news
+# empty string disables that job. AGENT_DAILY_PICKS is how many candidates
+# the agent saves per run — valid range 1-20, anything missing/invalid falls
+# back to 10.
+# INTEREST_TOPICS=AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news
 # AGENT_HOUR_UTC=5
 # DIGEST_HOUR_UTC=6
+# AGENT_DAILY_PICKS=10
 
 # Cloudflare Access protection (see README "Protecting your instance").
 # Optional — auth middleware only activates once BOTH are set. Without them
