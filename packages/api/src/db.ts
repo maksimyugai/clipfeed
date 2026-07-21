@@ -126,6 +126,20 @@ export async function findExistingUrls(db: D1Database, urls: string[]): Promise<
   return new Set((result.results ?? []).map((row) => row.url));
 }
 
+// Used by the ranking step's story-level dedup (see ranking.ts) so the
+// agent doesn't re-pick yesterday's story just because a different outlet
+// covered it too — different URL, so findExistingUrls above wouldn't catch
+// it. Includes every row regardless of status/archived: even a failed or
+// archived row means this story was already covered, which is exactly what
+// this check is for. `idx_articles_added_at` (see migrations/0001_init.sql)
+// keeps this cheap regardless of table size.
+export async function findRecentTitles(db: D1Database, sinceIso: string): Promise<string[]> {
+  const result = await db.prepare("SELECT title FROM articles WHERE added_at >= ?")
+    .bind(sinceIso)
+    .all<{ title: string }>();
+  return (result.results ?? []).map((row) => row.title);
+}
+
 export interface InsertArticleInput {
   id: string;
   url: string;
