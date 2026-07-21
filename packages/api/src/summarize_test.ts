@@ -1241,6 +1241,14 @@ Deno.test("buildSystemPrompt: STRICT prompt at the default target states the spe
   assertEquals(prompt.includes("40-220 characters each"), true);
 });
 
+Deno.test("buildSystemPrompt: bullets section states the NEW-specifics contrast rule with a BAD/GOOD micro-example", () => {
+  const prompt = buildSystemPrompt(DEFAULT_STRICT_SPEC);
+  assertEquals(prompt.includes("Bullets MUST add NEW specifics not already in the TL;DR"), true);
+  assertEquals(prompt.includes("NEVER restate the TL;DR in different"), true);
+  assertEquals(prompt.includes("BAD bullet:"), true);
+  assertEquals(prompt.includes("GOOD bullet:"), true);
+});
+
 Deno.test("buildSystemPrompt: RELAXED prompt at the default target states RELAXED's own tldr/bullet numbers, not STRICT's", () => {
   const prompt = buildSystemPrompt(DEFAULT_RELAXED_SPEC);
   assertEquals(prompt.includes("at least 113 characters"), true);
@@ -1441,6 +1449,59 @@ Deno.test("summarizeArticle: a body-paragraph UNDERSHOOT still gets the generic 
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
     assertEquals(secondMessage.includes("body_en[0] must be at least 250 characters"), true);
     assertEquals(secondMessage.includes("rewrite body_en paragraph"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: a bullet duplicating the tldr retries with a 'replace bullet N' instruction, not the generic message", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedSecondBody: { messages: { content: string }[] } | undefined;
+  let calls = 0;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    if (calls === 1) {
+      // bullets_en[1] literally restates tldr_en — well over the 80% overlap
+      // threshold textDuplicatesTldr checks.
+      const duplicateBullet = {
+        ...makeValidSummary(),
+        bullets_en: [makeValidSummary().bullets_en[0], makeValidSummary().tldr_en],
+      };
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(duplicateBullet) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    capturedSecondBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const result = await summarizeArticle(
+      { apiKey: "sk-direct", model: "test-model" },
+      "Title",
+      "Body",
+    );
+    assertEquals(result, makeValidSummary());
+    assertEquals(calls, 2);
+    const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
+    assertEquals(
+      secondMessage.includes(
+        "replace bullet 2 (bullets_en[1]) with a NEW fact from the article not mentioned in the TL;DR",
+      ),
+      true,
+    );
+    // Not the generic "duplicates the tldr instead of adding new detail"
+    // phrasing repeated verbatim — the specific replace instruction replaces
+    // it entirely, same convention as the body-paragraph overshoot message.
+    assertEquals(secondMessage.includes("duplicates the tldr instead of adding new detail"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
