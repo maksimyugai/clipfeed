@@ -99,25 +99,57 @@ paragraphs, per language. Everything else derives from it:
   is computed from a _scaled-down_ effective target (`round(target × 0.7)`) instead of the raw
   setting — Llama reliably writes shorter paragraphs than Claude given the same numbers, so RELAXED
   asks for what it actually produces rather than a STRICT-shaped target under a different name. Both
-  tiers' prompts state `aim for ± 25%` of their own per-paragraph target. The validator's hard
-  bounds widen further, and in **opposite directions per tier**: STRICT `−40%/+60%` (more room above
-  — Claude-class models overshoot, not undershoot), RELAXED `−55%/+40%` (more room below — Llama
-  undershoots instead), both floored so even a small target still yields a real paragraph (STRICT ≥
-  250 chars, RELAXED ≥ 120) — no more silent, always-700 ceiling regardless of what you asked for.
-  Because RELAXED derives its ceiling from both a smaller effective target _and_ a smaller high-side
-  widening factor, its absolute paragraph ceiling can end up _lower_ than STRICT's at the same
-  setting — that's intentional, not a bug: each tier's bounds are calibrated to its own model's
-  actual overshoot/undershoot behavior, not to RELAXED being wider on every single axis.
+  tiers' prompts state `aim for ± 25%` of their own per-paragraph target, and the prompt's stated
+  `{min}`–`{max}` sizing band widens further, and in **opposite directions per tier**: STRICT
+  `−40%/+60%` (more room above — Claude-class models overshoot, not undershoot), RELAXED `−55%/+40%`
+  (more room below — Llama undershoots instead), both floored so even a small target still yields a
+  real paragraph (STRICT ≥ 250 chars, RELAXED ≥ 120) — no more silent, always-700 ceiling regardless
+  of what you asked for. Because RELAXED derives its ceiling from both a smaller effective target
+  _and_ a smaller high-side widening factor, its absolute paragraph ceiling can end up _lower_ than
+  STRICT's at the same setting — that's intentional, not a bug: each tier's bounds are calibrated to
+  its own model's actual overshoot/undershoot behavior, not to RELAXED being wider on every single
+  axis. **This prompt-facing number is the _soft_ max** — see "Asymmetric validation" below for what
+  the validator actually enforces, which is more forgiving than what the model is told to aim for.
 - **tldr minimum**: STRICT is `max(150, 15% of target)` capped at 350 characters; RELAXED is 75% of
   whatever STRICT computes to — from the raw target, not the scaled-down effective one.
 - **Bullets** don't scale with the target — they're about the _count_ of scannable facts, not prose
   volume, so both tiers keep their original ranges (STRICT 4–7 × 40–220 chars, RELAXED 3–7 × 30–220
-  chars).
+  chars — 220 is likewise a soft max, see below).
 - **`max_tokens`** scales with the raw target too (clamped to `[2500, 6000]`), so a larger requested
   digest doesn't get cut off mid-paragraph.
 
 A bad override (missing, non-numeric, or outside `[400, 4000]`) falls back to the `1200` default and
 logs a warning naming the rejected value — never a broken or nonsensical prompt.
+
+### Asymmetric validation: undershoot fails, moderate overshoot doesn't
+
+Every per-item character bound above (body paragraph length, bullet length) is really **two**
+ceilings, not one: `softMax` (the exact number quoted in the prompt and in the paragraphs above —
+unchanged by this section) and `hardMax = round(softMax × 1.5)`, which is what `validateSummary()`
+actually rejects on. The floor (`min`) is still a single hard bound — undershoot is a real quality
+problem (a paragraph that's too short is thin, unhelpful prose), but a live incident showed the
+opposite direction wasn't: a summary failed outright over `body_en` at 854 characters (old hard max
+768) and `bullets_en` at 229 (old hard max 220) — a handful of characters of _extra, real detail_
+burning a corrective retry for no reader-facing harm. So now:
+
+- `length < min` → violation (unchanged).
+- `softMax < length <= hardMax` → **passes**, logging
+  `validation_soft_overshoot {field, got,
+  softMax}` for visibility — this is pure observability,
+  never a retry.
+- `length > hardMax` → violation, worded "is extremely long" (not the generic "must be between X and
+  Y") — still gets the existing corrective retry naming the exact paragraph and its aim-for band.
+
+At the default target (STRICT), that's a 768-char soft max but a 1152-char (`768 × 1.5`) hard one
+for body paragraphs, and a 220/330 soft/hard split for bullets, in both languages, both tiers.
+
+**Rescuing rows that failed under the old, stricter bounds:**
+`POST /api/admin/heal/revalidate-failed` (already existed for the exact same reason after the
+previous prompt recalibration) matches on the error prefix
+`'internal: summarize: summary validation'` regardless of the specific violation text — since every
+row that failed on moderate overshoot under the old bounds has exactly that error shape, this
+endpoint catches them with no changes of its own. Run it once, as the owner, after this change
+deploys.
 
 **Known edge case:** at the smallest allowed target (`400`), STRICT's 250-character paragraph floor
 sits _above_ the prompt's own "aim for 150–250" band — the enforced minimum and the suggested target
@@ -226,6 +258,23 @@ marks the referenced article `'failed'` with `"queue: processing failed after re
 `queue_dead_letter`, skipping articles that are already terminal (idempotent, so a message that
 dead-letters after the pipeline itself already wrote a real result doesn't clobber it). This closes
 the gap: no queue path can leave an article non-terminal, regardless of the failure mechanism.
+
+**Burst behavior:** the daily agent enqueues up to `AGENT_DAILY_PICKS` messages in a tight loop (see
+"Daily scraping agent" above), all landing in the queue within milliseconds of each other. A live
+10-message burst showed at least two messages only succeeding on their **second** delivery attempt —
+`queue_received`'s `attempt` field showed `2`, with no visible first-attempt log in that observation
+window. This is consistent with (though not conclusively proven to be) contention from Cloudflare's
+automatic consumer-concurrency scaling spinning up several invocations at once to drain a sudden
+backlog; it could equally be an artifact of when a manual `wrangler tail` session was attached
+relative to the burst, since tail only shows logs from the moment it connects onward. Either way,
+`max_concurrency = 3` on the `clipfeed-jobs` consumer now caps how many invocations run concurrently
+— a cheap, reversible, latency-insensitive change for a background job (nothing here is
+user-facing-request-latency sensitive) regardless of which explanation is right. The existing
+terminal-state guarantee + DLQ consumer + healing sweep already fully bound the actual risk: with
+`max_retries = 2` (3 attempts total) and every observed message in that incident recovering by
+attempt 2, no message reached the DLQ and no article was left stuck — a message that exhausted all 3
+attempts would land in the DLQ and get terminal-failed there anyway, then get picked up by the
+self-healing sweep like any other transient failure.
 
 **Forkability / graceful degradation:** if the `JOBS` binding isn't available (the queue hasn't been
 provisioned yet, or any environment that hasn't wired `[[queues.producers]]`), the app falls back to
@@ -552,28 +601,51 @@ self-healing sweep re-classifying older rows (see "Self-healing failures" below)
 filters _agent_ candidates, never a manually/extension/Telegram-added article, so a link you
 deliberately save is never silently blocked by what the agent has learned to avoid.
 
+A candidate whose **title** starts with a known paywall marker is dropped the same way, before any
+fetch is attempted — LWN prefixes subscriber-only article titles with `"[$]"` in its own RSS feed,
+so this is a free, no-network signal (see `agent-pool.ts`'s `PAYWALL_TITLE_MARKERS`, an extendable
+list for other sources with a similar convention). A paywalled URL that slips through anyway (no
+title marker, but the fetch itself comes back `403`/`402`) is classified **permanent** by
+`classifyFailure` — a paywall doesn't heal itself on retry, so an agent-picked row like this
+auto-archives via the existing healing behavior, same as a 404/410.
+
 The candidate pool (post-dedupe, pre-ranking) is capped at 160 (see `agent-pool.ts`'s `POOL_CAP`) —
 raised from 120 when the source list grew to ten, so the wider set of feeds doesn't get truncated
 before the ranking call even sees most of it.
 
 ### Ranking: diversity-aware, not just "newest/most relevant"
 
-The one ranking LLM call is asked to respect three hard rules, restated below every candidate list
+The one ranking LLM call is asked to respect four hard rules, restated below every candidate list
 (see `buildRankSystemPrompt` in `ranking.ts`): at most 2 picks per source, cover at least 3 distinct
-topic areas from your `INTEREST_TOPICS` when the pool allows it, and prefer substantive reporting
-over link-posts and speculation. The per-source cap is never just trusted to the model's own
-counting — `enforceRankingDiversity` re-checks the model's response afterward and, if a source shows
-up more than twice, drops the excess and backfills those freed slots from the next candidates of
-_other_ sources in the pool (newest-first), logging a `rank_diversity_fixup` line whenever this
-actually triggers. If the pool doesn't have enough distinct-source candidates to fill every freed
-slot, the agent just saves fewer than `AGENT_DAILY_PICKS` that day rather than violating the cap to
-force a full count. The topic-diversity rule (b) is prompt-only — there's no per-candidate topic
-label to mechanically re-check it against, so it depends on the model actually reasoning about your
-interest list, same as picking "best" already does. The total-failure fallback path (LLM error or
-two unparseable responses in a row) doesn't apply the per-source cap — it favors breadth first
+topic areas from your `INTEREST_TOPICS` when the pool allows it, prefer substantive reporting over
+link-posts and speculation, and never pick two items covering the same story/event even from
+different sources. The per-source cap is never just trusted to the model's own counting —
+`enforceRankingDiversity` re-checks the model's response afterward and, if a source shows up more
+than twice, drops the excess and backfills those freed slots from the next candidates of _other_
+sources in the pool (newest-first), logging a `rank_diversity_fixup` line whenever this actually
+triggers. If the pool doesn't have enough distinct-source candidates to fill every freed slot, the
+agent just saves fewer than `AGENT_DAILY_PICKS` that day rather than violating the cap to force a
+full count. The topic-diversity rule (b) is prompt-only — there's no per-candidate topic label to
+mechanically re-check it against, so it depends on the model actually reasoning about your interest
+list, same as picking "best" already does. The total-failure fallback path (LLM error or two
+unparseable responses in a row) doesn't apply the per-source cap — it favors breadth first
 (one-per-source, oldest-source-exhausted-first) and only repeats a source once every other source is
 already represented, which naturally covers at least `min(3, distinct source count)` sources
 whenever `AGENT_DAILY_PICKS >= 3`.
+
+**Story-level dedup (never trust the model to have caught this either):** a live incident had two
+picks cover the exact same story (a Kimi/Moonshot model release) from two outlets under two
+different URLs — the URL-based dedupe elsewhere in the pipeline never saw a collision, since the
+URLs genuinely differ. `dedupStories` in `ranking.ts` re-checks the model's (already
+diversity-enforced) picks pairwise: titles are normalized (lowercased, punctuation stripped, common
+English/Russian stopwords removed) into token sets, then compared by plain Jaccard similarity
+(intersection over union); a pair scoring `>= 0.5` is treated as the same story, and the
+lower-ranked one is dropped and backfilled from the next pool candidate of a different story (still
+respecting the per-source cap above) — logging `rank_story_dedup {kept, dropped}` when it triggers.
+The same check also runs against every article **title saved in the last 48 hours**
+(`findRecentTitles` in `db.ts`), so the agent won't re-pick yesterday's story just because a
+different outlet covered it today. This applies uniformly whether the LLM call succeeded or fell all
+the way back to `fallbackPicks` — a same-story duplicate can't slip through either path.
 
 ### Self-healing failures
 
