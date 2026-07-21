@@ -17,7 +17,7 @@ async function buildApi(): Promise<void> {
 }
 
 async function buildWeb(): Promise<void> {
-  await Deno.mkdir("dist/web", { recursive: true });
+  await Deno.mkdir("dist/web/fonts", { recursive: true });
   await esbuild.build({
     entryPoints: ["packages/web/src/main.tsx"],
     outdir: "dist/web",
@@ -29,8 +29,17 @@ async function buildWeb(): Promise<void> {
     minify: true,
     jsx: "automatic",
     jsxImportSource: "preact",
+    // @font-face url(/fonts/...) is a site-root path served by the ASSETS
+    // binding at runtime, not a bundle-relative import — external stops
+    // esbuild from trying (and failing) to resolve it from disk.
+    external: ["/fonts/*"],
   });
   await Deno.copyFile("packages/web/index.html", "dist/web/index.html");
+  for await (const entry of Deno.readDir("packages/web/fonts")) {
+    if (entry.isFile && entry.name.endsWith(".woff2")) {
+      await Deno.copyFile(`packages/web/fonts/${entry.name}`, `dist/web/fonts/${entry.name}`);
+    }
+  }
 }
 
 // The extension is bundled as self-contained IIFEs (not ESM), since MV3
