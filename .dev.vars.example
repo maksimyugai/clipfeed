@@ -31,6 +31,24 @@
 # length".
 # SUMMARY_BODY_TARGET_CHARS=800
 
+# Faithfulness check (see README "Faithfulness check"): a SEPARATE judge
+# pass, always Workers AI Llama regardless of which model wrote the
+# summary, that verifies a summary against its source before the article
+# is marked ready. FAITHFULNESS_CHECK defaults to "true" (only the literal
+# "false" disables it — no judge call, no faithfulness columns written,
+# pipeline behaves exactly as before this feature). FAITHFULNESS_ENFORCE
+# defaults to "false" (soft/signal-only: a 'fail' verdict is stored and
+# shown as a badge but never blocks the article) — only the literal "true"
+# turns on the enforce path (one resummarize retry, then a permanent
+# discard if that retry still fails the judge). FAITHFULNESS_JUDGE_MODEL
+# is the Workers AI model id to judge with; same default as
+# WORKERS_AI_MODEL above but a separate setting, since an owner running
+# Claude via gateway/direct for summarization still wants a specific Llama
+# judge model.
+# FAITHFULNESS_CHECK=true
+# FAITHFULNESS_ENFORCE=false
+# FAITHFULNESS_JUDGE_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
+
 # Daily scraping agent (see README "Daily scraping agent"; sources live in
 # packages/api/sources.json, not here). INTEREST_TOPICS steers the ranking
 # call's taste — free text, edit to match what you actually want surfaced.
