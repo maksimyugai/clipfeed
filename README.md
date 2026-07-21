@@ -205,6 +205,60 @@ regardless of its healing attempt count, resetting that count first — run it o
 `SUMMARY_BODY_TARGET_CHARS` (or after any prompt/validation change) to sweep up the backlog instead
 of retrying each one by hand. Responds `202 {count}`.
 
+## Faithfulness check
+
+After a summary validates (see above), a SEPARATE verification pass checks whether it actually
+reflects the source, or invented/contradicted something. The judge is **always Workers AI Llama**
+(`env.AI`, `FAITHFULNESS_JUDGE_MODEL`), regardless of which model wrote the summary — a model can't
+reliably catch its own fabrications, and the free-tier binding is cheap enough to run on every
+article.
+
+**Config (`[vars]` in `wrangler.toml`, or override in `.dev.vars`):**
+
+- `FAITHFULNESS_CHECK` (default `"true"`) — master on/off. Only the literal `"false"` disables it:
+  no judge call, no `faithfulness_*` columns written, the pipeline behaves exactly as it did before
+  this feature existed.
+- `FAITHFULNESS_ENFORCE` (default `"false"`) — **soft/signal-only by design for this first
+  release.** A `'fail'` verdict is stored and shown as a badge, but the article still proceeds to
+  `ready` regardless. Only the literal `"true"` turns on the enforce path: a `'fail'` triggers one
+  resummarize-and-reverify attempt, and if that retry still fails the judge, the article is
+  permanently discarded (`status: 'failed'`,
+  `error: 'faithfulness: summary not supported by
+  source'`). Leave this off until you've watched
+  the health-report's faithfulness breakdown for a while and trust the judge isn't producing false
+  positives on your content.
+- `FAITHFULNESS_JUDGE_MODEL` (default `"@cf/meta/llama-3.3-70b-instruct-fp8-fast"`, same default as
+  `WORKERS_AI_MODEL`) — a separate setting so an owner running Claude via gateway/direct for
+  summarization can still pick a specific Llama judge model.
+
+**How it works:** the judge is given the numbered claims (the tldr + each bullet + each body
+paragraph — EN fields only, since RU/EN are independently-written but semantically parallel
+translations of the same facts, so verifying EN once is equivalent coverage without doubling judge
+calls or risking RU-translation noise being misread as a faithfulness problem) and the same
+extracted source text the summarizer saw, and returns `supported`/`unsupported`/`contradicted` per
+claim plus a short source-span citation for each. Any single `contradicted` claim fails the article
+outright; otherwise the unsupported-claim ratio decides `pass` (≤25%), `weak` (25–50%), or `fail`
+(>50%) — see `packages/api/src/faithfulness.ts` for the exact thresholds, which are intentionally
+round, untuned numbers for this first release rather than something calibrated against real judge
+output yet.
+
+A judge failure (timeout, unparseable output even after one corrective retry) never blocks a good
+summary — it's recorded as a `null` verdict and the article proceeds normally either way. The judge
+call does **not** count against the paid summarization budget above (`DAILY_SUMMARY_LIMIT`) — it has
+its own uncapped KV counter purely for observability, visible in `GET /api/admin/health-report`
+alongside a pass/weak/fail/null breakdown across every article.
+
+**In the SPA:** a `'weak'`/`'fail'` verdict shows a small amber, non-alarming badge ("needs
+review"/"possibly inaccurate") on the card — visible to owner **and visitor** alike, since the whole
+point is transparency, not a private owner tool. `'pass'` and `null` (disabled/never checked) show
+nothing at all. The owner-only expanded-card footnote additionally shows the unsupported/
+contradicted claim counts from the judge's full response.
+
+**Spot-checking the judge:** `POST /api/admin/articles/:id/reverify` (owner-only, `202`) re-runs
+only the faithfulness stage against an already-summarized article's stored text and summary — no
+re-fetch, no re-summarize, no status change — a cheap way to see how the judge scores a specific
+article without touching anything else.
+
 ## Database
 
 Apply migrations locally with:

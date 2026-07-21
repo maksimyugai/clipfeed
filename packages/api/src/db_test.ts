@@ -3,12 +3,17 @@ import {
   backfillNormalizedTags,
   buildListQuery,
   findRecentTitles,
+  getFaithfulnessStats,
   insertPendingArticle,
   markArticleFailed,
   markArticleReady,
   sweepStalePending,
+  toPublicArticle,
+  toPublicListItem,
+  updateFaithfulnessOnly,
 } from "./db.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
+import type { Article, ArticleListItem } from "@clipfeed/shared/types";
 
 Deno.test("buildListQuery: no filters — base query, default limit + 1", () => {
   const { sql, binds } = buildListQuery({ limit: 20 });
@@ -267,4 +272,249 @@ Deno.test("findRecentTitles: no matching rows yields an empty array", async () =
   const db = new FakeD1();
   const titles = await findRecentTitles(db, "2026-01-01T00:00:00.000Z");
   assertEquals(titles, []);
+});
+
+// --- Faithfulness check (Task 23) ---
+
+const MINIMAL_SUMMARY_JSON = {
+  title_ru: "t",
+  title_en: "t",
+  tldr_ru: "t",
+  tldr_en: "t",
+  body_ru: [],
+  body_en: [],
+  bullets_ru: [],
+  bullets_en: [],
+  tags: [],
+  lang_original: "en",
+};
+
+Deno.test("markArticleReady: faithfulness omitted -> the 3 columns are not touched (stay at their insert-time default)", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "f1",
+    url: "https://example.com/f1",
+    title: "f1",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleReady(db, "f1", {
+    full_text: "full text",
+    title: "f1",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+  });
+  const row = db.rows.find((r) => r.id === "f1")!;
+  assertEquals(row.faithfulness_verdict, null);
+  assertEquals(row.faithfulness_json, null);
+  assertEquals(row.faithfulness_checked_at, null);
+});
+
+Deno.test("markArticleReady: faithfulness present -> all 3 columns written, JSON round-trips", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "f2",
+    url: "https://example.com/f2",
+    title: "f2",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleReady(db, "f2", {
+    full_text: "full text",
+    title: "f2",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+    faithfulness: {
+      verdict: "weak",
+      json: { claims: [{ i: 1, verdict: "unsupported", evidence: "x" }], notes: "n" },
+      checkedAt: "2026-01-01T00:05:00.000Z",
+    },
+  });
+  const row = db.rows.find((r) => r.id === "f2")!;
+  assertEquals(row.faithfulness_verdict, "weak");
+  assertEquals(
+    JSON.parse(row.faithfulness_json as string),
+    { claims: [{ i: 1, verdict: "unsupported", evidence: "x" }], notes: "n" },
+  );
+  assertEquals(row.faithfulness_checked_at, "2026-01-01T00:05:00.000Z");
+  assertEquals(row.status, "ready"); // the rest of the write still applies normally
+});
+
+Deno.test("markArticleReady: faithfulness with a null verdict (judge unparseable) still writes json/checkedAt", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "f3",
+    url: "https://example.com/f3",
+    title: "f3",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleReady(db, "f3", {
+    full_text: "full text",
+    title: "f3",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+    faithfulness: {
+      verdict: null,
+      json: { error: "judge unparseable" },
+      checkedAt: "2026-01-01T00:05:00.000Z",
+    },
+  });
+  const row = db.rows.find((r) => r.id === "f3")!;
+  assertEquals(row.faithfulness_verdict, null);
+  assertEquals(JSON.parse(row.faithfulness_json as string), { error: "judge unparseable" });
+  assertEquals(row.faithfulness_checked_at, "2026-01-01T00:05:00.000Z");
+});
+
+Deno.test("updateFaithfulnessOnly: updates only the 3 faithfulness columns, leaves status/summary untouched", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "f4",
+    url: "https://example.com/f4",
+    title: "f4",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleReady(db, "f4", {
+    full_text: "full text",
+    title: "f4",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+  });
+
+  await updateFaithfulnessOnly(db, "f4", {
+    verdict: "fail",
+    json: { claims: [{ i: 1, verdict: "contradicted", evidence: "x" }], notes: "" },
+    checkedAt: "2026-02-01T00:00:00.000Z",
+  });
+
+  const row = db.rows.find((r) => r.id === "f4")!;
+  assertEquals(row.faithfulness_verdict, "fail");
+  assertEquals(row.faithfulness_checked_at, "2026-02-01T00:00:00.000Z");
+  assertEquals(row.status, "ready");
+  assertEquals(JSON.parse(row.summary_json as string), MINIMAL_SUMMARY_JSON);
+});
+
+Deno.test("getFaithfulnessStats: counts pass/weak/fail/null across all rows", async () => {
+  const db = new FakeD1();
+  for (const [id, verdict] of [["p1", "pass"], ["p2", "pass"], ["w1", "weak"], ["fa1", "fail"]]) {
+    await insertPendingArticle(db, {
+      id,
+      url: `https://example.com/${id}`,
+      title: id,
+      source: "example.com",
+      tags: [],
+      added_via: "manual",
+      added_at: "2026-01-01T00:00:00.000Z",
+    });
+    await updateFaithfulnessOnly(db, id, {
+      verdict: verdict as "pass" | "weak" | "fail",
+      json: { claims: [], notes: "" },
+      checkedAt: "2026-01-01T00:00:00.000Z",
+    });
+  }
+  await insertPendingArticle(db, {
+    id: "n1",
+    url: "https://example.com/n1",
+    title: "n1",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  }); // never checked -> null bucket
+
+  const stats = await getFaithfulnessStats(db);
+  assertEquals(stats, { pass: 2, weak: 1, fail: 1, null: 1 });
+});
+
+// --- Public-shape redaction (toPublicArticle/toPublicListItem) ---
+
+Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verdict", () => {
+  const article: Article = {
+    id: "a1",
+    url: "https://example.com/a1",
+    canonical_url: null,
+    title: "a1",
+    source: "example.com",
+    author: null,
+    published_at: null,
+    added_at: "2026-01-01T00:00:00.000Z",
+    added_via: "manual",
+    lang_original: "en",
+    full_text: "full text",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: null,
+    tags: [],
+    status: "ready",
+    archived: false,
+    error: null,
+    fail_class: null,
+    heal_attempts: 0,
+    faithfulness_verdict: "weak",
+    faithfulness_json: { claims: [{ i: 1, verdict: "unsupported", evidence: "x" }], notes: "n" },
+    faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
+  };
+  const pub = toPublicArticle(article);
+  assertEquals("faithfulness_json" in pub, false);
+  assertEquals("full_text" in pub, false);
+  assertEquals("error" in pub, false);
+  assertEquals(pub.faithfulness_verdict, "weak");
+  assertEquals(pub.has_error, false);
+});
+
+Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_verdict", () => {
+  const item: ArticleListItem = {
+    id: "a2",
+    url: "https://example.com/a2",
+    canonical_url: null,
+    title: "a2",
+    source: "example.com",
+    author: null,
+    published_at: null,
+    added_at: "2026-01-01T00:00:00.000Z",
+    added_via: "manual",
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: null,
+    tags: [],
+    status: "ready",
+    archived: false,
+    error: "internal detail",
+    fail_class: null,
+    heal_attempts: 0,
+    faithfulness_verdict: "fail",
+    faithfulness_json: { error: "judge unparseable" },
+    faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
+  };
+  const pub = toPublicListItem(item);
+  assertEquals("faithfulness_json" in pub, false);
+  assertEquals("error" in pub, false);
+  assertEquals(pub.faithfulness_verdict, "fail");
+  assertEquals(pub.has_error, true);
 });

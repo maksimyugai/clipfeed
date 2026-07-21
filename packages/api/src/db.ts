@@ -5,6 +5,8 @@ import type {
   ArticleListItem,
   ArticleStatus,
   FailureClass,
+  FaithfulnessJson,
+  FaithfulnessVerdict,
   PublicArticle,
   SummaryJson,
 } from "@clipfeed/shared/types";
@@ -35,6 +37,9 @@ interface ArticleRow {
   error: string | null;
   fail_class: string | null;
   heal_attempts: number;
+  faithfulness_verdict: string | null;
+  faithfulness_json: string | null;
+  faithfulness_checked_at: string | null;
 }
 
 type ArticleRowNoText = Omit<ArticleRow, "full_text">;
@@ -58,6 +63,15 @@ function parseSummaryJsonColumn(raw: string | null): SummaryJson | null {
   }
 }
 
+function parseFaithfulnessJsonColumn(raw: string | null): FaithfulnessJson | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as FaithfulnessJson;
+  } catch {
+    return null;
+  }
+}
+
 function rowToArticle(row: ArticleRow): Article {
   return {
     ...rowToListItem(row),
@@ -67,9 +81,12 @@ function rowToArticle(row: ArticleRow): Article {
 
 // Projects a full (owner-only) Article down to the shape GET
 // /api/articles/:id (public) actually returns — see PublicArticle's doc
-// comment in @clipfeed/shared/types for why full_text/error are dropped.
+// comment in @clipfeed/shared/types for why full_text/error/
+// faithfulness_json are dropped (faithfulness_verdict is NOT dropped — the
+// caution badge is meant to be visible to every reader, not just the
+// owner).
 export function toPublicArticle(article: Article): PublicArticle {
-  const { full_text: _fullText, error, ...rest } = article;
+  const { full_text: _fullText, error, faithfulness_json: _faithfulnessJson, ...rest } = article;
   return { ...rest, has_error: error !== null };
 }
 
@@ -79,7 +96,7 @@ export function toPublicArticle(article: Article): PublicArticle {
 // already avoided (see toPublicArticle above). GET /api/admin/articles
 // (owner-only) returns ArticleListItem rows unmodified, error included.
 export function toPublicListItem(item: ArticleListItem): PublicArticle {
-  const { error, ...rest } = item;
+  const { error, faithfulness_json: _faithfulnessJson, ...rest } = item;
   return { ...rest, has_error: error !== null };
 }
 
@@ -104,6 +121,9 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     error: row.error,
     fail_class: row.fail_class as FailureClass | null,
     heal_attempts: row.heal_attempts,
+    faithfulness_verdict: row.faithfulness_verdict as FaithfulnessVerdict | null,
+    faithfulness_json: parseFaithfulnessJsonColumn(row.faithfulness_json),
+    faithfulness_checked_at: row.faithfulness_checked_at,
   };
 }
 
@@ -177,6 +197,18 @@ export interface PipelineSuccessUpdate {
   summary_en: string;
   summary_json: SummaryJson;
   tags: string[];
+  // Omitted entirely (not just null) when the faithfulness check is
+  // disabled (see faithfulness.ts) — the pipeline must behave EXACTLY as
+  // it did before this feature existed in that case, including not
+  // touching these columns at all. When the check DID run, verdict can
+  // still be null (the judge's output was unparseable even after a
+  // retry) — that's a distinct state from "never ran", disambiguated by
+  // checkedAt being set.
+  faithfulness?: {
+    verdict: FaithfulnessVerdict | null;
+    json: FaithfulnessJson | null;
+    checkedAt: string;
+  };
 }
 
 export async function markArticleReady(
@@ -184,13 +216,21 @@ export async function markArticleReady(
   id: string,
   update: PipelineSuccessUpdate,
 ): Promise<void> {
-  await db.prepare(
-    `UPDATE articles
-     SET full_text = ?, title = ?, author = ?, lang_original = ?, summary_ru = ?, summary_en = ?,
-         summary_json = ?, tags = ?, status = 'ready', error = NULL, fail_class = NULL,
-         heal_attempts = 0
-     WHERE id = ?`,
-  ).bind(
+  const sets = [
+    "full_text = ?",
+    "title = ?",
+    "author = ?",
+    "lang_original = ?",
+    "summary_ru = ?",
+    "summary_en = ?",
+    "summary_json = ?",
+    "tags = ?",
+    "status = 'ready'",
+    "error = NULL",
+    "fail_class = NULL",
+    "heal_attempts = 0",
+  ];
+  const binds: unknown[] = [
     update.full_text,
     update.title,
     update.author,
@@ -199,8 +239,63 @@ export async function markArticleReady(
     update.summary_en,
     JSON.stringify(update.summary_json),
     JSON.stringify(normalizeTags(update.tags)),
+  ];
+  if (update.faithfulness) {
+    sets.push("faithfulness_verdict = ?", "faithfulness_json = ?", "faithfulness_checked_at = ?");
+    binds.push(
+      update.faithfulness.verdict,
+      update.faithfulness.json ? JSON.stringify(update.faithfulness.json) : null,
+      update.faithfulness.checkedAt,
+    );
+  }
+  binds.push(id);
+
+  await db.prepare(`UPDATE articles SET ${sets.join(", ")} WHERE id = ?`).bind(...binds).run();
+}
+
+// Standalone write for POST /api/admin/articles/:id/reverify — re-runs
+// ONLY the faithfulness stage against an already-'ready' article's stored
+// full_text/summary_json, so this touches just the 3 faithfulness columns,
+// nothing else (no status change, no summary rewrite).
+export async function updateFaithfulnessOnly(
+  db: D1Database,
+  id: string,
+  result: { verdict: FaithfulnessVerdict | null; json: FaithfulnessJson | null; checkedAt: string },
+): Promise<void> {
+  await db.prepare(
+    `UPDATE articles SET faithfulness_verdict = ?, faithfulness_json = ?, faithfulness_checked_at = ?
+     WHERE id = ?`,
+  ).bind(
+    result.verdict,
+    result.json ? JSON.stringify(result.json) : null,
+    result.checkedAt,
     id,
   ).run();
+}
+
+export interface FaithfulnessStats {
+  pass: number;
+  weak: number;
+  fail: number;
+  null: number;
+}
+
+// Powers GET /api/admin/health-report's faithfulness breakdown — counts
+// every row (not just 'ready' ones, though only those should ever have a
+// non-null verdict in practice) grouped by verdict, with SQL's NULL group
+// bucketed under the string key "null" so a JS consumer doesn't have to
+// special-case it.
+export async function getFaithfulnessStats(db: D1Database): Promise<FaithfulnessStats> {
+  const result = await db.prepare(
+    `SELECT faithfulness_verdict, COUNT(*) as count FROM articles GROUP BY faithfulness_verdict`,
+  ).all<{ faithfulness_verdict: string | null; count: number }>();
+
+  const stats: FaithfulnessStats = { pass: 0, weak: 0, fail: 0, null: 0 };
+  for (const row of result.results ?? []) {
+    const key = (row.faithfulness_verdict ?? "null") as keyof FaithfulnessStats;
+    if (key in stats) stats[key] = row.count;
+  }
+  return stats;
 }
 
 // Belt-and-braces: every call site today composes a guaranteed-non-empty

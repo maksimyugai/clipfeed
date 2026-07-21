@@ -96,6 +96,13 @@ Deno.test("classifyFailure: fetch 402 (payment required) is permanent", () => {
   assertEquals(classifyFailure("internal: fetch: upstream responded 402").class, "permanent");
 });
 
+Deno.test("classifyFailure: faithfulness enforce-mode discard is permanent", () => {
+  assertEquals(
+    classifyFailure("faithfulness: summary not supported by source").class,
+    "permanent",
+  );
+});
+
 // --- permanentReasonKey (SPA localization signal) ---
 
 Deno.test("classifyFailure: each permanent rule sets its own distinct reason key", () => {

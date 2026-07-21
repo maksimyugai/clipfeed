@@ -11,6 +11,7 @@ import {
   findArticleIdByUrl,
   getArticleById,
   getFailureStats,
+  getFaithfulnessStats,
   getLastAgentActivity,
   insertPendingArticle,
   listArticles,
@@ -21,6 +22,7 @@ import {
   sweepStalePending,
   toPublicArticle,
   toPublicListItem,
+  updateFaithfulnessOnly,
 } from "./db.ts";
 import {
   DEAD_LETTER_QUEUE_NAME,
@@ -41,6 +43,11 @@ import { runAgentJob } from "./agent.ts";
 import { handleScheduled } from "./scheduled.ts";
 import { listLearnedThinHosts } from "./thin-host-learning.ts";
 import { readSummaryBudgetUsage } from "./cost-guard.ts";
+import {
+  readFaithfulnessCallCount,
+  resolveFaithfulnessJudgeModel,
+  runFaithfulnessCheck,
+} from "./faithfulness.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -285,6 +292,36 @@ app.post("/api/admin/articles/:id/resummarize", async (c) => {
   return c.json({ id, status: "pending" }, 202);
 });
 
+// Re-runs ONLY the faithfulness stage (see faithfulness.ts) against an
+// already-summarized article's stored full_text/summary_json — no
+// fetch/extract/summarize at all, so this is a cheap way to spot-check the
+// judge on a specific article without touching its status or content.
+// Deliberately ignores FAITHFULNESS_ENFORCE entirely: this is a read-mostly
+// diagnostic action, not a pipeline re-run, so it never discards the
+// article regardless of the verdict it gets back.
+app.post("/api/admin/articles/:id/reverify", async (c) => {
+  const id = c.req.param("id");
+  const article = await getArticleById(c.env.DB, id);
+  if (!article) return c.json({ error: "not found" }, 404);
+  if (!article.full_text || !article.summary_json) {
+    return c.json({ error: "article has no stored summary to verify" }, 409);
+  }
+
+  const judgeModel = resolveFaithfulnessJudgeModel(c.env.FAITHFULNESS_JUDGE_MODEL);
+  const fullText = article.full_text;
+  const summaryJson = article.summary_json;
+  c.executionCtx.waitUntil((async () => {
+    const result = await runFaithfulnessCheck(c.env.AI, judgeModel, fullText, summaryJson);
+    await updateFaithfulnessOnly(c.env.DB, id, {
+      verdict: result.verdict,
+      json: result.json,
+      checkedAt: result.checkedAt,
+    });
+  })());
+
+  return c.json({ id, status: "reverify-queued" }, 202);
+});
+
 // Manual trigger for the daily scraping agent — same job the hourly
 // AGENT_HOUR_UTC dispatch runs, useful for testing without waiting for the
 // clock. See agent.ts.
@@ -298,13 +335,21 @@ app.post("/api/admin/agent/run", (c) => {
 // intended for curl/owner tooling. Three cheap D1/KV reads, no article
 // content.
 app.get("/api/admin/health-report", async (c) => {
-  const [{ failed_by_class, heal_attempts_totals }, learnedThinhosts, lastAgentActivity, llmCalls] =
-    await Promise.all([
-      getFailureStats(c.env.DB),
-      listLearnedThinHosts(c.env.CACHE),
-      getLastAgentActivity(c.env.DB),
-      readSummaryBudgetUsage(c.env.CACHE, c.env.DAILY_SUMMARY_LIMIT),
-    ]);
+  const [
+    { failed_by_class, heal_attempts_totals },
+    learnedThinhosts,
+    lastAgentActivity,
+    llmCalls,
+    faithfulnessStats,
+    faithfulnessCallsToday,
+  ] = await Promise.all([
+    getFailureStats(c.env.DB),
+    listLearnedThinHosts(c.env.CACHE),
+    getLastAgentActivity(c.env.DB),
+    readSummaryBudgetUsage(c.env.CACHE, c.env.DAILY_SUMMARY_LIMIT),
+    getFaithfulnessStats(c.env.DB),
+    readFaithfulnessCallCount(c.env.CACHE),
+  ]);
 
   return c.json({
     failed_by_class,
@@ -317,6 +362,11 @@ app.get("/api/admin/health-report", async (c) => {
     // debugging session with no way to check this short of reading KV
     // directly.
     llm_calls: llmCalls,
+    // Faithfulness check breakdown (see faithfulness.ts) — pass/weak/fail
+    // counts across every article, plus today's judge-call volume from its
+    // own (uncapped, observability-only) KV counter, distinct from
+    // llm_calls above which only tracks the paid summarization budget.
+    faithfulness: { ...faithfulnessStats, judge_calls_today: faithfulnessCallsToday },
   });
 });
 

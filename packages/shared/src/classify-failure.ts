@@ -24,7 +24,8 @@ export type PermanentReasonKey =
   | "not_found"
   | "removed"
   | "ssrf_blocked"
-  | "paywalled";
+  | "paywalled"
+  | "unfaithful";
 
 export interface FailureClassification {
   class: FailureClass;
@@ -90,6 +91,15 @@ const PERMANENT_RULES: { substring: string; reason: string; key: PermanentReason
     key: "paywalled",
   },
   { substring: "ssrf", reason: "url blocked by ssrf policy", key: "ssrf_blocked" },
+  // FAITHFULNESS_ENFORCE's discard path (see faithfulness.ts) — a summary
+  // that still fails the judge after one resummarize retry won't fix
+  // itself on a third attempt either, same reasoning as the other
+  // un-retryable reasons above.
+  {
+    substring: "faithfulness:",
+    reason: "summary failed faithfulness check",
+    key: "unfaithful",
+  },
 ];
 
 export function classifyFailure(error: string): FailureClassification {

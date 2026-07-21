@@ -306,6 +306,11 @@ class FakeKV {
 // catch block's own markArticleFailed() call — working normally.
 class ControllableD1 {
   rows = new Map<string, Record<string, unknown>>();
+  // Last SQL text seen for the markArticleReady write — lets a test assert
+  // whether the faithfulness_* columns were included at all (see
+  // markArticleReady's PipelineSuccessUpdate.faithfulness being omitted
+  // entirely when the check is disabled).
+  lastReadySql: string | undefined;
   constructor(private failOn: (sql: string) => boolean = () => false) {}
 
   prepare(sql: string): D1PreparedStatement {
@@ -322,6 +327,19 @@ class ControllableD1 {
           row.status = "failed";
           row.error = values[0];
         } else if (normalized.includes("SET full_text = ?")) {
+          this.lastReadySql = normalized;
+          // Generic `col = ?` extraction (same approach as testing/fake_d1.ts)
+          // so the optional trailing faithfulness_* columns are captured
+          // whether or not they're present in this particular write.
+          const setClause = normalized.slice(
+            "UPDATE articles SET ".length,
+            normalized.indexOf(" WHERE"),
+          );
+          let vi = 0;
+          for (const assignment of setClause.split(",")) {
+            const m = assignment.trim().match(/^(\w+)\s*=\s*\?$/);
+            if (m) row[m[1]] = values[vi++];
+          }
           row.status = "ready";
         }
         this.rows.set(id, row);
@@ -655,6 +673,174 @@ Deno.test("runArticlePipeline: gateway/direct mode does NOT apply the 24k worker
       requestTags: [],
     });
     assert(capturedBody.includes("B".repeat(20_000)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// --- Faithfulness check (Task 23) ---
+
+function judgeResponse(verdict: "supported" | "unsupported" | "contradicted"): unknown {
+  return {
+    response: JSON.stringify({ claims: [{ i: 1, verdict, evidence: "x" }], notes: "" }),
+  };
+}
+
+Deno.test("runArticlePipeline: FAITHFULNESS_CHECK=false -> no judge call, no faithfulness columns written, pipeline unchanged", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(anthropicSuccessResponse())) as typeof fetch;
+  let aiCalled = false;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      FAITHFULNESS_CHECK: "false",
+      AI: {
+        run(): Promise<unknown> {
+          aiCalled = true;
+          return Promise.reject(new Error("should not be called"));
+        },
+      },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-off",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+    assertEquals(aiCalled, false);
+    assertEquals(db.rows.get("p-faith-off")?.status, "ready");
+    assert(!db.lastReadySql?.includes("faithfulness_verdict"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: FAITHFULNESS_CHECK enabled (default), judge says pass -> 'ready' with verdict stored", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(anthropicSuccessResponse())) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      AI: { run: () => Promise.resolve(judgeResponse("supported")) },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-pass",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+    const row = db.rows.get("p-faith-pass")!;
+    assertEquals(row.status, "ready");
+    assertEquals(row.faithfulness_verdict, "pass");
+    assert((row.faithfulness_checked_at as string).length > 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: judge says 'fail', FAITHFULNESS_ENFORCE=false (default/soft) -> still 'ready', verdict 'fail' stored", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(anthropicSuccessResponse())) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      AI: { run: () => Promise.resolve(judgeResponse("contradicted")) },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-fail-soft",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+    const row = db.rows.get("p-faith-fail-soft")!;
+    assertEquals(row.status, "ready");
+    assertEquals(row.faithfulness_verdict, "fail");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, first judge fails, retry summarize+reverify passes -> 'ready'", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (() => {
+    fetchCalls += 1;
+    return Promise.resolve(anthropicSuccessResponse());
+  }) as typeof fetch;
+  let aiCalls = 0;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      FAITHFULNESS_ENFORCE: "true",
+      AI: {
+        run: () => {
+          aiCalls += 1;
+          return Promise.resolve(judgeResponse(aiCalls === 1 ? "contradicted" : "supported"));
+        },
+      },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-enforce-pass",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+    const row = db.rows.get("p-faith-enforce-pass")!;
+    assertEquals(row.status, "ready");
+    assertEquals(row.faithfulness_verdict, "pass");
+    assertEquals(fetchCalls, 2); // initial summarize + enforce-mode retry summarize
+    assertEquals(aiCalls, 2); // initial judge + retry judge
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, retry still fails -> permanent 'failed' with the faithfulness reason", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(anthropicSuccessResponse())) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      FAITHFULNESS_ENFORCE: "true",
+      AI: { run: () => Promise.resolve(judgeResponse("contradicted")) },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-enforce-discard",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+    const row = db.rows.get("p-faith-enforce-discard")!;
+    assertEquals(row.status, "failed");
+    assertEquals(row.error, "faithfulness: summary not supported by source");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: the judge call does NOT increment the summary cost-guard counter, but DOES increment the faithfulness KV counter", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(anthropicSuccessResponse())) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      AI: { run: () => Promise.resolve(judgeResponse("supported")) },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-counters",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+    const today = new Date().toISOString().slice(0, 10);
+    assertEquals(await env.CACHE.get(`llm_calls:${today}`), "1"); // only the summarize call
+    assertEquals(await env.CACHE.get(`faithfulness_calls:${today}`), "1");
   } finally {
     globalThis.fetch = originalFetch;
   }

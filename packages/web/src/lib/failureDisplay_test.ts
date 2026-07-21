@@ -16,6 +16,7 @@ const dict = {
   permanentReasonRemoved: "страница удалена источником",
   permanentReasonSsrfBlocked: "ссылка заблокирована политикой безопасности",
   permanentReasonPaywalled: "страница закрыта платным доступом",
+  permanentReasonUnfaithful: "пересказ не подтверждён источником",
   dailyLimitFailureLabel: "Дневной лимит выжимок исчерпан — обработается автоматически завтра",
 };
 
@@ -72,6 +73,13 @@ Deno.test("articleErrorText: an ssrf-blocked permanent failure shows the localiz
   assertEquals(
     articleErrorText("internal: fetch: blocked by ssrf policy", dict),
     "Не обработать: ссылка заблокирована политикой безопасности",
+  );
+});
+
+Deno.test("articleErrorText: a faithfulness enforce-mode discard shows the localized reason", () => {
+  assertEquals(
+    articleErrorText("faithfulness: summary not supported by source", dict),
+    "Не обработать: пересказ не подтверждён источником",
   );
 });
 

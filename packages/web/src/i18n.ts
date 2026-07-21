@@ -40,7 +40,13 @@ export interface Dictionary {
   permanentReasonRemoved: string;
   permanentReasonSsrfBlocked: string;
   permanentReasonPaywalled: string;
+  permanentReasonUnfaithful: string;
   dailyLimitFailureLabel: string;
+  faithfulnessBadgeWeak: string;
+  faithfulnessBadgeFail: string;
+  faithfulnessDetailLabel: string;
+  faithfulnessUnsupportedLabel: string;
+  faithfulnessContradictedLabel: string;
   readMore: string;
   tldrLabel: string;
   summaryByPrefix: string;
@@ -106,7 +112,13 @@ const ru: Dictionary = {
   permanentReasonRemoved: "страница удалена источником",
   permanentReasonSsrfBlocked: "ссылка заблокирована политикой безопасности",
   permanentReasonPaywalled: "страница закрыта платным доступом",
+  permanentReasonUnfaithful: "пересказ не подтверждён источником",
   dailyLimitFailureLabel: "Дневной лимит выжимок исчерпан — обработается автоматически завтра",
+  faithfulnessBadgeWeak: "требует проверки",
+  faithfulnessBadgeFail: "возможны неточности",
+  faithfulnessDetailLabel: "Проверка достоверности",
+  faithfulnessUnsupportedLabel: "не подтверждено",
+  faithfulnessContradictedLabel: "противоречит",
   readMore: "читать далее",
   tldrLabel: "TL;DR",
   summaryByPrefix: "Пересказ Claude по статье",
@@ -172,7 +184,13 @@ const en: Dictionary = {
   permanentReasonRemoved: "the page was removed by the source",
   permanentReasonSsrfBlocked: "the link was blocked by security policy",
   permanentReasonPaywalled: "the page is behind a paywall",
+  permanentReasonUnfaithful: "the summary wasn't supported by the source",
   dailyLimitFailureLabel: "Daily summary limit reached — this will process automatically tomorrow",
+  faithfulnessBadgeWeak: "needs review",
+  faithfulnessBadgeFail: "possibly inaccurate",
+  faithfulnessDetailLabel: "Faithfulness check",
+  faithfulnessUnsupportedLabel: "unsupported",
+  faithfulnessContradictedLabel: "contradicted",
   readMore: "read more",
   tldrLabel: "TL;DR",
   summaryByPrefix: "Summary by Claude from",

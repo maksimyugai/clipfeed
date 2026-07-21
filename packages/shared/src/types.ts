@@ -1,6 +1,31 @@
 export type ArticleStatus = "pending" | "ready" | "failed";
 export type AddedVia = "extension" | "manual" | "agent" | "telegram";
 
+// Verdict from the independent faithfulness judge (always Workers AI Llama —
+// see packages/api/src/faithfulness.ts), run as a separate pipeline stage
+// after a summary validates but before the article is marked 'ready'. null
+// means the check hasn't run at all (disabled, or a pre-Task-23 row) — this
+// is distinct from a judge call that ran but couldn't be parsed, which is
+// still recorded (verdict null, but faithfulness_json carries an
+// {error: string} shape and faithfulness_checked_at is set) so the two
+// "null verdict" cases are distinguishable by checked_at.
+export type FaithfulnessVerdict = "pass" | "weak" | "fail";
+
+export interface FaithfulnessClaimResult {
+  i: number;
+  verdict: "supported" | "unsupported" | "contradicted";
+  evidence: string;
+}
+
+// The judge's full response — either every claim it verified (plus its free
+// -text notes) or a marker that its output couldn't be parsed even after one
+// corrective retry (see faithfulness.ts's runFaithfulnessCheck — a judge
+// failure never blocks the article, it just leaves this shape behind for
+// diagnosis).
+export type FaithfulnessJson =
+  | { claims: FaithfulnessClaimResult[]; notes: string }
+  | { error: string };
+
 // Healing strategy bucket for a 'failed' row — see classifyFailure() in
 // packages/api/src/classify-failure.ts for the mapping from the stored
 // `error` string. null until a failure has actually been classified (old
@@ -52,17 +77,26 @@ export interface Article {
   error: string | null;
   fail_class: FailureClass | null;
   heal_attempts: number;
+  faithfulness_verdict: FaithfulnessVerdict | null;
+  faithfulness_json: FaithfulnessJson | null;
+  faithfulness_checked_at: string | null;
 }
 
 export type ArticleListItem = Omit<Article, "full_text">;
 
 // GET /api/articles/:id (public) shape: excludes full_text (the article's
 // full extracted text — publicly re-serving that would be a reprint, not a
-// summary-with-link) and the raw error string (may carry internal detail
-// like upstream URLs/stack fragments); has_error is enough for a public
-// reader to know a retry is pending. The full row (both fields included)
-// is only available to the owner, via GET /api/admin/articles/:id.
-export type PublicArticle = Omit<Article, "full_text" | "error"> & { has_error: boolean };
+// summary-with-link), the raw error string (may carry internal detail like
+// upstream URLs/stack fragments), and faithfulness_json (the judge's
+// per-claim detail — owner-only diagnostic, see faithfulness.ts). has_error
+// is enough for a public reader to know a retry is pending;
+// faithfulness_verdict IS still exposed publicly — the whole point of the
+// caution badge (see ArticleCard.tsx) is transparency for every reader, not
+// just the owner. The full row (every field included) is only available to
+// the owner, via GET /api/admin/articles/:id.
+export type PublicArticle =
+  & Omit<Article, "full_text" | "error" | "faithfulness_json">
+  & { has_error: boolean };
 
 export interface CreateArticleRequest {
   url: string;

@@ -61,6 +61,9 @@ export class FakeD1 implements D1Database {
         summary_json: null,
         error: null,
         fail_class: null,
+        faithfulness_verdict: null,
+        faithfulness_json: null,
+        faithfulness_checked_at: null,
       };
       let vi = 0;
       for (const col of cols) {
@@ -90,30 +93,17 @@ export class FakeD1 implements D1Database {
       if (!row) return;
 
       if (sql.includes("SET full_text = ?")) {
-        const [
-          full_text,
-          title,
-          author,
-          lang_original,
-          summary_ru,
-          summary_en,
-          summary_json,
-          tags,
-        ] = values;
-        Object.assign(row, {
-          full_text,
-          title,
-          author,
-          lang_original,
-          summary_ru,
-          summary_en,
-          summary_json,
-          tags,
-          status: "ready",
-          error: null,
-          fail_class: null,
-          heal_attempts: 0,
-        });
+        // markArticleReady's SET clause always starts with these 8
+        // `col = ?` assignments, but may append 3 more (faithfulness_*)
+        // when the check ran — parse generically instead of a fixed
+        // positional destructure so either shape works.
+        const setClause = sql.slice("UPDATE articles SET ".length, sql.indexOf(" WHERE"));
+        let vi = 0;
+        for (const assignment of setClause.split(",")) {
+          const m = assignment.trim().match(/^(\w+)\s*=\s*\?$/);
+          if (m) row[m[1]] = values[vi++];
+        }
+        Object.assign(row, { status: "ready", error: null, fail_class: null, heal_attempts: 0 });
         return;
       }
       if (sql.includes("SET status = 'failed'")) {
@@ -241,6 +231,18 @@ export class FakeD1 implements D1Database {
         fail_class,
         count,
         attempts,
+      }));
+    }
+
+    if (sql.startsWith("SELECT faithfulness_verdict, COUNT(*) as count FROM articles")) {
+      const groups = new Map<string | null, number>();
+      for (const r of this.rows) {
+        const key = r.faithfulness_verdict as string | null;
+        groups.set(key, (groups.get(key) ?? 0) + 1);
+      }
+      return [...groups.entries()].map(([faithfulness_verdict, count]) => ({
+        faithfulness_verdict,
+        count,
       }));
     }
 
