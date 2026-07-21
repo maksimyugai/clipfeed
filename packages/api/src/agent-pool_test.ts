@@ -152,6 +152,41 @@ Deno.test("buildCandidatePool: a subdomain of a denylisted host is not caught (e
   assertEquals(pool.map((c) => c.id), ["sub"]);
 });
 
+// --- paywalled-title filter (see PAYWALL_TITLE_MARKERS) — a cheap,
+// no-fetch-needed signal some sources embed directly in the title. ---
+
+Deno.test("buildCandidatePool: drops a candidate whose title starts with the LWN subscriber-only marker '[$]'", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const paywalled = makeCandidate({
+    id: "paywalled",
+    title: "[$] Fedora grapples with change",
+    url: "https://lwn.net/Articles/1/",
+  });
+  const free = makeCandidate({
+    id: "free",
+    title: "AMD Getting The Linux Kernel Ready For Zen 6",
+    url: "https://lwn.net/Articles/2/",
+  });
+
+  const pool = await buildCandidatePool(db, kv, [paywalled, free], NOW);
+  assertEquals(pool.map((c) => c.id), ["free"]);
+});
+
+Deno.test("buildCandidatePool: the paywall marker must be at the START of the title, not merely present", async () => {
+  // Regression guard for the obvious over-eager alternative (a substring
+  // check anywhere in the title) — "$" appearing mid-title (e.g. a price)
+  // is real editorial content, not LWN's subscriber-only convention.
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const notPaywalled = makeCandidate({
+    id: "not-paywalled",
+    title: "New GPU launches at $499, undercutting rivals [$] mentioned in passing",
+  });
+  const pool = await buildCandidatePool(db, kv, [notPaywalled], NOW);
+  assertEquals(pool.map((c) => c.id), ["not-paywalled"]);
+});
+
 // --- learned thin-host blocklist (see thin-host-learning.ts) — the filter
 // is a union: static denylist above, plus any host the KV list has learned. ---
 
