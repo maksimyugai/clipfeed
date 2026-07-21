@@ -23,7 +23,8 @@ export type PermanentReasonKey =
   | "insufficient_text"
   | "not_found"
   | "removed"
-  | "ssrf_blocked";
+  | "ssrf_blocked"
+  | "paywalled";
 
 export interface FailureClassification {
   class: FailureClass;
@@ -74,6 +75,19 @@ const PERMANENT_RULES: { substring: string; reason: string; key: PermanentReason
     substring: "fetch: upstream responded 410",
     reason: "source page permanently removed",
     key: "removed",
+  },
+  // A paywall doesn't heal itself — retrying gets the exact same 402/403
+  // every time, so this belongs with the other un-retryable reasons, not
+  // with transient 5xx errors.
+  {
+    substring: "fetch: upstream responded 403",
+    reason: "source page paywalled or forbidden",
+    key: "paywalled",
+  },
+  {
+    substring: "fetch: upstream responded 402",
+    reason: "source page paywalled or forbidden",
+    key: "paywalled",
   },
   { substring: "ssrf", reason: "url blocked by ssrf policy", key: "ssrf_blocked" },
 ];

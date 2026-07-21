@@ -88,6 +88,14 @@ Deno.test("classifyFailure: an ssrf-flagged url is permanent", () => {
   assertEquals(classifyFailure("internal: fetch: blocked by ssrf policy").class, "permanent");
 });
 
+Deno.test("classifyFailure: fetch 403 (paywalled/forbidden) is permanent", () => {
+  assertEquals(classifyFailure("internal: fetch: upstream responded 403").class, "permanent");
+});
+
+Deno.test("classifyFailure: fetch 402 (payment required) is permanent", () => {
+  assertEquals(classifyFailure("internal: fetch: upstream responded 402").class, "permanent");
+});
+
 // --- permanentReasonKey (SPA localization signal) ---
 
 Deno.test("classifyFailure: each permanent rule sets its own distinct reason key", () => {
@@ -106,6 +114,14 @@ Deno.test("classifyFailure: each permanent rule sets its own distinct reason key
   assertEquals(
     classifyFailure("internal: fetch: blocked by ssrf policy").permanentReasonKey,
     "ssrf_blocked",
+  );
+  assertEquals(
+    classifyFailure("internal: fetch: upstream responded 403").permanentReasonKey,
+    "paywalled",
+  );
+  assertEquals(
+    classifyFailure("internal: fetch: upstream responded 402").permanentReasonKey,
+    "paywalled",
   );
 });
 

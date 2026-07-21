@@ -2,6 +2,7 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   backfillNormalizedTags,
   buildListQuery,
+  findRecentTitles,
   insertPendingArticle,
   markArticleFailed,
   markArticleReady,
@@ -216,4 +217,54 @@ Deno.test("backfillNormalizedTags: a row with no tags at all (null column) is le
   db.rows.push({ id: "b4", tags: null });
   const updated = await backfillNormalizedTags(db);
   assertEquals(updated, 0);
+});
+
+// --- findRecentTitles (Task 19 Part C: story-level dedup against-DB window) ---
+
+Deno.test("findRecentTitles: returns titles of rows added at/after the given ISO timestamp", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "r1",
+    url: "https://example.com/r1",
+    title: "Recent story one",
+    source: "example.com",
+    tags: [],
+    added_via: "agent",
+    added_at: "2026-01-02T12:00:00.000Z",
+  });
+  await insertPendingArticle(db, {
+    id: "r2",
+    url: "https://example.com/r2",
+    title: "Older story",
+    source: "example.com",
+    tags: [],
+    added_via: "agent",
+    added_at: "2025-12-30T00:00:00.000Z",
+  });
+
+  const titles = await findRecentTitles(db, "2026-01-01T00:00:00.000Z");
+  assertEquals(titles, ["Recent story one"]);
+});
+
+Deno.test("findRecentTitles: includes rows regardless of status/archived — any saved title counts as 'already covered'", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "r1",
+    url: "https://example.com/r1",
+    title: "A failed pick",
+    source: "example.com",
+    tags: [],
+    added_via: "agent",
+    added_at: "2026-01-02T12:00:00.000Z",
+  });
+  await markArticleFailed(db, "r1", "internal: fetch: upstream responded 403");
+
+  const titles = await findRecentTitles(db, "2026-01-01T00:00:00.000Z");
+  assertEquals(titles, ["A failed pick"]);
+});
+
+Deno.test("findRecentTitles: no matching rows yields an empty array", async () => {
+  const db = new FakeD1();
+  const titles = await findRecentTitles(db, "2026-01-01T00:00:00.000Z");
+  assertEquals(titles, []);
 });

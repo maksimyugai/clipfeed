@@ -2,6 +2,7 @@ import "./env.d.ts";
 import type { Candidate } from "./agent-types.ts";
 import { callLlm, stripJsonFences } from "./summarize.ts";
 import { selectProviderMode } from "./pipeline.ts";
+import { findRecentTitles } from "./db.ts";
 
 export const DEFAULT_AGENT_DAILY_PICKS = 10;
 const MIN_AGENT_DAILY_PICKS = 1;
@@ -16,6 +17,118 @@ const RANK_MAX_TOKENS = 300;
 // mechanically re-check against).
 const MAX_PICKS_PER_SOURCE = 2;
 const MIN_TOPIC_DIVERSITY = 3;
+
+// A live incident: two picks covered the exact same Kimi/Moonshot story from
+// two different outlets, under different URLs (so the URL-based dedupe in
+// agent-pool.ts never saw a collision). STORY_SIMILARITY_THRESHOLD is the
+// token-set Jaccard cutoff dedupStories() below uses to catch this — tuned
+// against real paraphrased ru/en title pairs (see ranking_test.ts), not just
+// exact duplicates. RECENT_STORY_WINDOW_MS bounds how far back the
+// against-DB check looks: yesterday's story from another outlet still
+// shouldn't get re-picked today.
+const STORY_SIMILARITY_THRESHOLD = 0.5;
+const RECENT_STORY_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+// Deliberately small and manual, not a stemmer/stopword-library dependency —
+// this only needs to strip the highest-frequency function words that would
+// otherwise inflate the token overlap between two otherwise-unrelated
+// headlines (e.g. "the... in... and..." matching across any two English
+// titles). Covers en+ru per the task's live evidence (an English outlet and
+// a Russian-language one covering the same story).
+const STOPWORDS_EN = new Set([
+  "a",
+  "an",
+  "the",
+  "and",
+  "or",
+  "but",
+  "of",
+  "to",
+  "in",
+  "on",
+  "for",
+  "with",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "by",
+  "as",
+  "at",
+  "it",
+  "its",
+  "this",
+  "that",
+  "from",
+  "after",
+  "over",
+  "new",
+]);
+const STOPWORDS_RU = new Set([
+  "и",
+  "в",
+  "во",
+  "не",
+  "что",
+  "он",
+  "на",
+  "я",
+  "с",
+  "со",
+  "как",
+  "а",
+  "то",
+  "все",
+  "она",
+  "так",
+  "его",
+  "но",
+  "да",
+  "к",
+  "у",
+  "же",
+  "вы",
+  "за",
+  "бы",
+  "по",
+  "только",
+  "её",
+  "ее",
+  "для",
+  "из",
+  "этот",
+  "эта",
+  "это",
+  "об",
+  "от",
+]);
+
+function normalizeTitleWords(title: string): string[] {
+  return title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !STOPWORDS_EN.has(w) && !STOPWORDS_RU.has(w));
+}
+
+// Exported for direct testing of the similarity table (identical,
+// paraphrased, unrelated pairs) — normalize both titles to a stopword-free
+// token set, then plain Jaccard (intersection / union). No stemming, no
+// translation — a ru/en paraphrase of the same story only scores high here
+// when it shares enough proper nouns/numbers/transliterated terms (which,
+// per the live incident, real paraphrases of the same story usually do).
+export function storyTitleSimilarity(a: string, b: string): number {
+  const tokensA = new Set(normalizeTitleWords(a));
+  const tokensB = new Set(normalizeTitleWords(b));
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let intersection = 0;
+  for (const token of tokensA) {
+    if (tokensB.has(token)) intersection += 1;
+  }
+  const union = tokensA.size + tokensB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
 
 // [vars] AGENT_DAILY_PICKS is a string (like SUMMARY_BODY_TARGET_CHARS
 // elsewhere) so a bad override (missing, non-numeric, outside [1, 20])
@@ -42,7 +155,8 @@ function buildRankSystemPrompt(pickCount: number): string {
   return `You rank news for a personal feed. Pick the ${pickCount} best items. HARD RULES: ` +
     `(a) at most ${MAX_PICKS_PER_SOURCE} items per source; ` +
     `(b) cover at least ${MIN_TOPIC_DIVERSITY} distinct topic areas from the interest list when the pool allows; ` +
-    `(c) prefer substantive reporting over link-posts and speculation. ` +
+    `(c) prefer substantive reporting over link-posts and speculation; ` +
+    `(d) never pick two items covering the same story/event, even from different sources — pick the most substantive one. ` +
     `Respond ONLY with a JSON array of the ${pickCount} best item ids.`;
 }
 
@@ -133,6 +247,70 @@ export function enforceRankingDiversity(
   return picks;
 }
 
+// Post-parse enforcement of hard rule (d) — never trust the model to have
+// actually caught a same-story duplicate. Walks the (already
+// diversity-enforced) pick order; a candidate whose title is similar
+// (>= STORY_SIMILARITY_THRESHOLD) to anything already kept — including a
+// title from `recentTitles` (articles saved in the last 48h, see
+// findRecentTitles) — is dropped as the lower-ranked duplicate, since
+// whatever's already kept was ranked/considered first. Each drop reopens one
+// slot, backfilled from the rest of the pool (newest-first), respecting both
+// MAX_PICKS_PER_SOURCE and the same similarity check against everything kept
+// so far (including backfilled picks) — mirrors enforceRankingDiversity's
+// backfill shape above, just checking story similarity instead of a
+// per-source count.
+export function dedupStories(
+  pickedIds: string[],
+  pool: Candidate[],
+  pickCount: number,
+  recentTitles: string[] = [],
+): string[] {
+  const byId = new Map(pool.map((c) => [c.id, c]));
+  const kept: string[] = [];
+  const keptTitles: string[] = [...recentTitles];
+  const perSourceCount = new Map<string, number>();
+  const consideredIds = new Set<string>();
+  let droppedForStory = 0;
+
+  const isDuplicateOfKept = (title: string): boolean =>
+    keptTitles.some((t) => storyTitleSimilarity(t, title) >= STORY_SIMILARITY_THRESHOLD);
+
+  for (const id of pickedIds) {
+    consideredIds.add(id);
+    const candidate = byId.get(id);
+    if (!candidate) continue;
+    if (isDuplicateOfKept(candidate.title)) {
+      droppedForStory += 1;
+      continue;
+    }
+    kept.push(id);
+    keptTitles.push(candidate.title);
+    perSourceCount.set(candidate.sourceId, (perSourceCount.get(candidate.sourceId) ?? 0) + 1);
+  }
+
+  if (droppedForStory > 0) {
+    const backfillTarget = Math.min(pickCount, kept.length + droppedForStory);
+    for (const candidate of pool) {
+      if (kept.length >= backfillTarget) break;
+      if (consideredIds.has(candidate.id)) continue;
+      const count = perSourceCount.get(candidate.sourceId) ?? 0;
+      if (count >= MAX_PICKS_PER_SOURCE) continue;
+      if (isDuplicateOfKept(candidate.title)) continue;
+      kept.push(candidate.id);
+      keptTitles.push(candidate.title);
+      perSourceCount.set(candidate.sourceId, count + 1);
+      consideredIds.add(candidate.id);
+    }
+    console.log(JSON.stringify({
+      event: "rank_story_dedup",
+      kept: kept.length,
+      dropped: droppedForStory,
+    }));
+  }
+
+  return kept;
+}
+
 // Used when the LLM call fails outright, or never returns a parseable,
 // valid pick list: newest-first, one per source, up to pickCount — then
 // backfills from the remaining newest candidates if there weren't enough
@@ -170,16 +348,25 @@ export function fallbackPicks(
 // unparseable responses in a row both fall back to fallbackPicks(). A
 // successful parse still goes through enforceRankingDiversity — the model is
 // asked to respect the per-source cap and topic spread, but that's enforced
-// again here rather than trusted. Does NOT consume the daily summarization
-// budget — that's spent per-article in the pipeline, not here.
+// again here rather than trusted. Every path (LLM success or fallback) also
+// goes through dedupStories against both the pool itself and titles already
+// saved in the last 48h, so a same-story duplicate can't slip through
+// either the model's judgment or the fallback's naive newest-first pass.
+// Does NOT consume the daily summarization budget — that's spent
+// per-article in the pipeline, not here.
 export async function rankCandidates(
   env: Env,
   interests: string,
   candidates: Candidate[],
+  now: Date = new Date(),
 ): Promise<string[]> {
   if (candidates.length === 0) return [];
 
   const pickCount = parseAgentDailyPicks(env.AGENT_DAILY_PICKS);
+  const recentTitles = await findRecentTitles(
+    env.DB,
+    new Date(now.getTime() - RECENT_STORY_WINDOW_MS).toISOString(),
+  );
   const mode = selectProviderMode({
     aiGatewayUrl: env.AI_GATEWAY_URL,
     cfAigToken: env.CF_AIG_TOKEN,
@@ -193,11 +380,14 @@ export async function rankCandidates(
     try {
       const raw = await callLlm(mode, env, systemPrompt, userMessage, RANK_MAX_TOKENS);
       const ids = parseRankedIds(raw, validIds);
-      if (ids) return enforceRankingDiversity(ids, candidates, pickCount);
+      if (ids) {
+        const diverse = enforceRankingDiversity(ids, candidates, pickCount);
+        return dedupStories(diverse, candidates, pickCount, recentTitles);
+      }
     } catch {
       // Provider/network error — retry once, then fall back below.
     }
   }
 
-  return fallbackPicks(candidates, pickCount);
+  return dedupStories(fallbackPicks(candidates, pickCount), candidates, pickCount, recentTitles);
 }

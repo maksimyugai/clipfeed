@@ -48,11 +48,20 @@ const ARTICLE_HTML = "<html><head><title>Example</title></head><body><article><h
   "combined extracted text safely stays well above that threshold even after Readability trims " +
   "whitespace.</p></article></body></html>";
 
+// Distinct, unrelated per-index topic words (not a shared stem/suffix like
+// "story 0"/"story 1") so items from the same or different sources never
+// look like the same story to ranking.ts's dedupStories() — that logic is
+// exercised deliberately in ranking_test.ts, but here it would otherwise
+// collapse this fixture's filler items down to fewer than intended.
+const FIXTURE_TOPICS = ["quokka", "narwhal", "obelisk", "marimba", "tundra", "brioche"];
+
 function rssFixture(sourceIdLabel: string, count: number): string {
   const items = Array.from(
     { length: count },
     (_, i) =>
-      `<item><title>${sourceIdLabel} story ${i}</title><link>https://articles.example.com/${sourceIdLabel}-${i}</link><pubDate>${
+      `<item><title>${sourceIdLabel}-${
+        FIXTURE_TOPICS[i % FIXTURE_TOPICS.length]
+      }</title><link>https://articles.example.com/${sourceIdLabel}-${i}</link><pubDate>${
         new Date(Date.now() - i * 60_000).toUTCString()
       }</pubDate></item>`,
   ).join("");

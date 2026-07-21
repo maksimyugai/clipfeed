@@ -903,7 +903,10 @@ Deno.test("validateSummary: a bullet under 40 chars is a violation", () => {
   }
 });
 
-Deno.test("validateSummary: a bullet over 220 chars is a violation", () => {
+Deno.test("validateSummary: a bullet moderately over the 220-char soft max (221-330) PASSES, not a violation", () => {
+  // Task 19 Part A: moderate overshoot no longer fails validation — only
+  // undershoot is a real quality problem. 221 clears the soft max (220) but
+  // stays within the hard max (330).
   const result = validateSummary(
     makeValidSummary({
       bullets_en: [
@@ -914,10 +917,24 @@ Deno.test("validateSummary: a bullet over 220 chars is a violation", () => {
       ],
     }),
   );
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
+Deno.test("validateSummary: a bullet over the 330-char hard max (220 * 1.5) is a violation", () => {
+  const result = validateSummary(
+    makeValidSummary({
+      bullets_en: [
+        "x".repeat(331),
+        "Second concrete fact goes here now for the reader.",
+        "Third concrete fact goes here now for the reader.",
+        "Fourth concrete fact goes here now for the reader.",
+      ],
+    }),
+  );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("220")),
+      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("330")),
       true,
     );
   }
@@ -1005,15 +1022,28 @@ Deno.test("validateSummary: a body paragraph under the default STRICT minimum (2
   }
 });
 
-Deno.test("validateSummary: a body paragraph over the default STRICT maximum (768 chars) is a violation", () => {
-  const tooLong = "x".repeat(769);
+Deno.test("validateSummary: a body paragraph moderately over the default STRICT soft max (768) PASSES, not a violation", () => {
+  // Task 19 Part A: the live incident this fixes — 854 vs the old hard 768
+  // failed outright. Soft max stays 768 (prompt unchanged), but moderate
+  // overshoot up to the hard max (768 * 1.5 = 1152) no longer fails.
+  const moderatelyLong = "x".repeat(854);
+  const result = validateSummary(
+    makeValidSummary({ body_en: [moderatelyLong, makeValidSummary().body_en[1]] }),
+  );
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
+Deno.test("validateSummary: a body paragraph over the default STRICT hard maximum (1152 = 768 * 1.5) is a violation", () => {
+  const tooLong = "x".repeat(1153);
   const result = validateSummary(
     makeValidSummary({ body_en: [tooLong, makeValidSummary().body_en[1]] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("body_en[0]") && v.includes("768")),
+      result.violations.some((v) =>
+        v.includes("body_en[0]") && v.includes("extremely long") && v.includes("1152")
+      ),
       true,
     );
   }
@@ -1227,12 +1257,14 @@ Deno.test("buildSystemPrompt: a custom spec's numbers all flow into the rendered
     paragraphTargetLow: 111,
     paragraphTargetHigh: 222,
     minParagraphChars: 333,
-    maxParagraphChars: 444,
+    softMaxParagraphChars: 444,
+    hardMaxParagraphChars: 666,
     minTldrChars: 555,
     minBullets: 6,
     maxBullets: 8,
     minBulletChars: 77,
-    maxBulletChars: 888,
+    softMaxBulletChars: 888,
+    hardMaxBulletChars: 1332,
     maxTokens: 5555,
   };
   const prompt = buildSystemPrompt(custom);
@@ -1328,10 +1360,12 @@ Deno.test("summarizeArticle: a body-paragraph OVERSHOOT retries with a 'rewrite 
   globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
     if (calls === 1) {
-      // body_en[0] overshoots DEFAULT_STRICT_SPEC's 768-char max.
+      // body_en[0] overshoots DEFAULT_STRICT_SPEC's 1152-char HARD max
+      // (768 soft max * 1.5) — moderate overshoot alone (e.g. 800) no
+      // longer triggers a retry at all after Task 19 Part A.
       const tooLong = {
         ...makeValidSummary(),
-        body_en: ["x".repeat(800), makeValidSummary().body_en[1]],
+        body_en: ["x".repeat(1153), makeValidSummary().body_en[1]],
       };
       return Promise.resolve(
         new Response(
@@ -1364,8 +1398,10 @@ Deno.test("summarizeArticle: a body-paragraph OVERSHOOT retries with a 'rewrite 
       ),
       true,
     );
-    // Not the generic "must be between X and Y (got Z)" phrasing for this violation.
-    assertEquals(secondMessage.includes("body_en[0] must be between"), false);
+    // Not the generic "is extremely long: must be at most X (got Y)" phrasing
+    // repeated verbatim for this violation — the specific rewrite instruction
+    // replaces it entirely.
+    assertEquals(secondMessage.includes("body_en[0] is extremely long"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1401,7 +1437,7 @@ Deno.test("summarizeArticle: a body-paragraph UNDERSHOOT still gets the generic 
   try {
     await summarizeArticle({ apiKey: "sk-direct", model: "test-model" }, "Title", "Body");
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
-    assertEquals(secondMessage.includes("body_en[0] must be between 288 and 768"), true);
+    assertEquals(secondMessage.includes("body_en[0] must be at least 288 characters"), true);
     assertEquals(secondMessage.includes("rewrite body_en paragraph"), false);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1420,27 +1456,31 @@ Deno.test("deriveSummarySpec: paragraph/tldr/max_tokens numbers are monotonicall
     let prevMaxTokens = 0;
     for (const target of TEST_TARGETS) {
       const spec = deriveSummarySpec(target, profileKind);
-      assertEquals(spec.maxParagraphChars >= prevMaxParagraph, true, `${profileKind}@${target}`);
+      assertEquals(
+        spec.softMaxParagraphChars >= prevMaxParagraph,
+        true,
+        `${profileKind}@${target}`,
+      );
       assertEquals(spec.minTldrChars >= prevTldr, true, `${profileKind}@${target}`);
       assertEquals(spec.maxTokens >= prevMaxTokens, true, `${profileKind}@${target}`);
-      prevMaxParagraph = spec.maxParagraphChars;
+      prevMaxParagraph = spec.softMaxParagraphChars;
       prevTldr = spec.minTldrChars;
       prevMaxTokens = spec.maxTokens;
     }
   }
 });
 
-Deno.test("deriveSummarySpec: minParagraphChars <= maxParagraphChars and the target band sits at/under the hard ceiling, for every target x profile", () => {
+Deno.test("deriveSummarySpec: minParagraphChars <= softMaxParagraphChars and the target band sits at/under the hard ceiling, for every target x profile", () => {
   for (const profileKind of ["strict", "relaxed"] as const) {
     for (const target of TEST_TARGETS) {
       const spec = deriveSummarySpec(target, profileKind);
       assertEquals(
-        spec.minParagraphChars <= spec.maxParagraphChars,
+        spec.minParagraphChars <= spec.softMaxParagraphChars,
         true,
         `${profileKind}@${target}`,
       );
       assertEquals(
-        spec.paragraphTargetHigh <= spec.maxParagraphChars,
+        spec.paragraphTargetHigh <= spec.softMaxParagraphChars,
         true,
         `${profileKind}@${target}`,
       );
@@ -1496,11 +1536,11 @@ Deno.test("deriveSummarySpec: bullet ranges are fixed per profile, independent o
     assertEquals(strict.minBullets, 4);
     assertEquals(strict.maxBullets, 7);
     assertEquals(strict.minBulletChars, 40);
-    assertEquals(strict.maxBulletChars, 220);
+    assertEquals(strict.softMaxBulletChars, 220);
     assertEquals(relaxed.minBullets, 3);
     assertEquals(relaxed.maxBullets, 7);
     assertEquals(relaxed.minBulletChars, 30);
-    assertEquals(relaxed.maxBulletChars, 220);
+    assertEquals(relaxed.softMaxBulletChars, 220);
   }
 });
 
@@ -1519,14 +1559,16 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       400: {
         strict: {
           minParagraphChars: 250,
-          maxParagraphChars: 320,
+          softMaxParagraphChars: 320,
+          hardMaxParagraphChars: 480,
           minTldrChars: 150,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 2,
         },
         relaxed: {
           minParagraphChars: 120,
-          maxParagraphChars: 157,
+          softMaxParagraphChars: 157,
+          hardMaxParagraphChars: 236,
           minTldrChars: 113,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 3,
@@ -1535,14 +1577,16 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       800: {
         strict: {
           minParagraphChars: 250,
-          maxParagraphChars: 640,
+          softMaxParagraphChars: 640,
+          hardMaxParagraphChars: 960,
           minTldrChars: 150,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 2,
         },
         relaxed: {
           minParagraphChars: 120,
-          maxParagraphChars: 314,
+          softMaxParagraphChars: 314,
+          hardMaxParagraphChars: 471,
           minTldrChars: 113,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 3,
@@ -1551,14 +1595,16 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       1200: {
         strict: {
           minParagraphChars: 288,
-          maxParagraphChars: 768,
+          softMaxParagraphChars: 768,
+          hardMaxParagraphChars: 1152,
           minTldrChars: 180,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 3,
         },
         relaxed: {
           minParagraphChars: 126,
-          maxParagraphChars: 392,
+          softMaxParagraphChars: 392,
+          hardMaxParagraphChars: 588,
           minTldrChars: 135,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 4,
@@ -1567,14 +1613,16 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       2000: {
         strict: {
           minParagraphChars: 480,
-          maxParagraphChars: 1280,
+          softMaxParagraphChars: 1280,
+          hardMaxParagraphChars: 1920,
           minTldrChars: 300,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 3,
         },
         relaxed: {
           minParagraphChars: 210,
-          maxParagraphChars: 653,
+          softMaxParagraphChars: 653,
+          hardMaxParagraphChars: 980,
           minTldrChars: 225,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 4,
@@ -1583,14 +1631,16 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       4000: {
         strict: {
           minParagraphChars: 686,
-          maxParagraphChars: 1829,
+          softMaxParagraphChars: 1829,
+          hardMaxParagraphChars: 2744,
           minTldrChars: 350,
           minBodyParagraphs: 3,
           maxBodyParagraphs: 4,
         },
         relaxed: {
           minParagraphChars: 315,
-          maxParagraphChars: 980,
+          softMaxParagraphChars: 980,
+          hardMaxParagraphChars: 1470,
           minTldrChars: 263,
           minBodyParagraphs: 3,
           maxBodyParagraphs: 5,
@@ -1618,6 +1668,161 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
   }
 });
 
+// --- Task 19 Part A: asymmetric validation — moderate overshoot passes,
+// only undershoot and EXTREME overshoot (past hardMax) fail ---
+
+Deno.test("deriveSummarySpec: hardMax is always exactly 1.5x softMax, for both paragraphs and bullets, both profiles, every target", () => {
+  for (const target of TEST_TARGETS) {
+    for (const profileKind of ["strict", "relaxed"] as const) {
+      const spec = deriveSummarySpec(target, profileKind);
+      assertEquals(
+        spec.hardMaxParagraphChars,
+        Math.round(spec.softMaxParagraphChars * 1.5),
+        `${profileKind}@${target}.hardMaxParagraphChars`,
+      );
+      assertEquals(
+        spec.hardMaxBulletChars,
+        Math.round(spec.softMaxBulletChars * 1.5),
+        `${profileKind}@${target}.hardMaxBulletChars`,
+      );
+    }
+  }
+});
+
+// Boundary table: min-1, min, softMax, softMax+1, hardMax, hardMax+1 — for
+// both body paragraphs and bullets, both profiles, at the default target.
+// Only min-1 (undershoot) and hardMax+1 (extreme overshoot) are violations;
+// everything else, including softMax+1 through hardMax, passes.
+Deno.test("validateSummary: body-paragraph length boundary table (min-1/min/softMax/softMax+1/hardMax/hardMax+1), both profiles", () => {
+  for (const spec of [DEFAULT_STRICT_SPEC, DEFAULT_RELAXED_SPEC]) {
+    // A second paragraph exactly at this spec's own min — already verified
+    // as a passing boundary on its own, and an all-"x" string can never
+    // trip the tldr-duplication heuristic (single token, no real words).
+    const other = "x".repeat(spec.minParagraphChars);
+    const boundaries: [number, boolean][] = [
+      [spec.minParagraphChars - 1, false],
+      [spec.minParagraphChars, true],
+      [spec.softMaxParagraphChars, true],
+      [spec.softMaxParagraphChars + 1, true],
+      [spec.hardMaxParagraphChars, true],
+      [spec.hardMaxParagraphChars + 1, false],
+    ];
+    for (const [len, expectOk] of boundaries) {
+      const result = validateSummary(
+        makeValidSummary({ body_en: ["x".repeat(len), other] }),
+        spec,
+      );
+      assertEquals(
+        result.ok,
+        expectOk,
+        `${spec.profileKind}@len=${len}: ${
+          !result.ok ? JSON.stringify(result.violations) : "unexpectedly failed to pass"
+        }`,
+      );
+    }
+  }
+});
+
+Deno.test("validateSummary: bullet length boundary table (min-1/min/softMax/softMax+1/hardMax/hardMax+1), both profiles", () => {
+  for (const spec of [DEFAULT_STRICT_SPEC, DEFAULT_RELAXED_SPEC]) {
+    const filler = [
+      "Second concrete fact goes here now for the reader today.",
+      "Third concrete fact goes here now for the reader today.",
+      "Fourth concrete fact goes here now for the reader today.",
+    ];
+    const boundaries: [number, boolean][] = [
+      [spec.minBulletChars - 1, false],
+      [spec.minBulletChars, true],
+      [spec.softMaxBulletChars, true],
+      [spec.softMaxBulletChars + 1, true],
+      [spec.hardMaxBulletChars, true],
+      [spec.hardMaxBulletChars + 1, false],
+    ];
+    for (const [len, expectOk] of boundaries) {
+      const result = validateSummary(
+        makeValidSummary({ bullets_en: ["x".repeat(len), ...filler] }),
+        spec,
+      );
+      assertEquals(
+        result.ok,
+        expectOk,
+        `${spec.profileKind}@len=${len}: ${
+          !result.ok ? JSON.stringify(result.violations) : "unexpectedly failed to pass"
+        }`,
+      );
+    }
+  }
+});
+
+Deno.test("validateSummary: a soft body-paragraph overshoot logs 'validation_soft_overshoot' with field/got/softMax, and does not add a violation", () => {
+  const original = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    const len = DEFAULT_STRICT_SPEC.softMaxParagraphChars + 10;
+    const result = validateSummary(
+      makeValidSummary({ body_en: ["x".repeat(len), makeValidSummary().body_en[1]] }),
+    );
+    assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+    const parsed = logs.map((args) => JSON.parse(String(args[0])));
+    const softOvershootLog = parsed.find((l) => l.event === "validation_soft_overshoot");
+    assertEquals(softOvershootLog?.field, "body_en[0]");
+    assertEquals(softOvershootLog?.got, len);
+    assertEquals(softOvershootLog?.softMax, DEFAULT_STRICT_SPEC.softMaxParagraphChars);
+  } finally {
+    console.log = original;
+  }
+});
+
+Deno.test("validateSummary: a soft bullet overshoot logs 'validation_soft_overshoot', does not add a violation", () => {
+  const original = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    const len = DEFAULT_STRICT_SPEC.softMaxBulletChars + 9;
+    const result = validateSummary(
+      makeValidSummary({
+        bullets_en: [
+          "x".repeat(len),
+          "Second concrete fact goes here now for the reader.",
+          "Third concrete fact goes here now for the reader.",
+          "Fourth concrete fact goes here now for the reader.",
+        ],
+      }),
+    );
+    assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+    const parsed = logs.map((args) => JSON.parse(String(args[0])));
+    const softOvershootLog = parsed.find((l) => l.event === "validation_soft_overshoot");
+    assertEquals(softOvershootLog?.field, "bullets_en[0]");
+    assertEquals(softOvershootLog?.got, len);
+    assertEquals(softOvershootLog?.softMax, DEFAULT_STRICT_SPEC.softMaxBulletChars);
+  } finally {
+    console.log = original;
+  }
+});
+
+Deno.test("validateSummary: the exact live-recorded failures (body_en 854, bullets_en 229 at the default target) now PASS", () => {
+  // The live incident motivating Part A, named exactly: a 3rd ceiling chase
+  // where body_en hit 854 (old hard max 768) and bullets_en hit 229 (old
+  // hard max 220) both failed validation over moderate, harmless overshoot.
+  const result = validateSummary(
+    makeValidSummary({
+      body_en: ["x".repeat(854), makeValidSummary().body_en[1]],
+      bullets_en: [
+        "x".repeat(229),
+        "Second concrete fact goes here now for the reader.",
+        "Third concrete fact goes here now for the reader.",
+        "Fourth concrete fact goes here now for the reader.",
+      ],
+    }),
+  );
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
 Deno.test("deriveSummarySpec: STRICT widens its ceiling more than its floor; RELAXED widens its floor more than its ceiling (the asymmetry is intentional and opposite per profile)", () => {
   // Task 17: live Claude output overshot STRICT's old symmetric +-40%
   // ceiling (709-716 chars vs a 672 max at the default target) — Claude
@@ -1629,7 +1834,7 @@ Deno.test("deriveSummarySpec: STRICT widens its ceiling more than its floor; REL
     const strict = deriveSummarySpec(target, "strict");
     const relaxed = deriveSummarySpec(target, "relaxed");
     const strictLowWidening = 1 - strict.minParagraphChars / strict.paragraphTargetLow;
-    const strictHighWidening = strict.maxParagraphChars / strict.paragraphTargetHigh - 1;
+    const strictHighWidening = strict.softMaxParagraphChars / strict.paragraphTargetHigh - 1;
     // Only checked where the floor clamp doesn't dominate (see the 400-char
     // boundary test above) — at every other target STRICT's high-side
     // widening (+60%) is strictly greater than its low-side widening (40%).
@@ -1637,7 +1842,7 @@ Deno.test("deriveSummarySpec: STRICT widens its ceiling more than its floor; REL
       assertEquals(strictHighWidening > strictLowWidening, true, `strict@${target}`);
     }
     const relaxedLowWidening = 1 - relaxed.minParagraphChars / relaxed.paragraphTargetLow;
-    const relaxedHighWidening = relaxed.maxParagraphChars / relaxed.paragraphTargetHigh - 1;
+    const relaxedHighWidening = relaxed.softMaxParagraphChars / relaxed.paragraphTargetHigh - 1;
     if (relaxed.minParagraphChars <= relaxed.paragraphTargetLow) {
       assertEquals(relaxedLowWidening > relaxedHighWidening, true, `relaxed@${target}`);
     }
@@ -1654,7 +1859,11 @@ Deno.test("deriveSummarySpec: RELAXED's absolute paragraph ceiling can be LOWER 
   for (const target of TEST_TARGETS) {
     const strict = deriveSummarySpec(target, "strict");
     const relaxed = deriveSummarySpec(target, "relaxed");
-    assertEquals(relaxed.maxParagraphChars < strict.maxParagraphChars, true, `target=${target}`);
+    assertEquals(
+      relaxed.softMaxParagraphChars < strict.softMaxParagraphChars,
+      true,
+      `target=${target}`,
+    );
   }
 });
 
@@ -1666,8 +1875,8 @@ Deno.test("deriveSummarySpec: STRICT's ceiling at the default target (768) cover
   // it. (Earlier live observations of 796/857 chars predate the sizing block
   // and are not what this specific fix targets — see README.)
   const spec = deriveSummarySpec(DEFAULT_SUMMARY_BODY_TARGET_CHARS, "strict");
-  assertEquals(spec.maxParagraphChars, 768);
-  assertEquals(spec.maxParagraphChars > 716, true);
+  assertEquals(spec.softMaxParagraphChars, 768);
+  assertEquals(spec.softMaxParagraphChars > 716, true);
 });
 
 // --- parseSummaryBodyTargetChars: defensive [vars] parsing ---

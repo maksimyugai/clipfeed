@@ -1,20 +1,31 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import {
+  dedupStories,
   DEFAULT_AGENT_DAILY_PICKS,
   enforceRankingDiversity,
   fallbackPicks,
   parseAgentDailyPicks,
   rankCandidates,
+  storyTitleSimilarity,
 } from "./ranking.ts";
 import type { Candidate } from "./agent-types.ts";
+import { FakeD1 } from "./testing/fake_d1.ts";
+import { insertPendingArticle } from "./db.ts";
 
 function makeCandidate(overrides: Partial<Candidate>): Candidate {
+  // Title defaults to a single fused token derived from id (not a fixed
+  // literal, and deliberately NOT a normal sentence with shared filler
+  // words) so candidates built without an explicit title never share any
+  // normalized token with each other — dedupStories() would otherwise see
+  // any two default-titled candidates as the same story. Tests that
+  // specifically want two candidates to collide pass matching titles
+  // explicitly.
   return {
     id: "c",
     sourceId: "src",
     discoverySource: "example.com",
-    title: "Title",
+    title: `zzzzzzzzz${overrides.id ?? "c"}`,
     url: "https://example.com/x",
     snippet: "snippet",
     publishedAt: "2026-01-01T00:00:00.000Z",
@@ -24,7 +35,7 @@ function makeCandidate(overrides: Partial<Candidate>): Candidate {
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
-    DB: {} as D1Database,
+    DB: new FakeD1() as unknown as D1Database,
     CACHE: {} as KVNamespace,
     ASSETS: {} as Fetcher,
     AI: {
@@ -318,7 +329,7 @@ Deno.test("parseAgentDailyPicks: non-numeric, below-min, and above-max all fall 
 
 // --- rankCandidates: the rendered prompt states N and the hard rules ---
 
-Deno.test("rankCandidates: the rendered system prompt states the pick count and all three hard rules", async () => {
+Deno.test("rankCandidates: the rendered system prompt states the pick count and all four hard rules", async () => {
   const originalFetch = globalThis.fetch;
   let capturedSystem = "";
   globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
@@ -337,6 +348,12 @@ Deno.test("rankCandidates: the rendered system prompt states the pick count and 
     );
     assertEquals(
       capturedSystem.includes("prefer substantive reporting over link-posts and speculation"),
+      true,
+    );
+    assertEquals(
+      capturedSystem.includes(
+        "never pick two items covering the same story/event, even from different sources",
+      ),
       true,
     );
     assertEquals(capturedSystem.includes("JSON array of the 7 best item ids"), true);
@@ -447,4 +464,229 @@ Deno.test("enforceRankingDiversity: never exceeds pickCount even when backfill c
   ];
   const picks = enforceRankingDiversity(["a1", "a2", "a3"], pool, 2);
   assertEquals(picks, ["a1", "a2"]);
+});
+
+// --- Task 19 Part C: story-level deduplication ---
+// storyTitleSimilarity: identical / paraphrased (en, ru/en cross-language) /
+// unrelated title pairs — the exact live incident was two outlets covering
+// the same Kimi/Moonshot story under different URLs and different wording.
+
+Deno.test("storyTitleSimilarity: identical titles score 1.0", () => {
+  const title = "Moonshot AI releases Kimi K2 model with major reasoning gains";
+  assertEquals(storyTitleSimilarity(title, title), 1);
+});
+
+Deno.test("storyTitleSimilarity: an English paraphrase of the same story scores well above the 0.5 threshold", () => {
+  const a = "Moonshot AI releases new Kimi K2 model with major reasoning gains";
+  const b = "Kimi K2, the new Moonshot AI model, brings major reasoning gains";
+  assertEquals(storyTitleSimilarity(a, b) >= 0.5, true);
+});
+
+Deno.test("storyTitleSimilarity: a ru/en cross-language pair covering the same story meets the threshold", () => {
+  // The exact live-incident shape: an English outlet and a Russian-language
+  // one covering the identical Moonshot/Kimi K2 story.
+  const en = "Moonshot AI launches Kimi K2 model";
+  const ru = "Moonshot AI выпустила модель Kimi K2";
+  assertEquals(storyTitleSimilarity(en, ru) >= 0.5, true);
+});
+
+Deno.test("storyTitleSimilarity: unrelated titles score 0", () => {
+  const a = "NVIDIA announces new RTX 5090 graphics card";
+  const b = "Linux kernel 6.9 released with new scheduler";
+  assertEquals(storyTitleSimilarity(a, b), 0);
+});
+
+Deno.test("storyTitleSimilarity: unrelated titles with no shared vocabulary at all score 0, not just low", () => {
+  const a = "Company raises prices for cloud storage subscribers";
+  const b = "Astronomers discover new exoplanet orbiting distant star";
+  assertEquals(storyTitleSimilarity(a, b), 0);
+});
+
+Deno.test("storyTitleSimilarity: empty or all-stopword titles never divide by zero", () => {
+  assertEquals(storyTitleSimilarity("", "anything"), 0);
+  assertEquals(storyTitleSimilarity("a an the of to", "in on for with"), 0);
+});
+
+// --- dedupStories: post-pick enforcement (never trust the model to have
+// caught a same-story duplicate itself) ---
+
+Deno.test("dedupStories: no similar titles -> picks pass through unchanged", () => {
+  const pool = [
+    makeCandidate({ id: "a", title: "NVIDIA announces new RTX 5090 graphics card" }),
+    makeCandidate({ id: "b", title: "Linux kernel 6.9 released with new scheduler" }),
+  ];
+  assertEquals(dedupStories(["a", "b"], pool, 10), ["a", "b"]);
+});
+
+Deno.test("dedupStories: a same-story duplicate (lower-ranked) is dropped and backfilled from the next pool candidate", () => {
+  const pool = [
+    makeCandidate({
+      id: "a",
+      sourceId: "outlet-a",
+      title: "Moonshot AI launches Kimi K2 model",
+    }),
+    makeCandidate({
+      id: "b",
+      sourceId: "outlet-b",
+      title: "Moonshot AI выпустила модель Kimi K2", // same story, different outlet
+    }),
+    makeCandidate({
+      id: "c",
+      sourceId: "outlet-c",
+      title: "Linux kernel 6.9 released with new scheduler", // unrelated
+    }),
+  ];
+  // Ranked order a, b, c — b is the lower-ranked duplicate of a, dropped and
+  // backfilled by c (the next candidate covering a different story).
+  const picks = dedupStories(["a", "b", "c"], pool, 3);
+  assertEquals(picks, ["a", "c"]);
+});
+
+Deno.test("dedupStories: backfill still respects the per-source cap (MAX_PICKS_PER_SOURCE)", () => {
+  const pool = [
+    makeCandidate({
+      id: "a1",
+      sourceId: "src-a",
+      title: "Moonshot AI launches Kimi K2 model",
+    }),
+    makeCandidate({
+      id: "a2",
+      sourceId: "src-a",
+      title: "Something else entirely from source a about telescopes",
+    }),
+    makeCandidate({
+      id: "b1",
+      sourceId: "src-b",
+      title: "Moonshot AI выпустила модель Kimi K2", // duplicate of a1's story
+    }),
+    // Two more src-a candidates that would push src-a over the cap if used
+    // to backfill b1's dropped slot.
+    makeCandidate({
+      id: "a3",
+      sourceId: "src-a",
+      title: "A third, unrelated src-a story about bakeries",
+    }),
+    makeCandidate({
+      id: "c1",
+      sourceId: "src-c",
+      title: "An unrelated story about marathon training from source c",
+    }),
+  ];
+  // The already-diversity-enforced pick list is a1, a2 (src-a, at its cap
+  // of 2 already) and b1 (src-b) — a3 is pool-only, never one of the actual
+  // picks being deduped. b1 gets dropped for being a story duplicate of a1,
+  // and the backfill must skip a3 (same source as a1/a2, already at cap)
+  // and land on c1 instead.
+  const picks = dedupStories(["a1", "a2", "b1"], pool, 3);
+  assertEquals(picks, ["a1", "a2", "c1"]);
+});
+
+Deno.test("dedupStories: exhausted pool — fewer picks than pickCount is fine, never violates the cap or re-includes a duplicate", () => {
+  const pool = [
+    makeCandidate({ id: "a", title: "Moonshot AI launches Kimi K2 model" }),
+    makeCandidate({ id: "b", title: "Moonshot AI выпустила модель Kimi K2" }),
+  ];
+  const picks = dedupStories(["a", "b"], pool, 10);
+  assertEquals(picks, ["a"]);
+});
+
+Deno.test("dedupStories: against-DB window — a pick matching a title saved in the last 48h is dropped even with no in-batch duplicate", () => {
+  const pool = [
+    makeCandidate({ id: "a", title: "Moonshot AI launches Kimi K2 model" }),
+    makeCandidate({ id: "b", title: "Linux kernel 6.9 released with new scheduler" }),
+  ];
+  // "a" covers the same story as something the agent already saved
+  // yesterday (a different outlet's title, per the recentTitles list) —
+  // dropped even though nothing else in THIS batch duplicates it.
+  const recentTitles = ["Moonshot AI выпустила модель Kimi K2"];
+  const picks = dedupStories(["a", "b"], pool, 10, recentTitles);
+  assertEquals(picks, ["b"]);
+});
+
+Deno.test("dedupStories: logs 'rank_story_dedup' with kept/dropped counts only when a drop actually happens", () => {
+  const original = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  try {
+    const pool = [
+      makeCandidate({ id: "a", title: "Moonshot AI launches Kimi K2 model" }),
+      makeCandidate({ id: "b", title: "Moonshot AI выпустила модель Kimi K2" }),
+      makeCandidate({ id: "c", title: "Linux kernel 6.9 released with new scheduler" }),
+    ];
+    dedupStories(["a", "b", "c"], pool, 3);
+    const parsed = logs.map((args) => JSON.parse(String(args[0])));
+    const dedupLog = parsed.find((l) => l.event === "rank_story_dedup");
+    assertEquals(dedupLog?.kept, 2);
+    assertEquals(dedupLog?.dropped, 1);
+
+    logs.length = 0;
+    const noDupPool = [
+      makeCandidate({ id: "x", title: "NVIDIA announces new RTX 5090 graphics card" }),
+      makeCandidate({ id: "y", title: "Linux kernel 6.9 released with new scheduler" }),
+    ];
+    dedupStories(["x", "y"], noDupPool, 2);
+    assertEquals(logs.some((args) => String(args[0]).includes("rank_story_dedup")), false);
+  } finally {
+    console.log = original;
+  }
+});
+
+// --- rankCandidates: end-to-end wiring of the against-DB window ---
+
+Deno.test("rankCandidates: queries the DB for titles saved in the last 48h and drops a same-story pick", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch =
+    (() => Promise.resolve(anthropicTextResponse(JSON.stringify(["a", "b"])))) as typeof fetch;
+  try {
+    const db = new FakeD1();
+    const now = new Date("2026-01-03T12:00:00.000Z");
+    await insertPendingArticle(db as unknown as D1Database, {
+      id: "recent-1",
+      url: "https://other-outlet.example.com/kimi-k2",
+      title: "Moonshot AI выпустила модель Kimi K2",
+      source: "other-outlet.example.com",
+      tags: [],
+      added_via: "agent",
+      added_at: "2026-01-02T18:00:00.000Z", // 18h before `now` — within the 48h window
+    });
+    const env = makeEnv({ DB: db as unknown as D1Database });
+    const candidates = [
+      makeCandidate({ id: "a", title: "Moonshot AI launches Kimi K2 model" }),
+      makeCandidate({ id: "b", title: "Linux kernel 6.9 released with new scheduler" }),
+    ];
+    const picks = await rankCandidates(env, "interests", candidates, now);
+    assertEquals(picks, ["b"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("rankCandidates: a saved title OLDER than the 48h window does not suppress a matching pick", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch =
+    (() => Promise.resolve(anthropicTextResponse(JSON.stringify(["a", "b"])))) as typeof fetch;
+  try {
+    const db = new FakeD1();
+    const now = new Date("2026-01-03T12:00:00.000Z");
+    await insertPendingArticle(db as unknown as D1Database, {
+      id: "old-1",
+      url: "https://other-outlet.example.com/kimi-k2",
+      title: "Moonshot AI выпустила модель Kimi K2",
+      source: "other-outlet.example.com",
+      tags: [],
+      added_via: "agent",
+      added_at: "2025-12-30T12:00:00.000Z", // more than 48h before `now`
+    });
+    const env = makeEnv({ DB: db as unknown as D1Database });
+    const candidates = [
+      makeCandidate({ id: "a", title: "Moonshot AI launches Kimi K2 model" }),
+      makeCandidate({ id: "b", title: "Linux kernel 6.9 released with new scheduler" }),
+    ];
+    const picks = await rankCandidates(env, "interests", candidates, now);
+    assertEquals(picks, ["a", "b"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

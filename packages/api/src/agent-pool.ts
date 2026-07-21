@@ -26,6 +26,17 @@ const THIN_HOST_DENYLIST = new Set([
   "t.co",
 ]);
 
+// Some sources mark a subscriber-only/paywalled story directly in the
+// title — the cheapest possible signal, no fetch needed to know the article
+// text won't be reachable. LWN prefixes subscriber-only article titles with
+// "[$]" in its RSS feed (see README "Sources"); extend this list if another
+// source shows a similar convention in practice.
+const PAYWALL_TITLE_MARKERS = ["[$]"];
+
+function isPaywalledTitle(title: string): boolean {
+  return PAYWALL_TITLE_MARKERS.some((marker) => title.startsWith(marker));
+}
+
 function hostname(url: string): string | null {
   try {
     return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
@@ -82,8 +93,16 @@ export async function buildCandidatePool(
 ): Promise<Candidate[]> {
   const fresh = candidates.filter((c) => isWithinWindow(c, now));
 
-  const thinChecks = await Promise.all(fresh.map((c) => isThinHost(cache, c.url)));
-  const substantial = fresh.filter((c, i) => {
+  const unpaywalled = fresh.filter((c) => {
+    if (isPaywalledTitle(c.title)) {
+      console.log(JSON.stringify({ event: "pool_dropped_paywalled", url: c.url }));
+      return false;
+    }
+    return true;
+  });
+
+  const thinChecks = await Promise.all(unpaywalled.map((c) => isThinHost(cache, c.url)));
+  const substantial = unpaywalled.filter((c, i) => {
     if (thinChecks[i]) {
       console.log(JSON.stringify({ event: "candidate_dropped_thin_host", url: c.url }));
       return false;

@@ -15,6 +15,7 @@ const dict = {
   permanentReasonNotFound: "страница не найдена",
   permanentReasonRemoved: "страница удалена источником",
   permanentReasonSsrfBlocked: "ссылка заблокирована политикой безопасности",
+  permanentReasonPaywalled: "страница закрыта платным доступом",
   dailyLimitFailureLabel: "Дневной лимит выжимок исчерпан — обработается автоматически завтра",
 };
 

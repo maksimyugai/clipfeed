@@ -84,11 +84,24 @@ id = "8e4fddfbda204322a609830cc771124f"
 binding = "JOBS"
 queue = "clipfeed-jobs"
 
+# max_concurrency = 3 (added after a burst investigation — see README
+# "Queue-based pipeline execution"/CLAUDE.md task history): the daily agent
+# job enqueues up to AGENT_DAILY_PICKS messages in a tight loop, all landing
+# in the queue within milliseconds of each other. Left unset, Cloudflare
+# auto-scales how many consumer invocations run concurrently to drain a
+# sudden backlog, and a live burst of 10 showed at least two messages only
+# succeeding on their second delivery attempt — consistent with (though not
+# conclusively proven to be caused by) invocation contention under a sudden
+# spike of concurrent consumer invocations. Capping concurrency is a cheap,
+# reversible, latency-insensitive mitigation for a background job either
+# way; the existing terminal-state guarantee + DLQ consumer + healing sweep
+# already fully bound the downside even if this isn't the actual cause.
 [[queues.consumers]]
 queue = "clipfeed-jobs"
 max_batch_size = 1
 max_retries = 2
 max_batch_timeout = 5
+max_concurrency = 3
 dead_letter_queue = "clipfeed-dlq"
 
 [[queues.consumers]]

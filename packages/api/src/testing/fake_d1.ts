@@ -249,6 +249,13 @@ export class FakeD1 implements D1Database {
       return this.rows.filter((r) => urlSet.has(r.url as string)).map((r) => ({ url: r.url }));
     }
 
+    if (sql === "SELECT title FROM articles WHERE added_at >= ?") {
+      const since = values[0] as string;
+      return this.rows
+        .filter((r) => (r.added_at as string) >= since)
+        .map((r) => ({ title: r.title }));
+    }
+
     if (sql.startsWith("SELECT id, url, canonical_url")) {
       return this.queryList(sql, values);
     }
