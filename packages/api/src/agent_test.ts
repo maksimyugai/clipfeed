@@ -134,6 +134,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    AGENT_DAILY_PICKS: "10",
     SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     ANTHROPIC_API_KEY: "sk-direct",
@@ -141,7 +142,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
   };
 }
 
-Deno.test("runAgentJob: end-to-end — 5 distinct-source picks inserted (added_via 'agent', tags seeded) and run through the pipeline", async () => {
+Deno.test("runAgentJob: end-to-end — 10 picks across 5 distinct sources inserted (added_via 'agent', tags seeded) and run through the pipeline", async () => {
   const restore = stubFetch();
   try {
     const env = makeEnv();
@@ -149,7 +150,10 @@ Deno.test("runAgentJob: end-to-end — 5 distinct-source picks inserted (added_v
 
     const db = env.DB as unknown as FakeD1;
     const agentRows = db.rows.filter((r) => r.added_via === "agent");
-    assertEquals(agentRows.length, 5);
+    // FIVE_RSS_SOURCES x 2 items each = 10 candidates, exactly AGENT_DAILY_PICKS's
+    // default — the whole pool gets picked (fallback: one per source, then
+    // backfill covers the rest).
+    assertEquals(agentRows.length, 10);
 
     const sourceIds = new Set(agentRows.map((r) => (r.tags as string).replace(/[[\]"]/g, "")));
     assertEquals(sourceIds.size, 5);
@@ -175,7 +179,7 @@ Deno.test("runAgentJob: no sources yielding candidates -> zero picks, no crash",
   }
 });
 
-Deno.test("runAgentJob: daily budget exhausted mid-run -> remaining picks land 'failed: daily-limit', still all 5 inserted", async () => {
+Deno.test("runAgentJob: daily budget exhausted mid-run -> remaining picks land 'failed: daily-limit', still all 10 inserted", async () => {
   const restore = stubFetch();
   try {
     const env = makeEnv({ DAILY_SUMMARY_LIMIT: 2 });
@@ -183,12 +187,12 @@ Deno.test("runAgentJob: daily budget exhausted mid-run -> remaining picks land '
 
     const db = env.DB as unknown as FakeD1;
     const agentRows = db.rows.filter((r) => r.added_via === "agent");
-    assertEquals(agentRows.length, 5);
+    assertEquals(agentRows.length, 10);
 
     const ready = agentRows.filter((r) => r.status === "ready");
     const failed = agentRows.filter((r) => r.status === "failed" && r.error === "daily-limit");
     assertEquals(ready.length, 2);
-    assertEquals(failed.length, 3);
+    assertEquals(failed.length, 8);
   } finally {
     restore();
   }
@@ -203,11 +207,11 @@ Deno.test("runAgentJob: with JOBS configured, enqueues one 'process' message per
 
     const db = env.DB as unknown as FakeD1;
     const agentRows = db.rows.filter((r) => r.added_via === "agent");
-    assertEquals(agentRows.length, 5);
+    assertEquals(agentRows.length, 10);
     // Still 'pending' — enqueued, not run inline.
     assertEquals(agentRows.every((r) => r.status === "pending"), true);
 
-    assertEquals(jobs.sent.length, 5);
+    assertEquals(jobs.sent.length, 10);
     assertEquals(jobs.sent.every((m) => m.kind === "process"), true);
     const enqueuedIds = new Set(jobs.sent.map((m) => m.articleId));
     assertEquals(enqueuedIds, new Set(agentRows.map((r) => r.id as string)));
