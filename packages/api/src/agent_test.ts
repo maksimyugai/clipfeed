@@ -296,7 +296,11 @@ Deno.test("runAgentJob: pool-stage title duplicates are counted and logged in th
     `</channel></rss>`;
 
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+      ? input.toString()
+      : input.url;
     const hostname = new URL(url).hostname;
     if (hostname === "feeds.example.com") {
       return Promise.resolve(new Response(duplicateTitleFeed, { status: 200 }));
