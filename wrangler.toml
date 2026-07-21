@@ -2,6 +2,17 @@ name = "clipfeed"
 main = "dist/api/index.js"
 compatibility_date = "2026-07-01"
 
+# Disables the default *.workers.dev route once a custom domain is attached
+# (dashboard-side — see README "Deploy your own (fork)"; this repo never
+# hardcodes a fork's actual domain). Not a security boundary by itself — the
+# Access-JWT middleware in access-middleware.ts already fails closed on every
+# /api/admin/* route regardless of which hostname the request arrives on —
+# but it does remove a second, unnecessary public entry point to the same
+# Worker once you have a real domain. Safe to flip back to `true` (or delete
+# the line) for a fork that hasn't set up a custom domain yet.
+workers_dev = false
+preview_urls = true
+
 [vars]
 SUMMARY_MODEL = "claude-haiku-4-5-20251001"
 DAILY_SUMMARY_LIMIT = 80
@@ -20,9 +31,9 @@ AGENT_DAILY_PICKS = "10"
 # characters (all paragraphs, per language). Prompt and validation both
 # derive their numbers from this one setting (see summarize.ts's
 # deriveSummarySpec) — string, not a number, so a bad override (missing,
-# non-numeric, outside [400, 4000]) degrades to the 1200 default instead of
+# non-numeric, outside [400, 4000]) degrades to the 800 default instead of
 # breaking. See README "Summary length".
-SUMMARY_BODY_TARGET_CHARS = "1200"
+SUMMARY_BODY_TARGET_CHARS = "800"
 
 [ai]
 binding = "AI"

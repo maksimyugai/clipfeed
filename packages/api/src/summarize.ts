@@ -132,7 +132,7 @@ export interface SummarySpec {
   maxTokens: number;
 }
 
-export const DEFAULT_SUMMARY_BODY_TARGET_CHARS = 1200;
+export const DEFAULT_SUMMARY_BODY_TARGET_CHARS = 800;
 const MIN_SUMMARY_BODY_TARGET_CHARS = 400;
 const MAX_SUMMARY_BODY_TARGET_CHARS = 4000;
 
