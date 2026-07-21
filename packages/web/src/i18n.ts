@@ -36,6 +36,7 @@ export interface Dictionary {
   permanentReasonNotFound: string;
   permanentReasonRemoved: string;
   permanentReasonSsrfBlocked: string;
+  dailyLimitFailureLabel: string;
   readMore: string;
   tldrLabel: string;
   summaryByPrefix: string;
@@ -97,6 +98,7 @@ const ru: Dictionary = {
   permanentReasonNotFound: "страница не найдена",
   permanentReasonRemoved: "страница удалена источником",
   permanentReasonSsrfBlocked: "ссылка заблокирована политикой безопасности",
+  dailyLimitFailureLabel: "Дневной лимит выжимок исчерпан — обработается автоматически завтра",
   readMore: "читать далее",
   tldrLabel: "TL;DR",
   summaryByPrefix: "Пересказ Claude по статье",
@@ -158,6 +160,7 @@ const en: Dictionary = {
   permanentReasonNotFound: "the page was not found",
   permanentReasonRemoved: "the page was removed by the source",
   permanentReasonSsrfBlocked: "the link was blocked by security policy",
+  dailyLimitFailureLabel: "Daily summary limit reached — this will process automatically tomorrow",
   readMore: "read more",
   tldrLabel: "TL;DR",
   summaryByPrefix: "Summary by Claude from",

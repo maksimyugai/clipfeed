@@ -1,5 +1,11 @@
 import { assertEquals } from "@std/assert";
-import { articleErrorText, isPermanentFailure } from "./failureDisplay.ts";
+import {
+  articleErrorText,
+  failClassIsPermanent,
+  isDailyLimitFailure,
+  isPermanentFailure,
+  visitorFailureText,
+} from "./failureDisplay.ts";
 
 const dict = {
   errorPrefix: "Ошибка",
@@ -9,6 +15,7 @@ const dict = {
   permanentReasonNotFound: "страница не найдена",
   permanentReasonRemoved: "страница удалена источником",
   permanentReasonSsrfBlocked: "ссылка заблокирована политикой безопасности",
+  dailyLimitFailureLabel: "Дневной лимит выжимок исчерпан — обработается автоматически завтра",
 };
 
 Deno.test("articleErrorText: a non-permanent (transient/unknown) error is prefixed and shown verbatim", () => {
@@ -91,4 +98,53 @@ Deno.test("isPermanentFailure: false (not true) for a null/empty error — unkno
   assertEquals(isPermanentFailure(null), false);
   assertEquals(isPermanentFailure(""), false);
   assertEquals(isPermanentFailure("   "), false);
+});
+
+// --- daily-limit: dedicated copy, no Retry (owner-mode only — see ArticleCard.tsx) ---
+
+Deno.test("isDailyLimitFailure: true for the exact stored reason string", () => {
+  assertEquals(isDailyLimitFailure("daily-limit"), true);
+});
+
+Deno.test("isDailyLimitFailure: case-insensitive, substring match (matches classify-failure.ts's own rule)", () => {
+  assertEquals(isDailyLimitFailure("DAILY-LIMIT"), true);
+  assertEquals(isDailyLimitFailure("  daily-limit  "), true);
+});
+
+Deno.test("isDailyLimitFailure: false for other transient/unknown/permanent errors", () => {
+  assertEquals(isDailyLimitFailure("internal: summarize: workers ai error: timed out"), false);
+  assertEquals(isDailyLimitFailure("extraction: insufficient text (3 chars)"), false);
+  assertEquals(isDailyLimitFailure(null), false);
+  assertEquals(isDailyLimitFailure(""), false);
+});
+
+Deno.test("articleErrorText: a daily-limit failure shows the dedicated message, not the raw error prefix", () => {
+  assertEquals(articleErrorText("daily-limit", dict), dict.dailyLimitFailureLabel);
+});
+
+// --- visitorFailureText: fail_class only, no raw error text available ---
+
+Deno.test("visitorFailureText: permanent fail_class shows the generic permanent-failure prefix (no specific reason — visitor lacks it)", () => {
+  assertEquals(visitorFailureText("permanent", dict), dict.permanentFailurePrefix);
+});
+
+Deno.test("visitorFailureText: transient/unknown/null fail_class all get the generic couldNotProcessLabel", () => {
+  assertEquals(visitorFailureText("transient", dict), dict.couldNotProcessLabel);
+  assertEquals(visitorFailureText("unknown", dict), dict.couldNotProcessLabel);
+  assertEquals(visitorFailureText(null, dict), dict.couldNotProcessLabel);
+});
+
+Deno.test("visitorFailureText: never leaks a specific permanent reason (visitor never had it to begin with)", () => {
+  const text = visitorFailureText("permanent", dict);
+  assertEquals(text.includes(dict.permanentReasonInsufficientText), false);
+  assertEquals(text.includes(dict.permanentReasonNotFound), false);
+});
+
+// --- failClassIsPermanent: visitor-mode Retry-button gate ---
+
+Deno.test("failClassIsPermanent: true only for 'permanent'", () => {
+  assertEquals(failClassIsPermanent("permanent"), true);
+  assertEquals(failClassIsPermanent("transient"), false);
+  assertEquals(failClassIsPermanent("unknown"), false);
+  assertEquals(failClassIsPermanent(null), false);
 });

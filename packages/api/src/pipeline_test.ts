@@ -474,6 +474,40 @@ Deno.test("runArticlePipeline: daily-limit early return is NOT wrapped with 'int
   assertEquals(row?.error, "daily-limit");
 });
 
+// A live incident: three consecutive retries of one article each completed
+// in ~1.0-1.3s with stages fetch->extract->done and NO summarize stage at
+// all — the daily-limit early return, indistinguishable from any other
+// fast-failing run without this log line. Same regression check for
+// runResummarization, whose first stage IS "budget" (no fetch/extract
+// before it).
+Deno.test("runArticlePipeline: an exhausted daily budget logs a pipeline_stage line naming the exact used/limit numbers", async () => {
+  const db = new ControllableD1();
+  const env = makePipelineEnv({ DB: db as unknown as D1Database, DAILY_SUMMARY_LIMIT: 3 });
+  await env.CACHE.put(`llm_calls:${new Date().toISOString().slice(0, 10)}`, "3");
+
+  const originalLog = console.log;
+  const lines: string[] = [];
+  console.log = (msg: string) => {
+    lines.push(msg);
+  };
+  try {
+    await runArticlePipeline(env, {
+      id: "p-limit-logged",
+      url: "https://example.com/article",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const budgetLine = lines.map((l) => JSON.parse(l)).find((l) => l.stage === "budget");
+  assertEquals(budgetLine?.event, "pipeline_stage");
+  assertEquals(budgetLine?.outcome, "exhausted");
+  assertEquals(budgetLine?.used, 3);
+  assertEquals(budgetLine?.limit, 3);
+});
+
 // --- runArticlePipeline: insufficient-text guard (thin/link-post pages) ---
 
 Deno.test("runArticlePipeline: extraction under 300 chars -> 'failed' with a clear reason, never calls the LLM", async () => {

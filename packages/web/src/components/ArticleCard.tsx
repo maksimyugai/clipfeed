@@ -6,7 +6,13 @@ import { getArticle } from "../api.ts";
 import { selectSummaryFields } from "../lib/summaryFields.ts";
 import { formatDate } from "../lib/format.ts";
 import { nextPollDelayMs, pollReducer, type PollState } from "../lib/pollSchedule.ts";
-import { articleErrorText, isPermanentFailure } from "../lib/failureDisplay.ts";
+import {
+  articleErrorText,
+  failClassIsPermanent,
+  isDailyLimitFailure,
+  isPermanentFailure,
+  visitorFailureText,
+} from "../lib/failureDisplay.ts";
 
 const JUST_READY_HIGHLIGHT_MS = 2000;
 
@@ -238,20 +244,34 @@ export function ArticleCard(props: ArticleCardProps) {
   }
 
   if (article.status === "failed") {
+    // Owner mode has the real `error` string (from GET /api/admin/articles)
+    // and can classify it precisely — including the daily-limit special
+    // case (see isDailyLimitFailure: the budget resets at UTC midnight and
+    // healing auto-retries it, so Retry here is pointless). Visitor mode
+    // only ever has `fail_class` (the public list redacts `error` — see
+    // failureDisplay.ts's doc comment and the privacy-incident regression
+    // test in articles_test.ts), so it gets a less specific but still
+    // localized message via visitorFailureText.
+    //
     // A PERMANENT failure (thin/mirror page, 404, removed, ssrf-blocked)
     // won't succeed on retry no matter how many times it's tried — hiding
     // Retry and making Delete the obvious action is honest, not just a
-    // style choice; see failureDisplay.ts, which classifies from the same
-    // stored error text the pipeline itself used (see classify-failure.ts).
-    const permanent = isPermanentFailure(article.error);
+    // style choice.
+    const dailyLimit = isOwner && isDailyLimitFailure(article.error);
+    const permanent = isOwner
+      ? isPermanentFailure(article.error)
+      : failClassIsPermanent(article.fail_class);
+    const message = isOwner
+      ? articleErrorText(article.error, dict)
+      : visitorFailureText(article.fail_class, dict);
     return (
       <article class="card card--failed">
         <div class="card-date">{formatDate(article.added_at, lang)}</div>
         <h3 class="card-title">{article.title}</h3>
-        <p class="error-text">{articleErrorText(article.error, dict)}</p>
+        <p class="error-text">{message}</p>
         {isOwner && (
           <div class="card-failed-actions">
-            {!permanent && (
+            {!permanent && !dailyLimit && (
               <button
                 type="button"
                 class="retry-button"
