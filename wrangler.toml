@@ -31,9 +31,9 @@ AGENT_DAILY_PICKS = "10"
 # characters (all paragraphs, per language). Prompt and validation both
 # derive their numbers from this one setting (see summarize.ts's
 # deriveSummarySpec) — string, not a number, so a bad override (missing,
-# non-numeric, outside [400, 4000]) degrades to the 1200 default instead of
+# non-numeric, outside [400, 4000]) degrades to the 800 default instead of
 # breaking. See README "Summary length".
-SUMMARY_BODY_TARGET_CHARS = "1200"
+SUMMARY_BODY_TARGET_CHARS = "800"
 
 [ai]
 binding = "AI"

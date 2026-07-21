@@ -87,7 +87,7 @@ no separate "prompt number" and "validator number" that can drift out of sync wi
 
 ### Summary length (`SUMMARY_BODY_TARGET_CHARS`)
 
-`SUMMARY_BODY_TARGET_CHARS` ([vars] in `wrangler.toml`, default `1200`, valid range `400`–`4000`) is
+`SUMMARY_BODY_TARGET_CHARS` ([vars] in `wrangler.toml`, default `800`, valid range `400`–`4000`) is
 how much summary you want to read — the target _total_ body length in characters, across all
 paragraphs, per language. Everything else derives from it:
 
@@ -118,7 +118,7 @@ paragraphs, per language. Everything else derives from it:
 - **`max_tokens`** scales with the raw target too (clamped to `[2500, 6000]`), so a larger requested
   digest doesn't get cut off mid-paragraph.
 
-A bad override (missing, non-numeric, or outside `[400, 4000]`) falls back to the `1200` default and
+A bad override (missing, non-numeric, or outside `[400, 4000]`) falls back to the `800` default and
 logs a warning naming the rejected value — never a broken or nonsensical prompt.
 
 ### Asymmetric validation: undershoot fails, moderate overshoot doesn't
@@ -156,7 +156,7 @@ sits _above_ the prompt's own "aim for 150–250" band — the enforced minimum 
 briefly disagree at that one boundary. Harmless (the model still has a valid 250–280 range to land
 in) but worth knowing if you dial the setting all the way down.
 
-**The few-shot example in the prompt is calibrated for the _default_ target (1200).** With a heavily
+**The few-shot example in the prompt is calibrated for the _default_ target (800).** With a heavily
 non-default `SUMMARY_BODY_TARGET_CHARS`, it still illustrates the right _structure_ (what a
 paragraph vs. a bullet vs. a tldr should look like), but its exact character counts won't match your
 target — the sizing block above it (the actual `{min}`–`{max}`, "aim for X–Y", "~N characters total"
