@@ -450,6 +450,54 @@ ul {
 
 /* --- Feed --- */
 
+.feed-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.feed-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.feed-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  padding: 4px 0;
+  cursor: pointer;
+  color: var(--txt);
+  font-family: inherit;
+}
+
+.feed-section-chevron {
+  color: var(--mut);
+  font-size: 12px;
+  width: 10px;
+}
+
+.feed-section-label {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.feed-section-count {
+  color: var(--mut);
+  font-size: 13px;
+}
+
+.section-loading-row {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0;
+}
+
 .feed {
   display: flex;
   flex-direction: column;

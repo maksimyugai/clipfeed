@@ -17,6 +17,13 @@ import {
 import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { EMPTY_FILTER_STATE, filterReducer } from "./lib/filterState.ts";
+import { type DateSection, groupArticlesBySection } from "./lib/dateGrouping.ts";
+import {
+  readStoredSectionState,
+  type SectionOpenState,
+  writeStoredSectionState,
+} from "./lib/sectionState.ts";
+import { shouldFetchNextInitialPage, shouldFetchOnEarlierExpand } from "./lib/pagination.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
 import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
@@ -25,6 +32,12 @@ import { Toast } from "./components/Toast.tsx";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PAGE_LIMIT = 20;
+// Safety valve for the initial "keep fetching until Today+Yesterday are
+// covered" loop (see the effect below) — real daily volume is nowhere near
+// this many pages (DAILY_SUMMARY_LIMIT caps it well under 100/day), so this
+// only guards against a pathological/misconfigured dataset ever turning
+// into an unbounded fetch loop.
+const MAX_INITIAL_PAGES = 25;
 
 function computeTagFacets(articles: ArticleListItem[]) {
   const counts = new Map<string, number>();
@@ -88,6 +101,9 @@ export function App() {
     "loading",
   );
   const isOwner = canMutate(ownerModeState);
+  const [sectionOpen, setSectionOpen] = useState<SectionOpenState>(() =>
+    readStoredSectionState(localStorage)
+  );
 
   const setLang = (next: Lang) => {
     setLangState(next);
@@ -119,29 +135,41 @@ export function App() {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
-  // Any filter change is a fresh query: reset pagination and refetch page 1.
-  // Also re-runs once ownerModeState resolves from "loading" — the very
-  // first fetch (before /api/admin/me settles) always uses the visitor
-  // path, so an owner's feed needs this second pass to pick up the
-  // admin-list endpoint instead.
+  // Any filter change is a fresh query: reset pagination and refetch until
+  // Today+Yesterday are fully covered (see shouldFetchNextInitialPage) —
+  // "Earlier" stays lazy from there, loaded on section-expand/show-more
+  // instead (see handleToggleSection/handleShowMore below). Also re-runs
+  // once ownerModeState resolves from "loading" — the very first fetch
+  // (before /api/admin/me settles) always uses the visitor path, so an
+  // owner's feed needs this second pass to pick up the admin-list endpoint
+  // instead.
   useEffect(() => {
     let cancelled = false;
     setExpandedId(null);
-    fetchArticleList(isOwner, {
-      limit: PAGE_LIMIT,
-      tag: activeTag ?? undefined,
-      source: activeSource ?? undefined,
-      q: query || undefined,
-      archived: archivedView,
-    })
-      .then((res) => {
+
+    (async () => {
+      let cursor: string | undefined;
+      let accumulated: ArticleListItem[] = [];
+      for (let page = 0; page < MAX_INITIAL_PAGES; page++) {
+        const res = await fetchArticleList(isOwner, {
+          limit: PAGE_LIMIT,
+          cursor,
+          tag: activeTag ?? undefined,
+          source: activeSource ?? undefined,
+          q: query || undefined,
+          archived: archivedView,
+        });
         if (cancelled) return;
-        setArticles(res.items);
+        accumulated = accumulated.concat(res.items);
+        setArticles(accumulated);
         setNextCursor(res.next_cursor);
-      })
-      .catch((err) => {
-        if (!cancelled) showError(err);
-      });
+        if (!shouldFetchNextInitialPage(res.items, res.next_cursor)) break;
+        cursor = res.next_cursor ?? undefined;
+      }
+    })().catch((err) => {
+      if (!cancelled) showError(err);
+    });
+
     return () => {
       cancelled = true;
     };
@@ -165,6 +193,26 @@ export function App() {
       showError(err);
     } finally {
       setLoadingMore(false);
+    }
+  };
+
+  const handleToggleSection = (section: DateSection) => {
+    setSectionOpen((current) => {
+      const next = { ...current, [section]: !current[section] };
+      writeStoredSectionState(localStorage, next);
+      return next;
+    });
+    // Opening "Earlier" for the first time: if it has no items loaded yet
+    // (the initial-load loop stopped before ever seeing one — see
+    // shouldFetchNextInitialPage) but the server has more to give, this is
+    // the trigger that fetches its first page. If a boundary page already
+    // handed us some "earlier" items, there's nothing to fetch yet — the
+    // user just sees those until they hit "show more".
+    if (
+      section === "earlier" && !sectionOpen.earlier &&
+      shouldFetchOnEarlierExpand(groupArticlesBySection(articles).earlier.length, nextCursor)
+    ) {
+      handleShowMore();
     }
   };
 
@@ -333,6 +381,9 @@ export function App() {
             archivedView={archivedView}
             pickOfDayId={pickOfDayId}
             isOwner={isOwner}
+            sectionOpen={sectionOpen}
+            onToggleSection={handleToggleSection}
+            isSearching={query.trim() !== ""}
           />
         </main>
 
