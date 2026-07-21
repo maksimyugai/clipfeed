@@ -6,6 +6,7 @@ import type {
   CreateArticleResponse,
   PatchArticleRequest,
   PublicArticle,
+  PublicArticleListResponse,
 } from "@clipfeed/shared/types";
 
 export class ApiError extends Error {
@@ -24,8 +25,10 @@ export interface ArticlesQueryParams {
 }
 
 // Pure — no fetch — so filter/cursor combinations are unit-testable without
-// a network layer.
-export function buildArticlesUrl(params: ArticlesQueryParams): string {
+// a network layer. `base` lets the owner-mode list reuse the exact same
+// filter-building logic against /api/admin/articles instead of the public
+// /api/articles (see listAdminArticles below).
+export function buildArticlesUrl(params: ArticlesQueryParams, base = "/api/articles"): string {
   const search = new URLSearchParams();
   if (params.limit !== undefined) search.set("limit", String(params.limit));
   if (params.cursor) search.set("cursor", params.cursor);
@@ -35,7 +38,7 @@ export function buildArticlesUrl(params: ArticlesQueryParams): string {
   if (params.archived !== undefined) search.set("archived", params.archived ? "1" : "0");
 
   const qs = search.toString();
-  return qs ? `/api/articles?${qs}` : "/api/articles";
+  return qs ? `${base}?${qs}` : base;
 }
 
 async function readErrorMessage(res: Response): Promise<string> {
@@ -62,8 +65,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return await res.json() as T;
 }
 
-export function listArticles(params: ArticlesQueryParams = {}): Promise<ArticleListResponse> {
-  return request<ArticleListResponse>(buildArticlesUrl(params));
+// Public — every row is redacted the same way as getArticle() below (no
+// raw `error` field, only has_error/fail_class). Used for the visitor-mode
+// feed; the owner-mode feed uses listAdminArticles instead (see App.tsx's
+// owner/visitor branch).
+export function listArticles(params: ArticlesQueryParams = {}): Promise<PublicArticleListResponse> {
+  return request<PublicArticleListResponse>(buildArticlesUrl(params));
+}
+
+// Owner-only — full rows, including the real `error` field (full_text
+// still excluded, same as GET /api/admin/articles/:id minus full_text).
+export function listAdminArticles(params: ArticlesQueryParams = {}): Promise<ArticleListResponse> {
+  return request<ArticleListResponse>(buildArticlesUrl(params, "/api/admin/articles"));
 }
 
 // Public — excludes full_text/error (see PublicArticle). Used by the

@@ -100,10 +100,14 @@ paragraphs, per language. Everything else derives from it:
   setting — Llama reliably writes shorter paragraphs than Claude given the same numbers, so RELAXED
   asks for what it actually produces rather than a STRICT-shaped target under a different name. Both
   tiers' prompts state `aim for ± 25%` of their own per-paragraph target. The validator's hard
-  bounds widen further: STRICT `−40%/+40%`, RELAXED `−55%/+40%` (more room below, not above — Llama
-  undershoots, it doesn't overshoot), both floored so even a small target still yields a real
-  paragraph (STRICT ≥ 250 chars, RELAXED ≥ 120) — no more silent, always-700 ceiling regardless of
-  what you asked for.
+  bounds widen further, and in **opposite directions per tier**: STRICT `−40%/+60%` (more room above
+  — Claude-class models overshoot, not undershoot), RELAXED `−55%/+40%` (more room below — Llama
+  undershoots instead), both floored so even a small target still yields a real paragraph (STRICT ≥
+  250 chars, RELAXED ≥ 120) — no more silent, always-700 ceiling regardless of what you asked for.
+  Because RELAXED derives its ceiling from both a smaller effective target _and_ a smaller high-side
+  widening factor, its absolute paragraph ceiling can end up _lower_ than STRICT's at the same
+  setting — that's intentional, not a bug: each tier's bounds are calibrated to its own model's
+  actual overshoot/undershoot behavior, not to RELAXED being wider on every single axis.
 - **tldr minimum**: STRICT is `max(150, 15% of target)` capped at 350 characters; RELAXED is 75% of
   whatever STRICT computes to — from the raw target, not the scaled-down effective one.
 - **Bullets** don't scale with the target — they're about the _count_ of scannable facts, not prose
@@ -145,6 +149,20 @@ resolved even though Workers AI's overall first-try pass rate on a harder articl
 quality matters more than staying on the free tier at all, set up AI Gateway or direct Anthropic
 (above) — gateway/direct summaries always use STRICT regardless of how good a given Llama response
 might have been.
+
+**Why STRICT's ceiling widened again (asymmetrically) after that fix:** at the default target, the
+formula above initially gave STRICT a symmetric `±40%` ceiling of 672 characters — but real Claude
+output, produced _with_ this prompt's sizing block already in place, hit 709–716-character
+paragraphs and kept failing validation on overshoot. Claude-class models overshoot; they don't
+undershoot the way Llama does, so the fix widened STRICT's ceiling specifically (`+60%`, giving 768
+at the default target — comfortably above the observed 709–716) while leaving STRICT's floor and
+RELAXED's whole profile untouched. Two earlier live observations of 796–857-character paragraphs
+predate the sizing block being added to the prompt at all, so they aren't evidence against this
+specific fix; they're a data point that a sizing-block-equipped STRICT still occasionally clears
+768, in which case the next knob to reach for is a smaller `SUMMARY_BODY_TARGET_CHARS` (which
+shrinks every derived bound proportionally) rather than widening the ceiling further and further —
+if you see repeated overshoot failures on gateway/direct summaries after this change, that's the
+signal to check the health-report's failure counts and consider lowering the target instead.
 
 **Rescuing a backlog after changing this setting:** articles that failed with a
 `'internal:
@@ -548,9 +566,27 @@ articles are never touched by healing, and healing never bypasses the daily summ
 retried article goes through the exact same queue path (and the same budget check) as any other
 pipeline run.
 
+**`DAILY_SUMMARY_LIMIT`** ([vars] in `wrangler.toml`, default `50`) caps how many LLM calls run per
+UTC day (see `cost-guard.ts`) — a best-effort KV counter, not a hard guarantee under heavy
+concurrent load, but adequate for a personal, low-concurrency app. A live incident during
+development showed exactly how confusing hitting this looks without instrumentation: three
+consecutive retries of one article each completed in ~1 second with pipeline stages `fetch` →
+`extract` → done, no `summarize` stage at all — a silent daily-limit rejection is indistinguishable
+from a hung or broken pipeline unless you already suspect the budget. Two things now make this
+visible: the budget stage logs a
+`pipeline_stage {stage: "budget", outcome: "exhausted", used, limit}` line the moment the guard
+trips (instead of nothing), and `GET /api/admin/health-report`'s `llm_calls: {used, limit}` field
+shows today's running total on demand. A `daily-limit` failed card gets dedicated copy in the SPA
+("daily summary limit reached — this will process automatically tomorrow") with **no Retry button**
+— retrying today can't succeed, and healing already re-tries it automatically once the UTC-midnight
+reset frees up budget. If heavy manual testing (adding many articles back-to-back) keeps exhausting
+the default 50/day, raise `DAILY_SUMMARY_LIMIT` in `wrangler.toml` — there's no other consequence to
+a higher number besides LLM provider cost.
+
 `GET /api/admin/health-report` (owner-only) returns a JSON snapshot of all this — failure counts by
-class, total heal attempts by class, the current learned thin-host list, and a cheap proxy for "when
-did the agent last do anything" — meant for curl/owner tooling, not a dedicated SPA page (yet).
+class, total heal attempts by class, the current learned thin-host list, today's `llm_calls`
+used/limit, and a cheap proxy for "when did the agent last do anything" — meant for curl/owner
+tooling, not a dedicated SPA page (yet).
 
 ### Interests (`INTEREST_TOPICS`)
 

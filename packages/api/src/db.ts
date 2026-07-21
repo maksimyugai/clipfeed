@@ -73,6 +73,16 @@ export function toPublicArticle(article: Article): PublicArticle {
   return { ...rest, has_error: error !== null };
 }
 
+// Same redaction as toPublicArticle, applied to a list row (which never
+// had full_text to begin with) — used by GET /api/articles (public) so the
+// list endpoint doesn't leak raw error strings the way GET /api/articles/:id
+// already avoided (see toPublicArticle above). GET /api/admin/articles
+// (owner-only) returns ArticleListItem rows unmodified, error included.
+export function toPublicListItem(item: ArticleListItem): PublicArticle {
+  const { error, ...rest } = item;
+  return { ...rest, has_error: error !== null };
+}
+
 function rowToListItem(row: ArticleRowNoText): ArticleListItem {
   return {
     id: row.id,

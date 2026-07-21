@@ -82,6 +82,16 @@ export interface ArticleListResponse {
   next_cursor: string | null;
 }
 
+// GET /api/articles (public) shape — same redaction as PublicArticle,
+// applied per row: a failed article's raw `error` string carries internal
+// pipeline detail (upstream URLs, stack fragments) that a public list must
+// never leak to an anonymous visitor. See GET /api/admin/articles for the
+// owner-only equivalent that includes the real `error` field.
+export interface PublicArticleListResponse {
+  items: PublicArticle[];
+  next_cursor: string | null;
+}
+
 export interface PatchArticleRequest {
   archived?: boolean;
   tags?: string[];

@@ -30,7 +30,7 @@ function makeStubAi(handler: (model: string, input: Record<string, unknown>) => 
 }
 
 // Meets validateSummary's content bar at the DEFAULT spec (>=180 char
-// tldrs, 4-7 bullets each 40-220 chars, 2-3 body paragraphs each 288-672
+// tldrs, 4-7 bullets each 40-220 chars, 2-3 body paragraphs each 288-768
 // chars, none duplicating the tldr, 1-6 tags) so it round-trips through
 // both the shape-only parsers and the full summarizeArticle*
 // validate-and-retry path used throughout this file.
@@ -1004,15 +1004,15 @@ Deno.test("validateSummary: a body paragraph under the default STRICT minimum (2
   }
 });
 
-Deno.test("validateSummary: a body paragraph over the default STRICT maximum (672 chars) is a violation", () => {
-  const tooLong = "x".repeat(673);
+Deno.test("validateSummary: a body paragraph over the default STRICT maximum (768 chars) is a violation", () => {
+  const tooLong = "x".repeat(769);
   const result = validateSummary(
     makeValidSummary({ body_en: [tooLong, makeValidSummary().body_en[1]] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("body_en[0]") && v.includes("672")),
+      result.violations.some((v) => v.includes("body_en[0]") && v.includes("768")),
       true,
     );
   }
@@ -1201,7 +1201,7 @@ Deno.test("buildSystemPrompt: STRICT prompt at the default target states the spe
   const prompt = buildSystemPrompt(DEFAULT_STRICT_SPEC);
   assertEquals(prompt.includes("at least 180 characters"), true);
   assertEquals(prompt.includes("2-3 self-contained"), true);
-  assertEquals(prompt.includes("between 288 and 672"), true);
+  assertEquals(prompt.includes("between 288 and 768"), true);
   assertEquals(prompt.includes("aim for 360-600"), true);
   assertEquals(prompt.includes("~1200 characters across all paragraphs"), true);
   assertEquals(prompt.includes("4-7 items"), true);
@@ -1327,10 +1327,10 @@ Deno.test("summarizeArticle: a body-paragraph OVERSHOOT retries with a 'rewrite 
   globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
     if (calls === 1) {
-      // body_en[0] overshoots DEFAULT_STRICT_SPEC's 672-char max.
+      // body_en[0] overshoots DEFAULT_STRICT_SPEC's 768-char max.
       const tooLong = {
         ...makeValidSummary(),
-        body_en: ["x".repeat(700), makeValidSummary().body_en[1]],
+        body_en: ["x".repeat(800), makeValidSummary().body_en[1]],
       };
       return Promise.resolve(
         new Response(
@@ -1400,7 +1400,7 @@ Deno.test("summarizeArticle: a body-paragraph UNDERSHOOT still gets the generic 
   try {
     await summarizeArticle({ apiKey: "sk-direct", model: "test-model" }, "Title", "Body");
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
-    assertEquals(secondMessage.includes("body_en[0] must be between 288 and 672"), true);
+    assertEquals(secondMessage.includes("body_en[0] must be between 288 and 768"), true);
     assertEquals(secondMessage.includes("rewrite body_en paragraph"), false);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1518,7 +1518,7 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       400: {
         strict: {
           minParagraphChars: 250,
-          maxParagraphChars: 280,
+          maxParagraphChars: 320,
           minTldrChars: 150,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 2,
@@ -1534,7 +1534,7 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       800: {
         strict: {
           minParagraphChars: 250,
-          maxParagraphChars: 560,
+          maxParagraphChars: 640,
           minTldrChars: 150,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 2,
@@ -1550,7 +1550,7 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       1200: {
         strict: {
           minParagraphChars: 288,
-          maxParagraphChars: 672,
+          maxParagraphChars: 768,
           minTldrChars: 180,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 3,
@@ -1566,7 +1566,7 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       2000: {
         strict: {
           minParagraphChars: 480,
-          maxParagraphChars: 1120,
+          maxParagraphChars: 1280,
           minTldrChars: 300,
           minBodyParagraphs: 2,
           maxBodyParagraphs: 3,
@@ -1582,7 +1582,7 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       4000: {
         strict: {
           minParagraphChars: 686,
-          maxParagraphChars: 1600,
+          maxParagraphChars: 1829,
           minTldrChars: 350,
           minBodyParagraphs: 3,
           maxBodyParagraphs: 4,
@@ -1615,6 +1615,58 @@ Deno.test("deriveSummarySpec: the exact spec table for the required test targets
       );
     }
   }
+});
+
+Deno.test("deriveSummarySpec: STRICT widens its ceiling more than its floor; RELAXED widens its floor more than its ceiling (the asymmetry is intentional and opposite per profile)", () => {
+  // Task 17: live Claude output overshot STRICT's old symmetric +-40%
+  // ceiling (709-716 chars vs a 672 max at the default target) — Claude
+  // overshoots, so STRICT now gets extra headroom on the high end (+60%)
+  // instead of the low end. Llama (RELAXED) undershoots instead, so its
+  // ceiling was never the problem and stays at +40%; it keeps the wider
+  // floor discount (-55%) from Task 16.5.
+  for (const target of TEST_TARGETS) {
+    const strict = deriveSummarySpec(target, "strict");
+    const relaxed = deriveSummarySpec(target, "relaxed");
+    const strictLowWidening = 1 - strict.minParagraphChars / strict.paragraphTargetLow;
+    const strictHighWidening = strict.maxParagraphChars / strict.paragraphTargetHigh - 1;
+    // Only checked where the floor clamp doesn't dominate (see the 400-char
+    // boundary test above) — at every other target STRICT's high-side
+    // widening (+60%) is strictly greater than its low-side widening (40%).
+    if (strict.minParagraphChars <= strict.paragraphTargetLow) {
+      assertEquals(strictHighWidening > strictLowWidening, true, `strict@${target}`);
+    }
+    const relaxedLowWidening = 1 - relaxed.minParagraphChars / relaxed.paragraphTargetLow;
+    const relaxedHighWidening = relaxed.maxParagraphChars / relaxed.paragraphTargetHigh - 1;
+    if (relaxed.minParagraphChars <= relaxed.paragraphTargetLow) {
+      assertEquals(relaxedLowWidening > relaxedHighWidening, true, `relaxed@${target}`);
+    }
+  }
+});
+
+Deno.test("deriveSummarySpec: RELAXED's absolute paragraph ceiling can be LOWER than STRICT's at the same target — each profile's bounds fit its own model, not a blanket 'RELAXED is always wider' rule", () => {
+  // The "RELAXED is more permissive" invariant above is about the FLOOR and
+  // the paragraph COUNT range, not the ceiling — RELAXED derives its ceiling
+  // from a smaller effective target (RELAXED_EFFECTIVE_TARGET_RATIO) AND a
+  // smaller high-side widening factor (+40% vs STRICT's +60%), so it ends up
+  // with a lower absolute ceiling despite being the "more forgiving" profile
+  // overall. Documented here so this isn't mistaken for a regression.
+  for (const target of TEST_TARGETS) {
+    const strict = deriveSummarySpec(target, "strict");
+    const relaxed = deriveSummarySpec(target, "relaxed");
+    assertEquals(relaxed.maxParagraphChars < strict.maxParagraphChars, true, `target=${target}`);
+  }
+});
+
+Deno.test("deriveSummarySpec: STRICT's ceiling at the default target (768) covers the live-observed Claude overshoot (709-716 chars) with margin", () => {
+  // The exact live evidence motivating this task: real Claude output hit
+  // 709-716 char paragraphs (WITH this prompt's sizing block already in
+  // place) against the old, symmetric-widening ceiling of 672 — a genuine
+  // overshoot the old formula didn't cover. The new +60% ceiling must clear
+  // it. (Earlier live observations of 796/857 chars predate the sizing block
+  // and are not what this specific fix targets — see README.)
+  const spec = deriveSummarySpec(DEFAULT_SUMMARY_BODY_TARGET_CHARS, "strict");
+  assertEquals(spec.maxParagraphChars, 768);
+  assertEquals(spec.maxParagraphChars > 716, true);
 });
 
 // --- parseSummaryBodyTargetChars: defensive [vars] parsing ---

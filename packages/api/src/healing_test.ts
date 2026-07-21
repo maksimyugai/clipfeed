@@ -2,9 +2,81 @@ import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { runHealingJob } from "./healing.ts";
 import { insertPendingArticle, markArticleFailed } from "./db.ts";
+import { processQueueMessage } from "./queue.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { FakeKv } from "./testing/fake_kv.ts";
 import { FakeQueue } from "./testing/fake_queue.ts";
+
+// Long enough that extraction clears pipeline.ts's MIN_EXTRACTED_TEXT_CHARS
+// (300) guard.
+const ARTICLE_HTML = "<html><head><title>Example</title></head><body><article><h1>Example</h1>" +
+  "<p>Hello world, this is the first paragraph of example content, with enough extra words to " +
+  "comfortably clear the minimum extraction length used by the pipeline's insufficient-text " +
+  "guard in tests.</p>" +
+  "<p>Here is a second paragraph with more detail to summarize, padded a little further so the " +
+  "combined extracted text safely stays well above that threshold even after Readability trims " +
+  "whitespace.</p></article></body></html>";
+
+// Meets validateSummary's default STRICT bar (>=180 char tldrs, 4-7 bullets
+// each 40-220 chars, 2-3 body paragraphs each 288-672 chars, 1-6 tags).
+const VALID_SUMMARY = {
+  title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
+  title_en: "Company Raises Subscription Price 60% Starting September 1",
+  tldr_ru:
+    "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса, а годовые подписчики получат отсрочку до продления плана.",
+  tldr_en:
+    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
+  body_ru: [
+    "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
+    "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
+  ],
+  body_en: [
+    "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
+    "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
+  ],
+  bullets_ru: [
+    "Те, кто уже на годовом плане, сохранят старую цену до момента продления плана.",
+    "Компания откладывала повышение цены более года из опасений навредить малому бизнесу.",
+    "Решение было принято только после того, как расходы на инфраструктуру продолжили расти.",
+    "Ни один из конкурентов пока не объявлял о похожем шаге.",
+  ],
+  bullets_en: [
+    "Existing annual-plan subscribers keep their price until their plan comes up for renewal.",
+    "The company delayed the increase for over a year out of concern for small businesses.",
+    "Leadership only moved forward once infrastructure costs kept climbing regardless.",
+    "No competitor has announced a comparable price change so far.",
+  ],
+  tags: ["business"],
+  lang_original: "en",
+};
+
+function stubFetch(): () => void {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request) => {
+    let isAnthropicApi = false;
+    try {
+      const parsed = new URL(input.toString());
+      isAnthropicApi = parsed.protocol === "https:" && parsed.hostname === "api.anthropic.com";
+    } catch {
+      isAnthropicApi = false;
+    }
+
+    if (isAnthropicApi) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }),
+    );
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+}
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -233,4 +305,45 @@ Deno.test("runHealingJob: with nothing to heal, does nothing (cheap no-op)", asy
   await runHealingJob(env);
 
   assertEquals(jobs.sent, []);
+});
+
+// --- end-to-end: a daily-limit failure actually recovers once the sweep
+// re-enqueues it and the next day's budget is available (see pipeline.ts's
+// budget stage log for the incident that motivated documenting this path
+// explicitly) ---
+
+Deno.test("runHealingJob end-to-end: a 'daily-limit' failure heals to 'ready' once re-enqueued with budget available", async () => {
+  const restoreFetch = stubFetch();
+  try {
+    const jobs = new FakeQueue();
+    // DAILY_SUMMARY_LIMIT: 0 at insert time is what produced the original
+    // failure; the healing run below uses a fresh env with real budget,
+    // simulating "the next day" after the UTC counter reset.
+    const env = makeEnv({ JOBS: jobs, DAILY_SUMMARY_LIMIT: 50 });
+    await insertFailed(env, "d1", { error: "daily-limit" });
+
+    const before = rowsOf(env).find((r) => r.id === "d1")!;
+    assertEquals(before.fail_class, "transient");
+    assertEquals(before.heal_attempts, 0);
+
+    await runHealingJob(env);
+
+    const afterSweep = rowsOf(env).find((r) => r.id === "d1")!;
+    assertEquals(afterSweep.heal_attempts, 1);
+    assertEquals(afterSweep.status, "pending");
+    assertEquals(jobs.sent, [{ kind: "process", articleId: "d1" }]);
+
+    // Simulate the queue consumer actually running the re-enqueued message.
+    for (const message of jobs.sent) {
+      await processQueueMessage(env, message);
+    }
+
+    const afterProcess = rowsOf(env).find((r) => r.id === "d1")!;
+    assertEquals(afterProcess.status, "ready");
+    assertEquals(afterProcess.error, null);
+    assertEquals(afterProcess.fail_class, null);
+    assertEquals(afterProcess.heal_attempts, 0);
+  } finally {
+    restoreFetch();
+  }
 });

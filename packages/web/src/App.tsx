@@ -4,9 +4,11 @@ import { dictionaries, type Lang, readStoredLang, writeStoredLang } from "./i18n
 import { useTheme } from "./theme.ts";
 import {
   ApiError,
+  type ArticlesQueryParams,
   createArticle,
   deleteArticle,
   getAdminMe,
+  listAdminArticles,
   listArticles,
   patchArticle,
   resummarizeArticle,
@@ -34,6 +36,25 @@ function computeTagFacets(articles: ArticleListItem[]) {
   return [...counts.entries()]
     .map(([tag, count]) => ({ tag, count }))
     .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+}
+
+// Owner mode fetches the full row (real `error` included) from
+// /api/admin/articles; visitor mode fetches the redacted public shape from
+// /api/articles and fills in `error: null` since it genuinely isn't
+// available — ArticleCard never renders that field directly in visitor
+// mode (it uses fail_class instead, which both shapes carry), so this
+// null is inert, not a re-introduction of the stale-empty-error bug this
+// same field once had.
+async function fetchArticleList(
+  isOwner: boolean,
+  params: ArticlesQueryParams,
+): Promise<{ items: ArticleListItem[]; next_cursor: string | null }> {
+  if (isOwner) return await listAdminArticles(params);
+  const res = await listArticles(params);
+  return {
+    items: res.items.map((item) => ({ ...item, error: null })),
+    next_cursor: res.next_cursor,
+  };
 }
 
 function computeSourceFacets(articles: ArticleListItem[]) {
@@ -99,10 +120,14 @@ export function App() {
   }, [searchInput]);
 
   // Any filter change is a fresh query: reset pagination and refetch page 1.
+  // Also re-runs once ownerModeState resolves from "loading" — the very
+  // first fetch (before /api/admin/me settles) always uses the visitor
+  // path, so an owner's feed needs this second pass to pick up the
+  // admin-list endpoint instead.
   useEffect(() => {
     let cancelled = false;
     setExpandedId(null);
-    listArticles({
+    fetchArticleList(isOwner, {
       limit: PAGE_LIMIT,
       tag: activeTag ?? undefined,
       source: activeSource ?? undefined,
@@ -120,13 +145,13 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [query, activeTag, activeSource, archivedView]);
+  }, [query, activeTag, activeSource, archivedView, isOwner]);
 
   const handleShowMore = async () => {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const res = await listArticles({
+      const res = await fetchArticleList(isOwner, {
         limit: PAGE_LIMIT,
         cursor: nextCursor,
         tag: activeTag ?? undefined,

@@ -209,6 +209,39 @@ Deno.test("public reads: still 200 w/o auth even when Access IS configured", asy
   assertEquals((await app.request("/api/articles", {}, env, ctx)).status, 200);
 });
 
+// --- GET /api/admin/articles vs GET /api/articles: owner sees the real
+// error, a visitor never does (see articles_test.ts's dedicated privacy
+// regression test for the incident this fixes) ---
+
+Deno.test("GET /api/admin/articles: 200 for the owner, includes the real error field; GET /api/articles omits it for the same row", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  await insertPendingArticle(env.DB, {
+    id: "al1",
+    url: "https://example.com/al1",
+    title: "al1",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleFailed(env.DB, "al1", "internal: fetch: upstream responded 500");
+
+  const adminRes = await app.request("/api/admin/articles", { headers: authHeaders }, env, ctx);
+  assertEquals(adminRes.status, 200);
+  const adminBody = await adminRes.json();
+  const adminItem = adminBody.items.find((i: { id: string }) => i.id === "al1");
+  assertEquals(adminItem.error, "internal: fetch: upstream responded 500");
+  assertEquals("full_text" in adminItem, false);
+
+  const publicRes = await app.request("/api/articles", {}, env, ctx);
+  const publicBody = await publicRes.json();
+  const publicItem = publicBody.items.find((i: { id: string }) => i.id === "al1");
+  assertEquals("error" in publicItem, false);
+  assertEquals(publicItem.has_error, true);
+});
+
 // --- Admin routes: 401 without a token, both configured and unconfigured ---
 
 Deno.test("admin routes: 401 auth_not_configured on every mutating route when Access isn't set up", async () => {
@@ -216,6 +249,7 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
   const ctx = makeExecutionContext().ctx;
   const cases: Array<[string, string]> = [
     ["GET", "/api/admin/me"],
+    ["GET", "/api/admin/articles"],
     ["GET", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles"],
     ["PATCH", "/api/admin/articles/some-id"],
@@ -240,6 +274,7 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
   const ctx = makeExecutionContext().ctx;
   const cases: Array<[string, string]> = [
     ["GET", "/api/admin/me"],
+    ["GET", "/api/admin/articles"],
     ["GET", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles"],
     ["PATCH", "/api/admin/articles/some-id"],
@@ -286,6 +321,8 @@ Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-hea
   await markArticleFailed(env.DB, "h2", "extraction: insufficient text (3 chars)"); // permanent
 
   await env.CACHE.put("thinhost:learned.example.com", "3");
+  const today = new Date().toISOString().slice(0, 10);
+  await env.CACHE.put(`llm_calls:${today}`, "7");
 
   const res = await app.request("/api/admin/health-report", { headers: authHeaders }, env, ctx);
   assertEquals(res.status, 200);
@@ -296,6 +333,7 @@ Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-hea
   assertEquals(body.heal_attempts_totals.transient, 0);
   assertEquals(body.learned_thinhosts, [{ host: "learned.example.com", count: 3 }]);
   assertEquals(body.last_agent_run.last_added_at, "2026-01-01T00:00:00.000Z");
+  assertEquals(body.llm_calls, { used: 7, limit: env.DAILY_SUMMARY_LIMIT });
 });
 
 Deno.test("POST /api/admin/heal/revalidate-failed: re-enqueues every summary-validation failure regardless of heal_attempts, resets the count first", async () => {

@@ -170,14 +170,23 @@ const RELAXED_TLDR_RATIO = 0.75;
 // per-paragraph size from it — "meet the model where it actually writes"
 // instead of asking it to hit STRICT-shaped numbers under a different name.
 const RELAXED_EFFECTIVE_TARGET_RATIO = 0.7;
-// STRICT widens its per-paragraph band -40%/+40%; RELAXED widens further
-// on the low end only (-55%/+40%) — Llama's shorter natural paragraph
-// length needs more room below the aim band, not above it.
+// STRICT widens its per-paragraph band -40% on the low end but +60% on the
+// high end; RELAXED widens further on the low end only (-55%/+40%) — the two
+// profiles overshoot/undershoot in opposite directions, so each needs
+// headroom on a different side. Live evidence: at the default target,
+// STRICT's ceiling before this widening was 672 chars, but real Claude output
+// hit 709-716 chars with the sizing block in the prompt (see summarize_test.ts
+// and this task's README note) — a genuine overshoot the +40% ceiling didn't
+// cover. RELAXED (Llama) undershoots instead; its ceiling was never the
+// problem, so it keeps the original +40%.
 const PARAGRAPH_LOW_WIDENING_FACTOR: Record<ProfileKind, number> = {
   strict: 0.6, // 1 - 0.40
   relaxed: 0.45, // 1 - 0.55
 };
-const PARAGRAPH_HIGH_WIDENING_FACTOR = 1.4; // +40%, same for both profiles
+const PARAGRAPH_HIGH_WIDENING_FACTOR: Record<ProfileKind, number> = {
+  strict: 1.6, // +60%
+  relaxed: 1.4, // +40%
+};
 
 function paragraphCountRange(targetTotalChars: number): [number, number] {
   if (targetTotalChars <= 900) return [2, 2];
@@ -198,11 +207,18 @@ function paragraphCountRange(targetTotalChars: number): [number, number] {
 //      +-25% — the number shown to the model as "aim for". "Effective"
 //      target is the raw owner setting for STRICT, but scaled down by
 //      RELAXED_EFFECTIVE_TARGET_RATIO for RELAXED (see that constant).
-//   3. hard BOUNDS widen that band — asymmetrically for RELAXED (see
-//      PARAGRAPH_LOW_WIDENING_FACTOR) — floored per profile so even a
-//      tiny total target yields a real paragraph, and the ceiling is
-//      simply the high end of that band — no separate, silently-out-of
-//      -sync cap.
+//   3. hard BOUNDS widen that band — asymmetrically, and in OPPOSITE
+//      directions per profile (see PARAGRAPH_LOW_WIDENING_FACTOR and
+//      PARAGRAPH_HIGH_WIDENING_FACTOR): RELAXED widens more on the low end
+//      (Llama undershoots), STRICT widens more on the high end (Claude
+//      overshoots) — floored per profile so even a tiny total target yields
+//      a real paragraph, and the ceiling is simply the high end of that
+//      band — no separate, silently-out-of-sync cap. This means RELAXED can
+//      have a LOWER absolute ceiling than STRICT at the same target (it also
+//      derives from a smaller effective target) — that's intentional: the
+//      invariant that matters is each profile's bounds fit its own model's
+//      observed behavior, not that RELAXED is more permissive on every single
+//      axis at every target.
 export function deriveSummarySpec(
   targetTotalChars: number,
   profileKind: ProfileKind,
@@ -228,7 +244,9 @@ export function deriveSummarySpec(
     Math.round(perParagraphTarget * PARAGRAPH_LOW_WIDENING_FACTOR[profileKind]),
     PARAGRAPH_FLOOR_CHARS[profileKind],
   );
-  const maxParagraphChars = Math.round(perParagraphTarget * PARAGRAPH_HIGH_WIDENING_FACTOR);
+  const maxParagraphChars = Math.round(
+    perParagraphTarget * PARAGRAPH_HIGH_WIDENING_FACTOR[profileKind],
+  );
 
   // tldr/bullets are unaffected by the RELAXED effective-target scaling —
   // always derived from the owner's raw targetTotalChars, same as before.

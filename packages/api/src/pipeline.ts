@@ -199,8 +199,18 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
       : extracted.textContent;
 
     stage = "budget";
-    const withinBudget = await tryConsumeSummaryBudget(env.CACHE, env.DAILY_SUMMARY_LIMIT);
-    if (!withinBudget) {
+    const budgetStart = performance.now();
+    const budget = await tryConsumeSummaryBudget(env.CACHE, env.DAILY_SUMMARY_LIMIT);
+    if (!budget.ok) {
+      // The owner's own report on this: three consecutive retries each
+      // completed in ~1-1.3s with stages fetch->extract->done and no
+      // summarize stage at all — silently indistinguishable from any other
+      // fast-failing run without this line, costing a debugging session.
+      logStage(input.id, stage, budgetStart, {
+        outcome: "exhausted",
+        used: budget.used,
+        limit: budget.limit,
+      });
       await markArticleFailed(env.DB, input.id, "daily-limit");
       return;
     }
@@ -257,8 +267,14 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
       ? input.fullText.slice(0, MAX_TEXT_CHARS_WORKERS_AI)
       : input.fullText;
 
-    const withinBudget = await tryConsumeSummaryBudget(env.CACHE, env.DAILY_SUMMARY_LIMIT);
-    if (!withinBudget) {
+    const budgetStart = performance.now();
+    const budget = await tryConsumeSummaryBudget(env.CACHE, env.DAILY_SUMMARY_LIMIT);
+    if (!budget.ok) {
+      logStage(input.id, stage, budgetStart, {
+        outcome: "exhausted",
+        used: budget.used,
+        limit: budget.limit,
+      });
       await markArticleFailed(env.DB, input.id, "daily-limit");
       return;
     }
