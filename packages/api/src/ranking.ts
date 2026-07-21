@@ -3,6 +3,7 @@ import type { Candidate } from "./agent-types.ts";
 import { callLlm, stripJsonFences } from "./summarize.ts";
 import { selectProviderMode } from "./pipeline.ts";
 import { findRecentTitles } from "./db.ts";
+import { titleSimilarity } from "./title-similarity.ts";
 
 export const DEFAULT_AGENT_DAILY_PICKS = 10;
 const MIN_AGENT_DAILY_PICKS = 1;
@@ -21,114 +22,15 @@ const MIN_TOPIC_DIVERSITY = 3;
 // A live incident: two picks covered the exact same Kimi/Moonshot story from
 // two different outlets, under different URLs (so the URL-based dedupe in
 // agent-pool.ts never saw a collision). STORY_SIMILARITY_THRESHOLD is the
-// token-set Jaccard cutoff dedupStories() below uses to catch this — tuned
-// against real paraphrased ru/en title pairs (see ranking_test.ts), not just
-// exact duplicates. RECENT_STORY_WINDOW_MS bounds how far back the
-// against-DB check looks: yesterday's story from another outlet still
-// shouldn't get re-picked today.
+// token-set Jaccard cutoff dedupStories() below uses to catch this, via the
+// shared titleSimilarity() util (see title-similarity.ts — also used by
+// agent-pool.ts's pre-scrape pool dedup, Task 24) — tuned against real
+// paraphrased ru/en title pairs (see ranking_test.ts), not just exact
+// duplicates. RECENT_STORY_WINDOW_MS bounds how far back the against-DB
+// check looks: yesterday's story from another outlet still shouldn't get
+// re-picked today.
 const STORY_SIMILARITY_THRESHOLD = 0.5;
 const RECENT_STORY_WINDOW_MS = 48 * 60 * 60 * 1000;
-
-// Deliberately small and manual, not a stemmer/stopword-library dependency —
-// this only needs to strip the highest-frequency function words that would
-// otherwise inflate the token overlap between two otherwise-unrelated
-// headlines (e.g. "the... in... and..." matching across any two English
-// titles). Covers en+ru per the task's live evidence (an English outlet and
-// a Russian-language one covering the same story).
-const STOPWORDS_EN = new Set([
-  "a",
-  "an",
-  "the",
-  "and",
-  "or",
-  "but",
-  "of",
-  "to",
-  "in",
-  "on",
-  "for",
-  "with",
-  "is",
-  "are",
-  "was",
-  "were",
-  "be",
-  "by",
-  "as",
-  "at",
-  "it",
-  "its",
-  "this",
-  "that",
-  "from",
-  "after",
-  "over",
-  "new",
-]);
-const STOPWORDS_RU = new Set([
-  "и",
-  "в",
-  "во",
-  "не",
-  "что",
-  "он",
-  "на",
-  "я",
-  "с",
-  "со",
-  "как",
-  "а",
-  "то",
-  "все",
-  "она",
-  "так",
-  "его",
-  "но",
-  "да",
-  "к",
-  "у",
-  "же",
-  "вы",
-  "за",
-  "бы",
-  "по",
-  "только",
-  "её",
-  "ее",
-  "для",
-  "из",
-  "этот",
-  "эта",
-  "это",
-  "об",
-  "от",
-]);
-
-function normalizeTitleWords(title: string): string[] {
-  return title
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 1 && !STOPWORDS_EN.has(w) && !STOPWORDS_RU.has(w));
-}
-
-// Exported for direct testing of the similarity table (identical,
-// paraphrased, unrelated pairs) — normalize both titles to a stopword-free
-// token set, then plain Jaccard (intersection / union). No stemming, no
-// translation — a ru/en paraphrase of the same story only scores high here
-// when it shares enough proper nouns/numbers/transliterated terms (which,
-// per the live incident, real paraphrases of the same story usually do).
-export function storyTitleSimilarity(a: string, b: string): number {
-  const tokensA = new Set(normalizeTitleWords(a));
-  const tokensB = new Set(normalizeTitleWords(b));
-  if (tokensA.size === 0 || tokensB.size === 0) return 0;
-  let intersection = 0;
-  for (const token of tokensA) {
-    if (tokensB.has(token)) intersection += 1;
-  }
-  const union = tokensA.size + tokensB.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
 
 // [vars] AGENT_DAILY_PICKS is a string (like SUMMARY_BODY_TARGET_CHARS
 // elsewhere) so a bad override (missing, non-numeric, outside [1, 20])
@@ -273,7 +175,7 @@ export function dedupStories(
   let droppedForStory = 0;
 
   const isDuplicateOfKept = (title: string): boolean =>
-    keptTitles.some((t) => storyTitleSimilarity(t, title) >= STORY_SIMILARITY_THRESHOLD);
+    keptTitles.some((t) => titleSimilarity(t, title) >= STORY_SIMILARITY_THRESHOLD);
 
   for (const id of pickedIds) {
     consideredIds.add(id);

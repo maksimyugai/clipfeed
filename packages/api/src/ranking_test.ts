@@ -7,7 +7,6 @@ import {
   fallbackPicks,
   parseAgentDailyPicks,
   rankCandidates,
-  storyTitleSimilarity,
 } from "./ranking.ts";
 import type { Candidate } from "./agent-types.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
@@ -467,45 +466,10 @@ Deno.test("enforceRankingDiversity: never exceeds pickCount even when backfill c
 });
 
 // --- Task 19 Part C: story-level deduplication ---
-// storyTitleSimilarity: identical / paraphrased (en, ru/en cross-language) /
-// unrelated title pairs — the exact live incident was two outlets covering
-// the same Kimi/Moonshot story under different URLs and different wording.
-
-Deno.test("storyTitleSimilarity: identical titles score 1.0", () => {
-  const title = "Moonshot AI releases Kimi K2 model with major reasoning gains";
-  assertEquals(storyTitleSimilarity(title, title), 1);
-});
-
-Deno.test("storyTitleSimilarity: an English paraphrase of the same story scores well above the 0.5 threshold", () => {
-  const a = "Moonshot AI releases new Kimi K2 model with major reasoning gains";
-  const b = "Kimi K2, the new Moonshot AI model, brings major reasoning gains";
-  assertEquals(storyTitleSimilarity(a, b) >= 0.5, true);
-});
-
-Deno.test("storyTitleSimilarity: a ru/en cross-language pair covering the same story meets the threshold", () => {
-  // The exact live-incident shape: an English outlet and a Russian-language
-  // one covering the identical Moonshot/Kimi K2 story.
-  const en = "Moonshot AI launches Kimi K2 model";
-  const ru = "Moonshot AI выпустила модель Kimi K2";
-  assertEquals(storyTitleSimilarity(en, ru) >= 0.5, true);
-});
-
-Deno.test("storyTitleSimilarity: unrelated titles score 0", () => {
-  const a = "NVIDIA announces new RTX 5090 graphics card";
-  const b = "Linux kernel 6.9 released with new scheduler";
-  assertEquals(storyTitleSimilarity(a, b), 0);
-});
-
-Deno.test("storyTitleSimilarity: unrelated titles with no shared vocabulary at all score 0, not just low", () => {
-  const a = "Company raises prices for cloud storage subscribers";
-  const b = "Astronomers discover new exoplanet orbiting distant star";
-  assertEquals(storyTitleSimilarity(a, b), 0);
-});
-
-Deno.test("storyTitleSimilarity: empty or all-stopword titles never divide by zero", () => {
-  assertEquals(storyTitleSimilarity("", "anything"), 0);
-  assertEquals(storyTitleSimilarity("a an the of to", "in on for with"), 0);
-});
+// titleSimilarity's own similarity-table tests (identical/paraphrased/
+// unrelated pairs) live in title-similarity_test.ts (see Task 24's
+// consolidation) — this file only tests dedupStories'/rankCandidates' use
+// of it, not the comparison function itself.
 
 // --- dedupStories: post-pick enforcement (never trust the model to have
 // caught a same-story duplicate itself) ---
