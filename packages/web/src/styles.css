@@ -18,9 +18,9 @@
 
   --feed-glow: none;
 
-  --font-serif: Georgia, "Times New Roman", serif;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+  --font-sans: "Ubuntu", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     sans-serif;
+  --font-serif: "Lora", Georgia, "Times New Roman", serif;
 }
 
 [data-theme="dark"] {
@@ -40,12 +40,58 @@
   --feed-glow: radial-gradient(ellipse 70% 40% at 50% 0%, rgba(127, 119, 221, 0.13), transparent);
 }
 
+/* --- Fonts (self-hosted, latin+cyrillic subset — see fonts/LICENSES.md) --- */
+
+@font-face {
+  font-family: "Ubuntu";
+  src: url("/fonts/ubuntu-400.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ubuntu";
+  src: url("/fonts/ubuntu-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ubuntu";
+  src: url("/fonts/ubuntu-700.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lora";
+  src: url("/fonts/lora-500.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lora";
+  src: url("/fonts/lora-600.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* --- Reset & base --- */
 
 *,
 *::before,
 *::after {
   box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
 }
 
 html,
@@ -58,7 +104,7 @@ body {
   background: var(--bg);
   color: var(--txt);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
@@ -127,7 +173,7 @@ ul {
 .logo {
   font-family: var(--font-sans);
   font-weight: 700;
-  font-size: 20px;
+  font-size: 1.25rem;
   letter-spacing: -0.02em;
   background: var(--grad-brand);
   -webkit-background-clip: text;
@@ -156,7 +202,7 @@ ul {
   border-radius: 8px;
   background: var(--bg);
   color: var(--txt);
-  font-size: 13.5px;
+  font-size: 0.875rem;
 }
 
 .search-input::placeholder {
@@ -171,7 +217,7 @@ ul {
   border: none;
   background: none;
   color: var(--mut);
-  font-size: 12px;
+  font-size: 0.75rem;
   line-height: 1;
   padding: 4px;
 }
@@ -193,8 +239,8 @@ ul {
   background: transparent;
   color: var(--sub);
   padding: 7px 12px;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 0.8125rem;
+  font-weight: 500;
 }
 
 .lang-toggle button[aria-pressed="true"] {
@@ -212,7 +258,7 @@ ul {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 1rem;
   flex-shrink: 0;
 }
 
@@ -230,14 +276,14 @@ ul {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  font-size: 1.125rem;
   font-weight: 700;
   flex-shrink: 0;
 }
 
 .sign-in-link {
   color: var(--sub);
-  font-size: 13px;
+  font-size: 0.8125rem;
   text-decoration: none;
   white-space: nowrap;
   flex-shrink: 0;
@@ -274,6 +320,11 @@ ul {
 
 .main-column {
   min-width: 0;
+  /* Caps the reading measure at ~70-75 characters/line for the new 1rem
+     Cyrillic body text (measured at ~8.3px/char in Ubuntu — see Task 22
+     report) — otherwise the grid track (up to ~848px next to the
+     sidebar) runs noticeably wider than optimal. */
+  max-width: 640px;
 }
 
 .sidebar {
@@ -323,7 +374,7 @@ ul {
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 5px 12px;
-  font-size: 12.5px;
+  font-size: 0.8125rem;
   color: var(--sub);
   background: transparent;
   white-space: nowrap;
@@ -362,7 +413,7 @@ ul {
 }
 
 .sidebar-heading {
-  font-size: 12px;
+  font-size: 0.78rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -393,7 +444,7 @@ ul {
   color: var(--sub);
   padding: 6px 4px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 0.875rem;
   text-align: left;
 }
 
@@ -408,7 +459,7 @@ ul {
 
 .source-count {
   color: var(--mut);
-  font-size: 12px;
+  font-size: 0.78rem;
 }
 
 .stat-card {
@@ -416,7 +467,7 @@ ul {
 }
 
 .stat-value {
-  font-size: 28px;
+  font-size: 1.75rem;
   font-weight: 700;
   background: var(--grad-highlight);
   -webkit-background-clip: text;
@@ -425,7 +476,7 @@ ul {
 }
 
 .stat-label {
-  font-size: 12px;
+  font-size: 0.78rem;
   color: var(--mut);
   margin-top: 4px;
 }
@@ -438,7 +489,7 @@ ul {
   background: var(--card);
   padding: 12px;
   color: var(--sub);
-  font-size: 13px;
+  font-size: 0.875rem;
   text-decoration: none;
   font-weight: 600;
 }
@@ -476,12 +527,12 @@ ul {
 
 .feed-section-chevron {
   color: var(--mut);
-  font-size: 12px;
+  font-size: 0.75rem;
   width: 10px;
 }
 
 .feed-section-label {
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -489,7 +540,7 @@ ul {
 
 .feed-section-count {
   color: var(--mut);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .section-loading-row {
@@ -513,7 +564,7 @@ ul {
 }
 
 .empty-state-title {
-  font-size: 16px;
+  font-size: 1.0625rem;
   font-weight: 600;
   margin: 0 0 6px;
   color: var(--txt);
@@ -522,7 +573,7 @@ ul {
 .empty-state-hint {
   margin: 0;
   color: var(--mut);
-  font-size: 13px;
+  font-size: 0.875rem;
 }
 
 .show-more-row {
@@ -537,7 +588,7 @@ ul {
   color: var(--sub);
   border-radius: 999px;
   padding: 9px 20px;
-  font-size: 13px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
@@ -592,7 +643,7 @@ ul {
 
 .pick-chip {
   display: inline-block;
-  font-size: 11px;
+  font-size: 0.6875rem;
   font-weight: 700;
   color: #fff;
   background: var(--grad-highlight);
@@ -602,7 +653,7 @@ ul {
 }
 
 .card-date {
-  font-size: 12px;
+  font-size: 0.78rem;
   color: var(--mut);
   margin-bottom: 6px;
 }
@@ -619,15 +670,22 @@ ul {
 
 .card-title {
   font-family: var(--font-serif);
-  font-size: 20px;
+  font-weight: 600;
+  font-size: 1.35rem;
   line-height: 1.3;
   color: var(--txt);
   margin: 0;
 }
 
+@media (max-width: 640px) {
+  .card-title {
+    font-size: 1.2rem;
+  }
+}
+
 .card-tldr-excerpt {
-  font-size: 13.5px;
-  line-height: 1.6;
+  font-size: 1rem;
+  line-height: 1.65;
   color: var(--sub);
   margin: 0 0 14px;
   display: -webkit-box;
@@ -657,7 +715,7 @@ ul {
   border: none;
   border-radius: 999px;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: 0.75rem;
   background: var(--tag-bg);
   color: var(--tag-tx);
 }
@@ -669,13 +727,13 @@ ul {
   border: 1px solid var(--acc);
   border-radius: 999px;
   padding: 4px 10px 4px 8px;
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--acc);
   background: transparent;
 }
 
 .read-more {
-  font-size: 12.5px;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--acc);
   white-space: nowrap;
@@ -692,8 +750,8 @@ ul {
 }
 
 .tldr-label {
-  font-weight: 700;
-  font-size: 13.5px;
+  font-weight: 500;
+  font-size: 0.8125rem;
   background: var(--grad-highlight);
   -webkit-background-clip: text;
   background-clip: text;
@@ -701,8 +759,8 @@ ul {
 }
 
 .tldr-paragraph {
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 1rem;
+  line-height: 1.65;
   color: var(--txt);
   margin: 6px 0 14px;
 }
@@ -712,7 +770,7 @@ ul {
 }
 
 .card-body p {
-  font-size: 14px;
+  font-size: 1rem;
   line-height: 1.65;
   color: var(--txt);
   margin: 0 0 10px;
@@ -727,8 +785,8 @@ ul {
   padding-left: 20px;
   list-style: disc;
   color: var(--txt);
-  font-size: 13.5px;
-  line-height: 1.7;
+  font-size: 1rem;
+  line-height: 1.6;
 }
 
 .bullet-list li {
@@ -753,7 +811,7 @@ ul {
 }
 
 .card-footer-text {
-  font-size: 12px;
+  font-size: 0.78rem;
   color: var(--mut);
 }
 
@@ -770,7 +828,7 @@ ul {
 .card-footer-actions .icon-button {
   width: 30px;
   height: 30px;
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 
 /* --- Pending / failed states --- */
@@ -785,7 +843,7 @@ ul {
   align-items: center;
   gap: 8px;
   color: var(--acc);
-  font-size: 13px;
+  font-size: 0.875rem;
 }
 
 .spinner {
@@ -813,7 +871,7 @@ ul {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 13px;
+  font-size: 0.875rem;
   color: var(--mut);
 }
 
@@ -823,7 +881,7 @@ ul {
   background: transparent;
   border-radius: 999px;
   padding: 5px 14px;
-  font-size: 12.5px;
+  font-size: 0.8125rem;
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -837,7 +895,7 @@ ul {
 }
 
 .error-text {
-  font-size: 13px;
+  font-size: 0.875rem;
   color: var(--sub);
   margin: 0 0 12px;
 }
@@ -853,7 +911,7 @@ ul {
   background: transparent;
   border-radius: 999px;
   padding: 7px 16px;
-  font-size: 13px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
@@ -867,7 +925,7 @@ ul {
   background: transparent;
   border-radius: 999px;
   padding: 7px 16px;
-  font-size: 13px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
@@ -884,7 +942,7 @@ ul {
   background: var(--danger);
   border-radius: 999px;
   padding: 7px 16px;
-  font-size: 13px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
@@ -922,7 +980,7 @@ ul {
 }
 
 .modal-title {
-  font-size: 17px;
+  font-size: 1.0625rem;
   font-weight: 700;
   margin: 0;
 }
@@ -933,7 +991,7 @@ ul {
 
 .modal-label {
   display: block;
-  font-size: 12.5px;
+  font-size: 0.8125rem;
   color: var(--sub);
   margin-bottom: 6px;
 }
@@ -945,7 +1003,7 @@ ul {
   border-radius: 8px;
   background: var(--bg);
   color: var(--txt);
-  font-size: 13.5px;
+  font-size: 0.875rem;
 }
 
 .modal-actions {
@@ -961,7 +1019,7 @@ ul {
   border: none;
   border-radius: 999px;
   padding: 9px 20px;
-  font-size: 13.5px;
+  font-size: 0.875rem;
   font-weight: 600;
 }
 
@@ -971,7 +1029,7 @@ ul {
   color: var(--sub);
   border-radius: 999px;
   padding: 9px 20px;
-  font-size: 13.5px;
+  font-size: 0.875rem;
 }
 
 /* --- Toast --- */
@@ -985,7 +1043,7 @@ ul {
   color: var(--bg);
   padding: 10px 18px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 0.875rem;
   z-index: 200;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
 }
