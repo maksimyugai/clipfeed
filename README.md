@@ -672,6 +672,31 @@ The candidate pool (post-dedupe, pre-ranking) is capped at 160 (see `agent-pool.
 raised from 120 when the source list grew to ten, so the wider set of feeds doesn't get truncated
 before the ranking call even sees most of it.
 
+**Pre-scrape dedup (before any LLM spend):** `buildCandidatePool` rejects a duplicate candidate in
+three layers, cheapest first, so no ranking or summarization tokens are ever spent on one — (1)
+exact URL/canonical-URL match (pool-internal and against every URL already saved), (2)
+exact-normalized- title match (lowercased, punctuation/emoji stripped, whitespace collapsed — see
+`title-similarity.ts`'s `normalizeTitleExact`), (3) title token-set Jaccard similarity `>= 0.6` (see
+`titleSimilarity`, the same comparison function the story-level dedup below reuses). Layers 2 and 3
+check both the other candidates already in this run's pool AND every article's title added to the DB
+in the last 72 hours (`findRecentTitlesForDedup` in `db.ts`, capped at the most recent 300 rows for
+cost) — a same-story duplicate from a different source, or a mirror/syndicated re-post under a new
+URL, is dropped before it ever reaches the ranking call. Every drop logs
+`pool_dedup_dropped
+{candidateTitle, reason: 'url'|'title'|'jaccard', matchedId?}`, and the counts
+by reason are folded into the agent run's own `pool` stage log
+(`dedup_dropped`/`dedup_dropped_by_reason`).
+
+Honest limitation: this is cheap string-only matching, not semantic — two differently-worded
+headlines covering the same event that don't share enough tokens can still both pass through as
+distinct candidates (e.g. "Company X Ships Feature Y" vs. "A New Way To Do Y Arrives"). A future
+embedding-based similarity layer could catch that; it is deliberately **not** part of this
+pre-scrape stage today. The Jaccard threshold here (`0.6`) is intentionally stricter than the
+post-pick story-dedup's `0.5` below — this stage runs against the whole pool (100+ candidates),
+where a looser bar risks dropping genuinely distinct stories that merely share a topic's common
+vocabulary; the post-pick stage runs on a small, already-curated set of picks where being a bit more
+aggressive is safer.
+
 ### Ranking: diversity-aware, not just "newest/most relevant"
 
 The one ranking LLM call is asked to respect four hard rules, restated below every candidate list
@@ -696,15 +721,18 @@ whenever `AGENT_DAILY_PICKS >= 3`.
 picks cover the exact same story (a Kimi/Moonshot model release) from two outlets under two
 different URLs — the URL-based dedupe elsewhere in the pipeline never saw a collision, since the
 URLs genuinely differ. `dedupStories` in `ranking.ts` re-checks the model's (already
-diversity-enforced) picks pairwise: titles are normalized (lowercased, punctuation stripped, common
-English/Russian stopwords removed) into token sets, then compared by plain Jaccard similarity
-(intersection over union); a pair scoring `>= 0.5` is treated as the same story, and the
-lower-ranked one is dropped and backfilled from the next pool candidate of a different story (still
-respecting the per-source cap above) — logging `rank_story_dedup {kept, dropped}` when it triggers.
-The same check also runs against every article **title saved in the last 48 hours**
-(`findRecentTitles` in `db.ts`), so the agent won't re-pick yesterday's story just because a
-different outlet covered it today. This applies uniformly whether the LLM call succeeded or fell all
-the way back to `fallbackPicks` — a same-story duplicate can't slip through either path.
+diversity-enforced) picks pairwise using the shared `titleSimilarity` function
+(`title-similarity.ts` — consolidated there so the pre-scrape pool dedup above and this post-pick
+backstop can never silently drift apart on what counts as "the same story"): titles are normalized
+(lowercased, punctuation stripped, common English/Russian stopwords removed) into token sets, then
+compared by plain Jaccard similarity (intersection over union); a pair scoring `>= 0.5` is treated
+as the same story, and the lower-ranked one is dropped and backfilled from the next pool candidate
+of a different story (still respecting the per-source cap above) — logging
+`rank_story_dedup {kept, dropped}` when it triggers. The same check also runs against every article
+**title saved in the last 48 hours** (`findRecentTitles` in `db.ts`), so the agent won't re-pick
+yesterday's story just because a different outlet covered it today. This applies uniformly whether
+the LLM call succeeded or fell all the way back to `fallbackPicks` — a same-story duplicate can't
+slip through either path.
 
 ### Self-healing failures
 
@@ -805,6 +833,12 @@ demand instead of waiting for the clock:
 
 Re-running the same day is safe: candidates already saved (matched by URL) are excluded from the
 pool, so nothing gets duplicated.
+
+`GET /api/config` (public) also exposes `agent_hour_utc` (the parsed `AGENT_HOUR_UTC`, or `null` if
+the agent is effectively disabled) and `agent_daily_picks` — this is what powers the SPA's empty
+"Today" state: when today's section has zero articles yet, it shows a live countdown to the next
+agent run (computed client-side from the visitor's own local clock) instead of just disappearing,
+and falls back to a neutral "auto-picks are off" message when the hour is `null`.
 
 ## Chrome extension
 
