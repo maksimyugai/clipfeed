@@ -60,6 +60,17 @@ export async function sendMorningDigest(env: Env): Promise<void> {
   await buildAndSendDigest(env, config, null);
 }
 
+// Task 24 Part C's similar-title 409 (see index.ts's POST /api/admin/articles)
+// is deliberately NOT applied here: a Telegram message carries only a raw
+// URL, never a title — the real title is only known once the pipeline
+// fetches and extracts the page, which happens asynchronously in the queue
+// consumer (or its inline fallback), never synchronously inside this
+// webhook handler (see README "Queue-based pipeline execution" for why that
+// split exists — a 30s waitUntil cap). Running the check here would mean
+// fetching the article twice (once just to get a title to compare, once
+// again in the real pipeline), which isn't worth it for one save path when
+// the exact-URL check below already catches a literal re-share. This is a
+// stated limitation, not an oversight.
 async function handleUrlMessage(
   c: Context<AppEnv>,
   config: TelegramConfig,

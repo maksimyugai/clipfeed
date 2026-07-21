@@ -258,6 +258,19 @@ export class FakeD1 implements D1Database {
         .map((r) => ({ title: r.title }));
     }
 
+    if (
+      sql ===
+        "SELECT id, title, added_at FROM articles WHERE added_at >= ? ORDER BY added_at DESC LIMIT ?"
+    ) {
+      const since = values[0] as string;
+      const limit = values[1] as number;
+      return this.rows
+        .filter((r) => (r.added_at as string) >= since)
+        .sort((a, b) => (b.added_at as string).localeCompare(a.added_at as string))
+        .slice(0, limit)
+        .map((r) => ({ id: r.id, title: r.title, added_at: r.added_at }));
+    }
+
     if (sql.startsWith("SELECT id, url, canonical_url")) {
       return this.queryList(sql, values);
     }

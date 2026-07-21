@@ -32,10 +32,14 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
   });
 
   const poolStart = performance.now();
-  const pool = await buildCandidatePool(env.DB, env.CACHE, candidates, new Date());
+  const { pool, dedupDrops } = await buildCandidatePool(env.DB, env.CACHE, candidates, new Date());
+  const dedupDropCounts = { url: 0, title: 0, jaccard: 0 };
+  for (const drop of dedupDrops) dedupDropCounts[drop.reason] += 1;
   logAgentStage("pool", {
     duration_ms: Math.round(performance.now() - poolStart),
     pool_size: pool.length,
+    dedup_dropped: dedupDrops.length,
+    dedup_dropped_by_reason: dedupDropCounts,
   });
 
   if (pool.length === 0) {

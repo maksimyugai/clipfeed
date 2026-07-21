@@ -315,6 +315,125 @@ Deno.test("POST /api/admin/articles: rejects duplicate url with 409 and the exis
   }
 });
 
+// --- Task 24 Part C: similar-title 409 for manual/extension adds (a
+// DIFFERENT url whose normalized title exactly matches something added in
+// the last 72h). JOBS is configured in every test below so the pipeline is
+// only ENQUEUED, never run inline — running it inline would overwrite the
+// first article's title with the real extracted page title (see
+// pipeline.ts's markArticleReady call), which would make these title
+// assertions meaningless. findRecentTitlesForDedup reads straight off the
+// articles table regardless of pending/ready status, so a still-'pending'
+// row with its originally-submitted title is exactly what's needed here. ---
+
+Deno.test("POST /api/admin/articles: a different URL with a normalized-identical title is rejected with 409 reason 'similar_title'", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const { ctx } = makeExecutionContext();
+
+  const first = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        url: "https://example.com/first-source",
+        title: "AMD Prepares Zen 6 Perf Profiling in the Linux Kernel",
+      }),
+    },
+    env,
+    ctx,
+  );
+  const { id } = await first.json();
+
+  const second = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        url: "https://mirror.example.com/reposted-elsewhere",
+        // Punctuation/case differ but normalize to the same exact form.
+        title: "amd prepares zen 6 perf profiling in the linux kernel!",
+      }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(second.status, 409);
+  const body = await second.json();
+  assertEquals(body, { id, error: "duplicate", reason: "similar_title" });
+});
+
+Deno.test("POST /api/admin/articles: a merely-similar (Jaccard, not exact) title is NOT blocked — manual adds are exact-title-only", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const { ctx } = makeExecutionContext();
+
+  await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        url: "https://example.com/kimi-source",
+        title: "Moonshot AI releases Kimi K2 model with major reasoning gains",
+      }),
+    },
+    env,
+    ctx,
+  );
+
+  const paraphrased = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        url: "https://example.com/kimi-paraphrase",
+        // Jaccard->=0.6 similar to the first title but not an exact
+        // normalized match — owner intent overrides here, unlike the
+        // scraper agent's pre-scrape pool dedup.
+        title: "Kimi K2, the new Moonshot AI model, brings major reasoning gains",
+      }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(paraphrased.status, 202);
+});
+
+Deno.test("POST /api/admin/articles: the similar-title check is skipped entirely when no title is supplied", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const { ctx } = makeExecutionContext();
+
+  await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        url: "https://example.com/titled-first",
+        title: "A Distinct Headline About Something",
+      }),
+    },
+    env,
+    ctx,
+  );
+
+  const untitled = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...authHeaders },
+      body: JSON.stringify({ url: "https://example.com/untitled-second" }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(untitled.status, 202);
+});
+
 Deno.test("POST /api/admin/articles: rejects oversized html with 413", async () => {
   const { env, authHeaders } = await makeOwnerContext();
   const { ctx } = makeExecutionContext();

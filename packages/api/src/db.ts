@@ -160,6 +160,43 @@ export async function findRecentTitles(db: D1Database, sinceIso: string): Promis
   return (result.results ?? []).map((row) => row.title);
 }
 
+export interface RecentTitleRow {
+  id: string;
+  title: string;
+  added_at: string;
+}
+
+// Shared 72h lookback used by every title-based dedup check introduced in
+// Task 24: the scraper agent's pre-scrape pool dedup (agent-pool.ts) AND the
+// manual/extension/telegram add paths' similar-title 409 (index.ts,
+// telegram-webhook.ts) — one constant so the two "what counts as recent"
+// definitions can never quietly drift apart. Wider than findRecentTitles'
+// 48h window above (used by ranking.ts's post-pick story dedup), which
+// intentionally stays narrower/independent.
+export const RECENT_TITLES_DEDUP_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+// Used by the scraper agent's pre-scrape pool dedup (see agent-pool.ts,
+// Task 24 Part B) and the manual/extension/telegram similar-title 409 check
+// (index.ts, telegram-webhook.ts) — unlike findRecentTitles, returns `id`
+// too so a dropped/blocked candidate's log line or 409 body can name which
+// existing article it matched. Ordered newest-first and capped (default
+// 300) for cost: a busy instance could otherwise hand the pool-dedup
+// comparison loop an unbounded row count on every single agent run.
+const DEFAULT_RECENT_TITLES_LIMIT = 300;
+
+export async function findRecentTitlesForDedup(
+  db: D1Database,
+  sinceIso: string,
+  limit: number = DEFAULT_RECENT_TITLES_LIMIT,
+): Promise<RecentTitleRow[]> {
+  const result = await db.prepare(
+    "SELECT id, title, added_at FROM articles WHERE added_at >= ? ORDER BY added_at DESC LIMIT ?",
+  )
+    .bind(sinceIso, limit)
+    .all<RecentTitleRow>();
+  return result.results ?? [];
+}
+
 export interface InsertArticleInput {
   id: string;
   url: string;

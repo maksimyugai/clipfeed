@@ -3,6 +3,7 @@ import {
   backfillNormalizedTags,
   buildListQuery,
   findRecentTitles,
+  findRecentTitlesForDedup,
   getFaithfulnessStats,
   insertPendingArticle,
   markArticleFailed,
@@ -272,6 +273,69 @@ Deno.test("findRecentTitles: no matching rows yields an empty array", async () =
   const db = new FakeD1();
   const titles = await findRecentTitles(db, "2026-01-01T00:00:00.000Z");
   assertEquals(titles, []);
+});
+
+// --- findRecentTitlesForDedup (Task 24 Part B: pre-scrape pool dedup, 72h window) ---
+
+Deno.test("findRecentTitlesForDedup: returns id+title+added_at for rows at/after the window, newest first", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "r1",
+    url: "https://example.com/r1",
+    title: "Older in-window story",
+    source: "example.com",
+    tags: [],
+    added_via: "agent",
+    added_at: "2026-01-02T00:00:00.000Z",
+  });
+  await insertPendingArticle(db, {
+    id: "r2",
+    url: "https://example.com/r2",
+    title: "Newer in-window story",
+    source: "example.com",
+    tags: [],
+    added_via: "agent",
+    added_at: "2026-01-03T00:00:00.000Z",
+  });
+  await insertPendingArticle(db, {
+    id: "r3",
+    url: "https://example.com/r3",
+    title: "Outside the window",
+    source: "example.com",
+    tags: [],
+    added_via: "agent",
+    added_at: "2025-12-30T00:00:00.000Z",
+  });
+
+  const rows = await findRecentTitlesForDedup(db, "2026-01-01T00:00:00.000Z");
+  assertEquals(rows, [
+    { id: "r2", title: "Newer in-window story", added_at: "2026-01-03T00:00:00.000Z" },
+    { id: "r1", title: "Older in-window story", added_at: "2026-01-02T00:00:00.000Z" },
+  ]);
+});
+
+Deno.test("findRecentTitlesForDedup: caps the result at the given limit", async () => {
+  const db = new FakeD1();
+  for (let i = 0; i < 5; i++) {
+    await insertPendingArticle(db, {
+      id: `r${i}`,
+      url: `https://example.com/r${i}`,
+      title: `Story ${i}`,
+      source: "example.com",
+      tags: [],
+      added_via: "agent",
+      added_at: `2026-01-0${i + 1}T00:00:00.000Z`,
+    });
+  }
+
+  const rows = await findRecentTitlesForDedup(db, "2026-01-01T00:00:00.000Z", 2);
+  assertEquals(rows.length, 2);
+});
+
+Deno.test("findRecentTitlesForDedup: no matching rows yields an empty array", async () => {
+  const db = new FakeD1();
+  const rows = await findRecentTitlesForDedup(db, "2026-01-01T00:00:00.000Z");
+  assertEquals(rows, []);
 });
 
 // --- Faithfulness check (Task 23) ---

@@ -365,9 +365,14 @@ mechanism behind the headline fact).
 BULLETS (bullets_ru, bullets_en): ${spec.minBullets}-${spec.maxBullets} items, most important
 first, ${spec.minBulletChars}-${spec.softMaxBulletChars} characters each. Each bullet is a
 self-contained concrete fact — a number, name, date, mechanism, or consequence — not a rephrasing of
-the TL;DR or the body. Bullets are for scanning: sharp, standalone facts, not prose. The first bullet
-especially must NOT restate the TL;DR's opening claim — lead with the next most important fact
-instead, something the TL;DR didn't already say.
+the TL;DR or the body. Bullets MUST add NEW specifics not already in the TL;DR — different numbers,
+names, mechanisms, or consequences the TL;DR didn't mention. NEVER restate the TL;DR in different
+words. Example — TL;DR: "AMD prepared Zen 6 perf profiling in the Linux kernel." BAD bullet: "AMD
+added Zen 6 perf profiling to Linux." (just reworks the TL;DR, no new information). GOOD bullet: "The
+patch adds 8 new EILVT registers for per-core sampling." (a concrete mechanism the TL;DR never
+mentioned). Bullets are for scanning: sharp, standalone facts, not prose. The first bullet especially
+must NOT restate the TL;DR's opening claim — lead with the next most important fact instead,
+something the TL;DR didn't already say.
 
 FAITHFULNESS: only claims actually present in the source. No speculation, no invented numbers or
 figures. Paraphrase quotes and attributed claims in your own words instead of quoting verbatim. If
@@ -452,6 +457,18 @@ function buildUserMessage(title: string, text: string): string {
 // needed here to disambiguate direction.
 const BODY_EXTREME_LENGTH_RE = /^(body_(?:ru|en))\[(\d+)\] is extremely long/;
 
+// Live-recurring failure: "bullets_ru[1] duplicates the tldr instead of
+// adding new detail" — the generic "- ${v}" phrasing below didn't reliably
+// fix it on retry, same class of problem BODY_EXTREME_LENGTH_RE already
+// solved for paragraph overshoots. Naming the exact bullet and telling the
+// model to substitute a genuinely new fact gives it something concrete to
+// do instead of re-deriving "don't overlap the TL;DR" from the bare
+// violation text a second time. Scoped to bullets_* only (not body_*) — the
+// live incidents this task is fixing were all bullets; body-paragraph
+// tldr-overlap is rare enough (a paragraph is much longer than a bullet, see
+// textDuplicatesTldr) that the generic message has been sufficient there.
+const BULLET_TLDR_DUPLICATE_RE = /^(bullets_(?:ru|en))\[(\d+)\] duplicates the tldr/;
+
 // Appends the specific rule violations from the previous attempt, so the
 // retry has a concrete target instead of a generic "try again" — used for
 // both a schema (unparseable) failure and a content-quality failure, since
@@ -462,11 +479,19 @@ function correctiveValidationMessage(
   spec: SummarySpec,
 ): string {
   const lines = violations.map((v) => {
-    const match = v.match(BODY_EXTREME_LENGTH_RE);
-    if (!match) return `- ${v}`;
-    const [, field, indexRaw] = match;
-    const paragraphNumber = Number(indexRaw) + 1;
-    return `- rewrite ${field} paragraph ${paragraphNumber} to ${spec.paragraphTargetLow}-${spec.paragraphTargetHigh} characters; keep the most important facts, cut examples first`;
+    const bodyMatch = v.match(BODY_EXTREME_LENGTH_RE);
+    if (bodyMatch) {
+      const [, field, indexRaw] = bodyMatch;
+      const paragraphNumber = Number(indexRaw) + 1;
+      return `- rewrite ${field} paragraph ${paragraphNumber} to ${spec.paragraphTargetLow}-${spec.paragraphTargetHigh} characters; keep the most important facts, cut examples first`;
+    }
+    const bulletMatch = v.match(BULLET_TLDR_DUPLICATE_RE);
+    if (bulletMatch) {
+      const [, field, indexRaw] = bulletMatch;
+      const bulletNumber = Number(indexRaw) + 1;
+      return `- replace bullet ${bulletNumber} (${field}[${indexRaw}]) with a NEW fact from the article not mentioned in the TL;DR`;
+    }
+    return `- ${v}`;
   });
 
   return `${firstMessage}

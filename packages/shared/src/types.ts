@@ -111,6 +111,20 @@ export interface CreateArticleResponse {
   status: ArticleStatus;
 }
 
+// 409 body for POST /api/admin/articles (manual/extension adds) and the
+// Telegram save flow — reason distinguishes an exact URL re-add (already
+// this exact article) from a normalized-title match against a DIFFERENT
+// URL within the last 72h (Task 24 Part C: likely the same story, but not
+// certain — the client/bot decides how to phrase that, this API only
+// signals which case it is). `reason` is omitted for the exact-URL case to
+// stay backward compatible with existing 409 consumers that only look at
+// `id`.
+export interface DuplicateArticleResponse {
+  id: string;
+  error: "duplicate";
+  reason?: "similar_title";
+}
+
 export interface ArticleListResponse {
   items: ArticleListItem[];
   next_cursor: string | null;

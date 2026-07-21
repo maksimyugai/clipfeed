@@ -1,10 +1,31 @@
 import "./env.d.ts";
 import type { Candidate } from "./agent-types.ts";
-import { findExistingUrls } from "./db.ts";
+import {
+  findExistingUrls,
+  findRecentTitlesForDedup,
+  RECENT_TITLES_DEDUP_WINDOW_MS,
+  type RecentTitleRow,
+} from "./db.ts";
 import { isLearnedThinHost } from "./thin-host-learning.ts";
+import { normalizeTitleExact, titleSimilarity } from "./title-similarity.ts";
 
 const POOL_CAP = 160;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// Multi-layer pre-scrape dedup (Task 24 Part B): reject duplicate/same-story
+// candidates here, BEFORE ranking and summarization, so no ranking or
+// summary tokens are spent on them — cheaper than the existing post-pick
+// dedup in ranking.ts (dedupStories), which only runs on the handful of
+// candidates the model already picked. TITLE_JACCARD_THRESHOLD is
+// deliberately higher than ranking.ts's STORY_SIMILARITY_THRESHOLD (0.6 vs.
+// 0.5) — this stage runs on the WHOLE pool (potentially 100+ candidates vs.
+// a handful of picks), so a lower bar here would risk dropping genuinely
+// distinct stories that merely share a topic's common vocabulary; the
+// post-pick stage is a final backstop with a smaller, already-curated set
+// where a slightly more aggressive threshold is safer.
+const TITLE_JACCARD_THRESHOLD = 0.6;
+
+export type PoolDedupReason = "url" | "title" | "jaccard";
 
 // Known thin/mirror hosts whose pages are link-posts, not articles — a
 // Twitter/X mirror or shortener yields ~0 chars of real extractable text
@@ -81,16 +102,54 @@ function publishedAtMs(candidate: Candidate): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
+export interface PoolDedupDrop {
+  candidateTitle: string;
+  reason: PoolDedupReason;
+  matchedId?: string;
+}
+
+export interface BuildCandidatePoolResult {
+  pool: Candidate[];
+  dedupDrops: PoolDedupDrop[];
+}
+
+function logPoolDedupDrop(drop: PoolDedupDrop): void {
+  console.log(JSON.stringify({ event: "pool_dedup_dropped", ...drop }));
+}
+
+// Title-comparison entry used by both the exact-match index and the Jaccard
+// scan below — `id` is present for a row that already exists in the DB (so
+// a drop's log line/stats can name what it matched) and absent for a
+// pool-internal candidate that hasn't been saved yet.
+interface TitleEntry {
+  title: string;
+  id?: string;
+}
+
 // 24h filter -> newest-first sort -> pool-internal dedupe by canonicalized
-// URL -> drop candidates already saved (exact url match against D1) -> cap.
-// The DB check runs AFTER dedup/before the cap so the cap always applies to
-// genuinely new candidates, not ones that'll be dropped anyway.
+// URL -> drop candidates already saved (exact url match against D1) ->
+// normalized-title exact match -> title Jaccard similarity -> cap. Layers 2
+// and 3 (title/Jaccard) are checked against BOTH the 72h DB window and every
+// pool candidate already kept in this same pass — the DB check runs first
+// per candidate (a match there always means "drop the newer candidate",
+// since the existing row was already fully processed) then the pool-
+// internal check (a match there drops whichever candidate is later/
+// lower-ranked in the already newest-first-sorted pool, keeping the first
+// one seen — same "keep first, drop subsequent" convention the canonical-URL
+// dedupe above already uses). All 3 layers log 'pool_dedup_dropped' and
+// their counts are returned for the caller's run stats (see agent.ts).
+//
+// Honest limitation (see also README "Daily scraping agent"): this is cheap
+// string-only matching, not semantic — two differently-worded headlines
+// about the same event that don't share enough tokens can still both pass
+// through as distinct candidates. A future embedding-based layer could catch
+// that; it is deliberately NOT part of this task.
 export async function buildCandidatePool(
   db: D1Database,
   cache: KVNamespace,
   candidates: Candidate[],
   now: Date = new Date(),
-): Promise<Candidate[]> {
+): Promise<BuildCandidatePoolResult> {
   const fresh = candidates.filter((c) => isWithinWindow(c, now));
 
   const unpaywalled = fresh.filter((c) => {
@@ -111,17 +170,80 @@ export async function buildCandidatePool(
   });
   substantial.sort((a, b) => publishedAtMs(b) - publishedAtMs(a));
 
+  const drops: PoolDedupDrop[] = [];
+
   const seenCanonical = new Set<string>();
   const deduped: Candidate[] = [];
   for (const candidate of substantial) {
     const key = canonicalize(candidate.url);
-    if (seenCanonical.has(key)) continue;
+    if (seenCanonical.has(key)) {
+      const drop: PoolDedupDrop = { candidateTitle: candidate.title, reason: "url" };
+      drops.push(drop);
+      logPoolDedupDrop(drop);
+      continue;
+    }
     seenCanonical.add(key);
     deduped.push(candidate);
   }
 
   const existingUrls = await findExistingUrls(db, deduped.map((c) => c.url));
-  const newOnly = deduped.filter((c) => !existingUrls.has(c.url));
+  const urlFiltered: Candidate[] = [];
+  for (const candidate of deduped) {
+    if (existingUrls.has(candidate.url)) {
+      const drop: PoolDedupDrop = { candidateTitle: candidate.title, reason: "url" };
+      drops.push(drop);
+      logPoolDedupDrop(drop);
+      continue;
+    }
+    urlFiltered.push(candidate);
+  }
 
-  return newOnly.slice(0, POOL_CAP);
+  const sinceIso = new Date(now.getTime() - RECENT_TITLES_DEDUP_WINDOW_MS).toISOString();
+  const recentRows: RecentTitleRow[] = await findRecentTitlesForDedup(db, sinceIso);
+
+  const exactIndex = new Map<string, TitleEntry>();
+  const jaccardList: TitleEntry[] = [];
+  for (const row of recentRows) {
+    const entry: TitleEntry = { title: row.title, id: row.id };
+    const key = normalizeTitleExact(row.title);
+    if (!exactIndex.has(key)) exactIndex.set(key, entry);
+    jaccardList.push(entry);
+  }
+
+  const titleFiltered: Candidate[] = [];
+  for (const candidate of urlFiltered) {
+    const exactKey = normalizeTitleExact(candidate.title);
+    const exactMatch = exactIndex.get(exactKey);
+    if (exactMatch) {
+      const drop: PoolDedupDrop = {
+        candidateTitle: candidate.title,
+        reason: "title",
+        matchedId: exactMatch.id,
+      };
+      drops.push(drop);
+      logPoolDedupDrop(drop);
+      continue;
+    }
+
+    const jaccardMatch = jaccardList.find(
+      (entry) => titleSimilarity(entry.title, candidate.title) >= TITLE_JACCARD_THRESHOLD,
+    );
+    if (jaccardMatch) {
+      const drop: PoolDedupDrop = {
+        candidateTitle: candidate.title,
+        reason: "jaccard",
+        matchedId: jaccardMatch.id,
+      };
+      drops.push(drop);
+      logPoolDedupDrop(drop);
+      continue;
+    }
+
+    titleFiltered.push(candidate);
+    const keptEntry: TitleEntry = { title: candidate.title };
+    exactIndex.set(exactKey, keptEntry);
+    jaccardList.push(keptEntry);
+  }
+
+  return { pool: titleFiltered.slice(0, POOL_CAP), dedupDrops: drops };
 }

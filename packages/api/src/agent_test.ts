@@ -274,3 +274,66 @@ Deno.test("runAgentJob: re-running within the same day does not duplicate articl
     globalThis.fetch = restoreOriginal;
   }
 });
+
+Deno.test("runAgentJob: pool-stage title duplicates are counted and logged in the 'pool' stage stats (Task 24 Part B)", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => {
+    logs.push(args);
+  };
+
+  // A single source whose feed carries two items with the exact same title
+  // (different URLs/links) — the pool-internal title-exact dedup layer
+  // (agent-pool.ts) should drop the second one before ranking ever runs.
+  const duplicateTitleFeed = `<rss><channel>` +
+    `<item><title>Same Headline Twice</title><link>https://articles.example.com/dup-a</link><pubDate>${
+      new Date().toUTCString()
+    }</pubDate></item>` +
+    `<item><title>Same Headline Twice</title><link>https://articles.example.com/dup-b</link><pubDate>${
+      new Date(Date.now() - 60_000).toUTCString()
+    }</pubDate></item>` +
+    `</channel></rss>`;
+
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+      ? input.toString()
+      : input.url;
+    const hostname = new URL(url).hostname;
+    if (hostname === "feeds.example.com") {
+      return Promise.resolve(new Response(duplicateTitleFeed, { status: 200 }));
+    }
+    if (hostname === "api.anthropic.com") {
+      const body = JSON.parse(String(init?.body)) as { system: string };
+      if (body.system.includes("rank")) return Promise.resolve(anthropicText("not valid json"));
+      return Promise.resolve(anthropicText(JSON.stringify(VALID_SUMMARY)));
+    }
+    if (hostname === "articles.example.com") {
+      return Promise.resolve(
+        new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }),
+      );
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const env = makeEnv();
+    await runAgentJob(env, [{
+      id: "dup-source",
+      type: "rss",
+      url: "https://feeds.example.com/dup",
+    }]);
+
+    const poolLog = logs
+      .map((args) => JSON.parse(String(args[0])))
+      .find((entry) => entry.event === "agent_stage" && entry.stage === "pool");
+    assertEquals(poolLog?.pool_size, 1);
+    assertEquals(poolLog?.dedup_dropped, 1);
+    assertEquals(poolLog?.dedup_dropped_by_reason, { url: 0, title: 1, jaccard: 0 });
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+  }
+});
