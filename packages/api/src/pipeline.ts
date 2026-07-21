@@ -1,5 +1,5 @@
 import "./env.d.ts";
-import type { SummaryJson } from "@clipfeed/shared/types";
+import type { FaithfulnessJson, FaithfulnessVerdict, SummaryJson } from "@clipfeed/shared/types";
 import { safeFetchText } from "./ssrf.ts";
 import { extractArticle } from "./extract.ts";
 import {
@@ -11,6 +11,13 @@ import {
 import { tryConsumeSummaryBudget } from "./cost-guard.ts";
 import { markArticleFailed, markArticleReady } from "./db.ts";
 import { recordThinHostFailure } from "./thin-host-learning.ts";
+import {
+  incrementFaithfulnessCallCounter,
+  parseFaithfulnessCheckEnabled,
+  parseFaithfulnessEnforceEnabled,
+  resolveFaithfulnessJudgeModel,
+  runFaithfulnessCheck,
+} from "./faithfulness.ts";
 
 export interface PipelineInput {
   id: string;
@@ -151,6 +158,95 @@ function logStage(
   }));
 }
 
+interface FaithfulnessStageOutcome {
+  // false means the article was already marked 'failed' (enforce-mode
+  // discard) — the caller must stop, never fall through to persist.
+  proceed: boolean;
+  summary: SummaryJson;
+  // true only when the judge actually ran (check enabled) — distinguishes
+  // "disabled, nothing to write" from "ran, but the judge's own output was
+  // unparseable" (verdict null either way, but the latter still has a
+  // checkedAt and a {error} json payload — see faithfulness.ts).
+  ran: boolean;
+  verdict: FaithfulnessVerdict | null;
+  json: FaithfulnessJson | null;
+  checkedAt: string | null;
+}
+
+// Runs AFTER a summary validates and BEFORE the article is marked 'ready' —
+// a SEPARATE, independent judge (always Workers AI Llama, regardless of
+// which model wrote the summary — see faithfulness.ts) checks whether the
+// summary is actually supported by the source text. First release is
+// signal-only: FAITHFULNESS_ENFORCE defaults to "false", so a 'fail'
+// verdict is stored and surfaced as a badge but does NOT block the
+// article — only once the owner flips FAITHFULNESS_ENFORCE=true (after
+// watching real false-positive rates) does a 'fail' trigger one
+// resummarize-and-reverify attempt, with a permanent discard if that retry
+// still fails.
+async function runFaithfulnessStage(
+  env: Env,
+  id: string,
+  mode: ProviderMode,
+  title: string,
+  text: string,
+  summary: SummaryJson,
+): Promise<FaithfulnessStageOutcome> {
+  if (!parseFaithfulnessCheckEnabled(env.FAITHFULNESS_CHECK)) {
+    return { proceed: true, summary, ran: false, verdict: null, json: null, checkedAt: null };
+  }
+
+  const judgeModel = resolveFaithfulnessJudgeModel(env.FAITHFULNESS_JUDGE_MODEL);
+
+  const firstStart = performance.now();
+  const first = await runFaithfulnessCheck(env.AI, judgeModel, text, summary);
+  await incrementFaithfulnessCallCounter(env.CACHE);
+  logStage(id, "faithfulness", firstStart, { verdict: first.verdict, ...first.counts });
+
+  const enforce = parseFaithfulnessEnforceEnabled(env.FAITHFULNESS_ENFORCE);
+  if (!enforce || first.verdict !== "fail") {
+    return {
+      proceed: true,
+      summary,
+      ran: true,
+      verdict: first.verdict,
+      json: first.json,
+      checkedAt: first.checkedAt,
+    };
+  }
+
+  const retriedSummary = await runSummarizationForMode(mode, env, title, text);
+  const secondStart = performance.now();
+  const second = await runFaithfulnessCheck(env.AI, judgeModel, text, retriedSummary);
+  await incrementFaithfulnessCallCounter(env.CACHE);
+  logStage(id, "faithfulness", secondStart, {
+    verdict: second.verdict,
+    retry: true,
+    ...second.counts,
+  });
+
+  if (second.verdict === "fail") {
+    await markArticleFailed(env.DB, id, "faithfulness: summary not supported by source");
+    console.log(JSON.stringify({ event: "faithfulness_enforced_discard", id }));
+    return {
+      proceed: false,
+      summary: retriedSummary,
+      ran: true,
+      verdict: second.verdict,
+      json: second.json,
+      checkedAt: second.checkedAt,
+    };
+  }
+
+  return {
+    proceed: true,
+    summary: retriedSummary,
+    ran: true,
+    verdict: second.verdict,
+    json: second.json,
+    checkedAt: second.checkedAt,
+  };
+}
+
 // Runs the full fetch -> extract -> summarize -> persist pipeline for one
 // article. Called from ctx.executionCtx.waitUntil() — the top-level
 // try/catch below guarantees a terminal 'ready'/'failed' status for any
@@ -220,17 +316,34 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
     const summary = await runSummarizationForMode(mode, env, title, text);
     logStage(input.id, stage, summarizeStart, { mode, text_chars: text.length });
 
+    stage = "faithfulness";
+    const faithfulness = await runFaithfulnessStage(env, input.id, mode, title, text, summary);
+    if (!faithfulness.proceed) return;
+
     stage = "persist";
     const persistStart = performance.now();
     await markArticleReady(env.DB, input.id, {
       full_text: text,
       title,
       author: extracted.byline,
-      lang_original: summary.lang_original,
-      summary_ru: renderSummaryMarkdown(summary.tldr_ru, summary.bullets_ru),
-      summary_en: renderSummaryMarkdown(summary.tldr_en, summary.bullets_en),
-      summary_json: summary,
-      tags: mergeTags(input.requestTags, summary.tags),
+      lang_original: faithfulness.summary.lang_original,
+      summary_ru: renderSummaryMarkdown(
+        faithfulness.summary.tldr_ru,
+        faithfulness.summary.bullets_ru,
+      ),
+      summary_en: renderSummaryMarkdown(
+        faithfulness.summary.tldr_en,
+        faithfulness.summary.bullets_en,
+      ),
+      summary_json: faithfulness.summary,
+      tags: mergeTags(input.requestTags, faithfulness.summary.tags),
+      faithfulness: faithfulness.ran
+        ? {
+          verdict: faithfulness.verdict,
+          json: faithfulness.json,
+          checkedAt: faithfulness.checkedAt as string,
+        }
+        : undefined,
     });
     logStage(input.id, stage, persistStart);
   } catch (err) {
@@ -284,17 +397,41 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
     const summary = await runSummarizationForMode(mode, env, input.title, text);
     logStage(input.id, stage, summarizeStart, { mode, text_chars: text.length });
 
+    stage = "faithfulness";
+    const faithfulness = await runFaithfulnessStage(
+      env,
+      input.id,
+      mode,
+      input.title,
+      text,
+      summary,
+    );
+    if (!faithfulness.proceed) return;
+
     stage = "persist";
     const persistStart = performance.now();
     await markArticleReady(env.DB, input.id, {
       full_text: text,
       title: input.title,
       author: input.author,
-      lang_original: summary.lang_original,
-      summary_ru: renderSummaryMarkdown(summary.tldr_ru, summary.bullets_ru),
-      summary_en: renderSummaryMarkdown(summary.tldr_en, summary.bullets_en),
-      summary_json: summary,
-      tags: mergeTags(input.requestTags, summary.tags),
+      lang_original: faithfulness.summary.lang_original,
+      summary_ru: renderSummaryMarkdown(
+        faithfulness.summary.tldr_ru,
+        faithfulness.summary.bullets_ru,
+      ),
+      summary_en: renderSummaryMarkdown(
+        faithfulness.summary.tldr_en,
+        faithfulness.summary.bullets_en,
+      ),
+      summary_json: faithfulness.summary,
+      tags: mergeTags(input.requestTags, faithfulness.summary.tags),
+      faithfulness: faithfulness.ran
+        ? {
+          verdict: faithfulness.verdict,
+          json: faithfulness.json,
+          checkedAt: faithfulness.checkedAt as string,
+        }
+        : undefined,
     });
     logStage(input.id, stage, persistStart);
   } catch (err) {
