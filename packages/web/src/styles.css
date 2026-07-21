@@ -599,6 +599,39 @@ ul {
   color: var(--acc);
 }
 
+.today-empty-state {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 32px 24px;
+  text-align: center;
+}
+
+.today-empty-message {
+  margin: 0 0 6px;
+  color: var(--txt);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.today-empty-countdown {
+  margin: 0 0 14px;
+  color: var(--mut);
+  font-size: 0.875rem;
+}
+
+.today-empty-yesterday-link {
+  border: none;
+  background: transparent;
+  color: var(--acc);
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0;
+}
+
+.today-empty-yesterday-link:hover {
+  text-decoration: underline;
+}
+
 /* --- Cards --- */
 
 .card {

@@ -24,6 +24,7 @@ import {
   writeStoredSectionState,
 } from "./lib/sectionState.ts";
 import { shouldFetchNextInitialPage, shouldFetchOnEarlierExpand } from "./lib/pagination.ts";
+import { loadAgentSchedule } from "./lib/agentSchedule.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
 import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
@@ -106,6 +107,7 @@ export function App() {
   const [sectionOpen, setSectionOpen] = useState<SectionOpenState>(() =>
     readStoredSectionState(localStorage)
   );
+  const [agentHourUtc, setAgentHourUtc] = useState<number | null>(null);
 
   const setLang = (next: Lang) => {
     setLangState(next);
@@ -126,6 +128,13 @@ export function App() {
     getAdminMe()
       .then(() => setOwnerModeState(classifyMeOutcome("success")))
       .catch(() => setOwnerModeState(classifyMeOutcome("error")));
+  }, []);
+
+  // Powers the empty-Today countdown card (see Feed.tsx/TodayEmptyState.tsx)
+  // — fetched once and cached (see loadAgentSchedule), same as the
+  // Turnstile site key fetch elsewhere.
+  useEffect(() => {
+    loadAgentSchedule().then((config) => setAgentHourUtc(config.agentHourUtc));
   }, []);
 
   // Debounce the raw search input into the value that actually drives fetches.
@@ -389,6 +398,7 @@ export function App() {
             sectionOpen={sectionOpen}
             onToggleSection={handleToggleSection}
             isSearching={query.trim() !== ""}
+            agentHourUtc={agentHourUtc}
           />
         </main>
 

@@ -50,3 +50,21 @@ export function isSectionOpen(
 ): boolean {
   return isSearching || state[section];
 }
+
+// Task 24 Part D: when Today has zero articles, Yesterday is force-opened
+// for this render regardless of its persisted/manually-toggled state — a
+// visitor landing on a wall of collapsed section headers with nothing in
+// Today shouldn't also have to click to see Yesterday. Only "yesterday" is
+// affected; every other section (including "today" itself, and "earlier")
+// keeps its normal isSectionOpen behavior unchanged. The override does NOT
+// persist — closing Yesterday again once Today gets an article reverts to
+// whatever was actually stored.
+export function isSectionOpenTodayEmptyAware(
+  section: DateSection,
+  state: SectionOpenState,
+  isSearching: boolean,
+  todayIsEmpty: boolean,
+): boolean {
+  if (section === "yesterday" && todayIsEmpty) return true;
+  return isSectionOpen(section, state, isSearching);
+}

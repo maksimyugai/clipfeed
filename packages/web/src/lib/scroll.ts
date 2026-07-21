@@ -13,11 +13,19 @@ export function computeScrollOffset(headerEl: Element | null): number {
   return (isStickyOrFixed ? (headerEl as HTMLElement).offsetHeight : 0) + BASE_OFFSET_PX;
 }
 
-export function scrollTitleIntoView(titleEl: HTMLElement | null): void {
-  if (!titleEl) return;
+// Generalized from the title-scroll case below — any element that should
+// land just under the (possibly sticky) app header, e.g. the "read
+// yesterday" link's scroll target when Today's section is empty (see
+// Feed.tsx).
+export function scrollElementIntoView(el: HTMLElement | null): void {
+  if (!el) return;
   const offset = computeScrollOffset(document.querySelector(".app-header"));
-  const top = titleEl.getBoundingClientRect().top + globalThis.scrollY - offset;
+  const top = el.getBoundingClientRect().top + globalThis.scrollY - offset;
   const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
     false;
   globalThis.scrollTo({ top, behavior: reducedMotion ? "auto" : "smooth" });
+}
+
+export function scrollTitleIntoView(titleEl: HTMLElement | null): void {
+  scrollElementIntoView(titleEl);
 }

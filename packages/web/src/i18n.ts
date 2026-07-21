@@ -72,6 +72,13 @@ export interface Dictionary {
   clearSearchAria: string;
   clearTagFilterAria: string;
   clearSourceFilterAria: string;
+  todayEmptyMessage: string;
+  todayCountdownPrefix: string;
+  todayCountdownHoursUnit: string;
+  todayCountdownMinutesUnit: string;
+  todayCountdownLessThanMinute: string;
+  todayAgentDisabled: string;
+  todayReadYesterdayLink: string;
 }
 
 const ru: Dictionary = {
@@ -144,6 +151,13 @@ const ru: Dictionary = {
   clearSearchAria: "Очистить поиск",
   clearTagFilterAria: "Сбросить фильтр по тегу",
   clearSourceFilterAria: "Сбросить фильтр по источнику",
+  todayEmptyMessage: "Сегодняшние выжимки ещё готовятся",
+  todayCountdownPrefix: "Свежие статьи через",
+  todayCountdownHoursUnit: "ч",
+  todayCountdownMinutesUnit: "мин",
+  todayCountdownLessThanMinute: "Свежие статьи вот-вот появятся",
+  todayAgentDisabled: "Автоподбор отключён",
+  todayReadYesterdayLink: "Пока почитайте вчерашние",
 };
 
 const en: Dictionary = {
@@ -217,6 +231,13 @@ const en: Dictionary = {
   clearSearchAria: "Clear search",
   clearTagFilterAria: "Clear tag filter",
   clearSourceFilterAria: "Clear source filter",
+  todayEmptyMessage: "Today's picks aren't in yet",
+  todayCountdownPrefix: "New articles in",
+  todayCountdownHoursUnit: "h",
+  todayCountdownMinutesUnit: "m",
+  todayCountdownLessThanMinute: "New articles any moment now",
+  todayAgentDisabled: "Auto-picks are off",
+  todayReadYesterdayLink: "Read yesterday's meanwhile",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };

@@ -1,8 +1,10 @@
 import type { ArticleListItem } from "@clipfeed/shared/types";
 import type { Dictionary, Lang } from "../i18n.ts";
 import { DATE_SECTIONS, type DateSection, groupArticlesBySection } from "../lib/dateGrouping.ts";
-import { isSectionOpen, type SectionOpenState } from "../lib/sectionState.ts";
+import { isSectionOpenTodayEmptyAware, type SectionOpenState } from "../lib/sectionState.ts";
+import { scrollElementIntoView } from "../lib/scroll.ts";
 import { ArticleCard } from "./ArticleCard.tsx";
+import { TodayEmptyState } from "./TodayEmptyState.tsx";
 
 export interface FeedProps {
   dict: Dictionary;
@@ -26,6 +28,7 @@ export interface FeedProps {
   sectionOpen: SectionOpenState;
   onToggleSection: (section: DateSection) => void;
   isSearching: boolean;
+  agentHourUtc: number | null;
 }
 
 export function Feed(props: FeedProps) {
@@ -40,6 +43,7 @@ export function Feed(props: FeedProps) {
     sectionOpen,
     onToggleSection,
     isSearching,
+    agentHourUtc,
   } = props;
 
   if (articles.length === 0) {
@@ -61,6 +65,16 @@ export function Feed(props: FeedProps) {
     yesterday: dict.sectionYesterday,
     earlier: dict.sectionEarlier,
   };
+  // Task 24 Part D: Today keeps rendering (with its live countdown card)
+  // even at zero articles — overriding the hide-empty-sections rule below
+  // for "today" specifically — but only in the normal feed view; an
+  // archived view showing "new articles soon" would be nonsensical, and the
+  // all-articles-empty case above already has its own dedicated empty state.
+  const todayIsEmpty = !archivedView && grouped.today.length === 0;
+
+  const handleReadYesterday = () => {
+    scrollElementIntoView(document.getElementById("feed-section-yesterday"));
+  };
 
   return (
     <div class="feed-sections">
@@ -68,16 +82,18 @@ export function Feed(props: FeedProps) {
         const items = grouped[section];
         // "Earlier" stays visible (collapsed, empty) as long as there's
         // more data the user hasn't fetched yet — otherwise there'd be no
-        // way to discover it exists. Today/Yesterday are fully loaded by
-        // the time this renders, so an empty bucket for them really is
-        // empty and hides entirely.
+        // way to discover it exists. "Today" stays visible even fully
+        // empty (see todayIsEmpty above). Yesterday is fully loaded by the
+        // time this renders, so an empty bucket for it really is empty and
+        // hides entirely.
         const isEarlierPending = section === "earlier" && items.length === 0 && hasMore;
-        if (items.length === 0 && !isEarlierPending) return null;
+        const isTodayEmptyState = section === "today" && todayIsEmpty;
+        if (items.length === 0 && !isEarlierPending && !isTodayEmptyState) return null;
 
-        const open = isSectionOpen(section, sectionOpen, isSearching);
+        const open = isSectionOpenTodayEmptyAware(section, sectionOpen, isSearching, todayIsEmpty);
 
         return (
-          <div class="feed-section" key={section}>
+          <div class="feed-section" key={section} id={`feed-section-${section}`}>
             <button
               type="button"
               class="feed-section-header"
@@ -86,11 +102,21 @@ export function Feed(props: FeedProps) {
             >
               <span class="feed-section-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>
               <span class="feed-section-label">{sectionLabel[section]}</span>
-              <span class="feed-section-count">{items.length}</span>
+              <span class="feed-section-count">
+                {isTodayEmptyState ? "—" : items.length}
+              </span>
             </button>
 
             {open && (
               <>
+                {isTodayEmptyState && (
+                  <TodayEmptyState
+                    dict={dict}
+                    agentHourUtc={agentHourUtc}
+                    onReadYesterday={handleReadYesterday}
+                  />
+                )}
+
                 {items.length > 0 && (
                   <div class="feed">
                     {items.map((article) => (
