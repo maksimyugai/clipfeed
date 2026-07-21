@@ -27,6 +27,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
+    AGENT_DAILY_PICKS: "10",
     SUMMARY_BODY_TARGET_CHARS: "1200",
     DIGEST_HOUR_UTC: "6",
     ...overrides,
@@ -122,6 +123,7 @@ Deno.test("handleScheduled: an invalid/empty AGENT_HOUR_UTC disables the job ent
 Deno.test("handleScheduled: digest hour sends the morning digest (Telegram configured, no ready articles -> silent, no throw)", async () => {
   const env = makeEnv({
     AGENT_HOUR_UTC: "",
+    AGENT_DAILY_PICKS: "10",
     DIGEST_HOUR_UTC: "6",
     TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-secret",

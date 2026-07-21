@@ -3,7 +3,7 @@ import type { Candidate } from "./agent-types.ts";
 import { findExistingUrls } from "./db.ts";
 import { isLearnedThinHost } from "./thin-host-learning.ts";
 
-const POOL_CAP = 120;
+const POOL_CAP = 160;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // Known thin/mirror hosts whose pages are link-posts, not articles — a

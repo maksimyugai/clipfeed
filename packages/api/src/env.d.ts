@@ -139,6 +139,12 @@ declare global {
     // that job never fires. Both are UTC hours (0-23).
     AGENT_HOUR_UTC: string;
     DIGEST_HOUR_UTC: string;
+    // How many candidates the agent saves per run — [vars] string, parsed
+    // defensively by ranking.ts's parseAgentDailyPicks (1-20, else the
+    // default 10 with a warning). Feeds both the ranking prompt's "pick N"
+    // instruction and the fallback/post-parse-fixup paths, so there's one
+    // number, not a prompt literal that can drift from the code.
+    AGENT_DAILY_PICKS: string;
     // Article pipeline job queue (see wrangler.toml [[queues.producers]],
     // queue.ts) — optional so a fork that hasn't run `deno task setup` yet
     // (or any environment missing the binding) degrades gracefully to the

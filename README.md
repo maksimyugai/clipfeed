@@ -497,21 +497,32 @@ extract → summarize → persist pipeline as every other capture path (includin
 ## Daily scraping agent
 
 Once a day, the agent reads a small set of trusted sources, ranks the last 24h of candidates against
-your interests with one cheap LLM call, and runs the top 5 through the normal extract → summarize →
-persist pipeline — same as any other capture path, just self-initiated (`added_via: "agent"`). The
-SPA already highlights the newest agent-added article from today with a "pick of the day" badge; no
-separate review step exists — a pick that turns out uninteresting is just another card you can
-archive.
+your interests with one cheap LLM call, and runs the top `AGENT_DAILY_PICKS` (default `10`) through
+the normal extract → summarize → persist pipeline — same as any other capture path, just
+self-initiated (`added_via: "agent"`). The SPA already highlights the newest agent-added article
+from today with a "pick of the day" badge; no separate review step exists — a pick that turns out
+uninteresting is just another card you can archive.
+
+**`AGENT_DAILY_PICKS`** ([vars] in `wrangler.toml`, default `10`, valid range `1`–`20`) is how many
+candidates the agent saves per run — a bad override (missing, non-numeric, out of range) falls back
+to `10` with a logged warning, same defensive-parse pattern as `SUMMARY_BODY_TARGET_CHARS`. Raising
+it increases how many summarization slots the agent itself spends every day — see "Self-healing
+failures" below for the `DAILY_SUMMARY_LIMIT` budget arithmetic this feeds into.
 
 ### Sources (`packages/api/sources.json`)
 
 Fork-editable, not a `[vars]` setting — it's a small JSON array committed to the repo, since a list
-of feed URLs isn't really a secret or a per-deployment credential:
+of feed URLs isn't really a secret or a per-deployment credential. Ten sources ship by default:
+general tech (Hacker News, Ars Technica, The Verge, MIT Technology Review), AI/dev-focused (Simon
+Willison, Cloudflare's blog), and hardware/Linux (Tom's Hardware, Phoronix, LWN.net, ServeTheHome) —
+chosen for being established, reputable outlets, not aggregators or SEO farms:
 
 ```json
 [
   { "id": "hn", "type": "hackernews" },
-  { "id": "arstechnica", "type": "rss", "url": "https://feeds.arstechnica.com/arstechnica/index" }
+  { "id": "arstechnica", "type": "rss", "url": "https://feeds.arstechnica.com/arstechnica/index" },
+  { "id": "tomshardware", "type": "rss", "url": "https://www.tomshardware.com/feeds.xml" },
+  { "id": "phoronix", "type": "rss", "url": "https://www.phoronix.com/rss.php" }
 ]
 ```
 
@@ -541,6 +552,29 @@ self-healing sweep re-classifying older rows (see "Self-healing failures" below)
 filters _agent_ candidates, never a manually/extension/Telegram-added article, so a link you
 deliberately save is never silently blocked by what the agent has learned to avoid.
 
+The candidate pool (post-dedupe, pre-ranking) is capped at 160 (see `agent-pool.ts`'s `POOL_CAP`) —
+raised from 120 when the source list grew to ten, so the wider set of feeds doesn't get truncated
+before the ranking call even sees most of it.
+
+### Ranking: diversity-aware, not just "newest/most relevant"
+
+The one ranking LLM call is asked to respect three hard rules, restated below every candidate list
+(see `buildRankSystemPrompt` in `ranking.ts`): at most 2 picks per source, cover at least 3 distinct
+topic areas from your `INTEREST_TOPICS` when the pool allows it, and prefer substantive reporting
+over link-posts and speculation. The per-source cap is never just trusted to the model's own
+counting — `enforceRankingDiversity` re-checks the model's response afterward and, if a source shows
+up more than twice, drops the excess and backfills those freed slots from the next candidates of
+_other_ sources in the pool (newest-first), logging a `rank_diversity_fixup` line whenever this
+actually triggers. If the pool doesn't have enough distinct-source candidates to fill every freed
+slot, the agent just saves fewer than `AGENT_DAILY_PICKS` that day rather than violating the cap to
+force a full count. The topic-diversity rule (b) is prompt-only — there's no per-candidate topic
+label to mechanically re-check it against, so it depends on the model actually reasoning about your
+interest list, same as picking "best" already does. The total-failure fallback path (LLM error or
+two unparseable responses in a row) doesn't apply the per-source cap — it favors breadth first
+(one-per-source, oldest-source-exhausted-first) and only repeats a source once every other source is
+already represented, which naturally covers at least `min(3, distinct source count)` sources
+whenever `AGENT_DAILY_PICKS >= 3`.
+
 ### Self-healing failures
 
 Every 'failed' article is classified into one of three healing strategies the moment it fails (see
@@ -566,22 +600,49 @@ articles are never touched by healing, and healing never bypasses the daily summ
 retried article goes through the exact same queue path (and the same budget check) as any other
 pipeline run.
 
-**`DAILY_SUMMARY_LIMIT`** ([vars] in `wrangler.toml`, default `50`) caps how many LLM calls run per
-UTC day (see `cost-guard.ts`) — a best-effort KV counter, not a hard guarantee under heavy
-concurrent load, but adequate for a personal, low-concurrency app. A live incident during
-development showed exactly how confusing hitting this looks without instrumentation: three
-consecutive retries of one article each completed in ~1 second with pipeline stages `fetch` →
-`extract` → done, no `summarize` stage at all — a silent daily-limit rejection is indistinguishable
-from a hung or broken pipeline unless you already suspect the budget. Two things now make this
-visible: the budget stage logs a
+**`DAILY_SUMMARY_LIMIT`** ([vars] in `wrangler.toml`, default `80`) caps how many pipeline runs
+consume a summarization slot per UTC day (see `cost-guard.ts`) — a best-effort KV counter, not a
+hard guarantee under heavy concurrent load, but adequate for a personal, low-concurrency app. Note
+what actually counts against it: **one slot per pipeline run** (a fresh article, a `retry`, or a
+`resummarize`), not per raw LLM API call — `summarizeArticle`/`summarizeArticleWithWorkersAi` may
+make up to 2 real provider calls internally (the corrective-retry-on-validation-failure path) inside
+that single slot. The ranking call the agent makes once per run is separate again and never touches
+this budget at all (see "Daily scraping agent" below). A live incident during development showed
+exactly how confusing hitting this looks without instrumentation: three consecutive retries of one
+article each completed in ~1 second with pipeline stages `fetch` → `extract` → done, no `summarize`
+stage at all — a silent daily-limit rejection is indistinguishable from a hung or broken pipeline
+unless you already suspect the budget. Two things now make this visible: the budget stage logs a
 `pipeline_stage {stage: "budget", outcome: "exhausted", used, limit}` line the moment the guard
 trips (instead of nothing), and `GET /api/admin/health-report`'s `llm_calls: {used, limit}` field
 shows today's running total on demand. A `daily-limit` failed card gets dedicated copy in the SPA
 ("daily summary limit reached — this will process automatically tomorrow") with **no Retry button**
 — retrying today can't succeed, and healing already re-tries it automatically once the UTC-midnight
 reset frees up budget. If heavy manual testing (adding many articles back-to-back) keeps exhausting
-the default 50/day, raise `DAILY_SUMMARY_LIMIT` in `wrangler.toml` — there's no other consequence to
+the default 80/day, raise `DAILY_SUMMARY_LIMIT` in `wrangler.toml` — there's no other consequence to
 a higher number besides LLM provider cost.
+
+**Why 80, not the old 50 (broader sources + `AGENT_DAILY_PICKS` doubled the agent's own share):**
+raising `AGENT_DAILY_PICKS` 5 → 10 doubles the agent's daily consumption from 5 slots to 10. Left at
+the old 50/day limit, that alone would shrink the headroom available for everything else (owner
+retries/resummarizes, healing catch-up) from `50 - 5 = 45` slots down to `50 - 10 = 40` — and a
+heavy manual-testing day (the exact scenario that originally exhausted the old 50/day default)
+routinely needs more than that on its own. Raising the limit to 80 keeps that headroom generous
+instead — `80 - 10 = 70` slots/day for everything else, more than the old 45, not less. Healing's
+own contribution is self-limiting regardless of the default (see above: capped at 2/1 attempts per
+article and 5 retries per hourly tick, so it only spends slots proportional to an actual failure
+backlog, not a fixed daily tax).
+
+**Cost at 80/day:** in gateway/direct mode (a real Claude model, e.g. the default
+`claude-haiku-4-5-20251001`), even the theoretical worst case — every one of the 80 slots needing
+both the first attempt and a corrective retry, 160 raw API calls total — is well under a dollar a
+day at Haiku's per-token pricing, since each call's input is one article's extracted text
+(thousands, not millions, of tokens); realistically most calls pass validation first-try, so actual
+daily cost is usually a small fraction of that ceiling. In Workers AI mode (the free-tier default,
+no cost), the relevant ceiling instead is the platform's neuron allowance (10k neurons/day free
+tier, mentioned above) — 80 slots/day at up to 2 Llama calls each is a meaningfully larger neuron
+draw than the old 5-pick default, so if you're running purely on the free tier at high daily volume,
+check Cloudflare's AI dashboard for neuron usage and consider AI Gateway/direct Claude (both cheap
+at this volume, per above) if you're consistently near the cap.
 
 `GET /api/admin/health-report` (owner-only) returns a JSON snapshot of all this — failure counts by
 class, total heal attempts by class, the current learned thin-host list, today's `llm_calls`
@@ -594,7 +655,7 @@ One `[vars]` string — free text describing what you want surfaced, sent straig
 prompt:
 
 ```
-INTEREST_TOPICS = "AI/LLMs and their engineering, software development, Cloudflare and edge computing, programming languages, security, notable science/tech news"
+INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news"
 ```
 
 Edit it in `wrangler.toml` (or override locally via `.dev.vars`) to match your own taste — there's
