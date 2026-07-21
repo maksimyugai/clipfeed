@@ -151,6 +151,32 @@ declare global {
     // pre-Queues ctx.waitUntil() behavior instead of crashing; see
     // queue.ts's enqueueArticleJob.
     JOBS?: Queue<QueueMessage>;
+    // Faithfulness check (see faithfulness.ts, README "Faithfulness
+    // check"): a SEPARATE judge pass (always Workers AI Llama, regardless of
+    // which model wrote the summary) that verifies a summary against its
+    // source after it validates but before the article is marked 'ready'.
+    // All three optional, parsed defensively — [vars] always sets them in
+    // this repo's own wrangler.toml, but a fork/test environment that
+    // omits them entirely gets the documented default rather than a type
+    // error or a runtime crash.
+    //   FAITHFULNESS_CHECK: "true"/"false", default "true" — master
+    //     on/off. Disabled means the judge is never called at all: no
+    //     Workers AI call, no faithfulness_* columns written, pipeline
+    //     behaves exactly as it did before this feature existed.
+    //   FAITHFULNESS_ENFORCE: "true"/"false", default "false" — false
+    //     (soft/signal-only, the first-release default) stores the
+    //     verdict and proceeds to 'ready' regardless; true additionally
+    //     retries the summary once and discards (permanent 'failed') if
+    //     the retry still fails the judge.
+    //   FAITHFULNESS_JUDGE_MODEL: the Workers AI model id to judge with,
+    //     default "@cf/meta/llama-3.3-70b-instruct-fp8-fast" — same
+    //     default as WORKERS_AI_MODEL above, but a separate setting since
+    //     an owner running Claude via gateway/direct for summarization
+    //     still wants a specific (and possibly different) Llama judge
+    //     model.
+    FAITHFULNESS_CHECK?: string;
+    FAITHFULNESS_ENFORCE?: string;
+    FAITHFULNESS_JUDGE_MODEL?: string;
   }
 }
 

@@ -257,6 +257,7 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
     ["DELETE", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles/some-id/retry"],
     ["POST", "/api/admin/articles/some-id/resummarize"],
+    ["POST", "/api/admin/articles/some-id/reverify"],
     ["POST", "/api/admin/agent/run"],
     ["GET", "/api/admin/health-report"],
     ["POST", "/api/admin/heal/revalidate-failed"],
@@ -282,6 +283,7 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     ["DELETE", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles/some-id/retry"],
     ["POST", "/api/admin/articles/some-id/resummarize"],
+    ["POST", "/api/admin/articles/some-id/reverify"],
     ["POST", "/api/admin/agent/run"],
     ["GET", "/api/admin/health-report"],
     ["POST", "/api/admin/heal/revalidate-failed"],
@@ -324,6 +326,7 @@ Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-hea
   await env.CACHE.put("thinhost:learned.example.com", "3");
   const today = new Date().toISOString().slice(0, 10);
   await env.CACHE.put(`llm_calls:${today}`, "7");
+  await env.CACHE.put(`faithfulness_calls:${today}`, "4");
 
   const res = await app.request("/api/admin/health-report", { headers: authHeaders }, env, ctx);
   assertEquals(res.status, 200);
@@ -335,6 +338,114 @@ Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-hea
   assertEquals(body.learned_thinhosts, [{ host: "learned.example.com", count: 3 }]);
   assertEquals(body.last_agent_run.last_added_at, "2026-01-01T00:00:00.000Z");
   assertEquals(body.llm_calls, { used: 7, limit: env.DAILY_SUMMARY_LIMIT });
+  // h1/h2 never had a faithfulness check run — both land in the null bucket.
+  assertEquals(body.faithfulness, { pass: 0, weak: 0, fail: 0, null: 2, judge_calls_today: 4 });
+});
+
+// --- POST /api/admin/articles/:id/reverify (Task 23) ---
+
+Deno.test("POST /api/admin/articles/:id/reverify: 404 for a missing id", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+  const res = await app.request(
+    "/api/admin/articles/does-not-exist/reverify",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 404);
+});
+
+Deno.test("POST /api/admin/articles/:id/reverify: 409 for an article with no stored summary yet", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+  await insertPendingArticle(env.DB, {
+    id: "rv-pending",
+    url: "https://example.com/rv-pending",
+    title: "rv-pending",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  const res = await app.request(
+    "/api/admin/articles/rv-pending/reverify",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 409);
+});
+
+Deno.test("POST /api/admin/articles/:id/reverify: 202 for a ready article, re-runs the judge and writes only the faithfulness columns", async () => {
+  const { env, authHeaders } = await makeOwnerContext({
+    AI: {
+      run: () =>
+        Promise.resolve({
+          response: JSON.stringify({
+            claims: [{ i: 1, verdict: "supported", evidence: "x" }],
+            notes: "",
+          }),
+        }),
+    },
+  });
+  const ctx = makeExecutionContext();
+
+  const stopFetch = stubFetch();
+  try {
+    await app.request(
+      "/api/admin/articles",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders },
+        body: JSON.stringify({ url: "https://example.com/rv-ready" }),
+      },
+      env,
+      ctx.ctx,
+    );
+    await ctx.settle();
+  } finally {
+    stopFetch();
+  }
+
+  const rowsOf = () => (env.DB as unknown as { rows: Record<string, unknown>[] }).rows;
+  const readyId = rowsOf().find((r) => r.url === "https://example.com/rv-ready")!.id as string;
+  const beforeSummaryJson = rowsOf().find((r) => r.id === readyId)!.summary_json;
+
+  const res = await app.request(
+    `/api/admin/articles/${readyId}/reverify`,
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx.ctx,
+  );
+  assertEquals(res.status, 202);
+  await ctx.settle();
+
+  const row = rowsOf().find((r) => r.id === readyId)!;
+  assertEquals(row.faithfulness_verdict, "pass");
+  assertEquals(row.status, "ready"); // reverify never changes status
+  assertEquals(row.summary_json, beforeSummaryJson); // nor the summary itself
+});
+
+Deno.test("POST /api/admin/articles/:id/reverify: 401 without auth even for an existing article (covered by the auth-matrix test above, spot-checked here too)", async () => {
+  const { env } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+  await insertPendingArticle(env.DB, {
+    id: "rv-noauth",
+    url: "https://example.com/rv-noauth",
+    title: "rv-noauth",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  const res = await app.request(
+    "/api/admin/articles/rv-noauth/reverify",
+    { method: "POST" },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 401);
 });
 
 Deno.test("POST /api/admin/heal/revalidate-failed: re-enqueues every summary-validation failure regardless of heal_attempts, resets the count first", async () => {
