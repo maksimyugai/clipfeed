@@ -313,11 +313,16 @@ is tied to a specific account, domain, or Access team.
      deno run -A npm:wrangler secret put ANTHROPIC_API_KEY
      ```
 4. `deno task deploy`.
-5. Your Worker is now live at `*.workers.dev`. Reads are public by design — anyone can browse the
-   feed, that's the point (see "Protecting your instance" below for the model). But every mutation
-   requires a verified Cloudflare Access identity and **fails closed** until that's set up — meaning
-   **you, the owner, can't add an article yet either.** Setting up Access (next section) is the
-   last, required step, not an optional hardening pass.
+5. **`workers_dev = false`** in `wrangler.toml` means your Worker does **not** get a `*.workers.dev`
+   URL by default after this deploy — attach a custom domain first (Workers & Pages → your Worker →
+   Settings → Domains & Routes → Add Custom Domain, on a zone you control), or flip
+   `workers_dev = true` locally (uncommitted, or your own commit) if you just want to try the app on
+   the free `*.workers.dev` hostname before wiring up a real domain. Either way, once you have a
+   reachable URL: reads are public by design — anyone can browse the feed, that's the point (see
+   "Protecting your instance" below for the model). But every mutation requires a verified
+   Cloudflare Access identity and **fails closed** until that's set up — meaning **you, the owner,
+   can't add an article yet either.** Setting up Access (next section) is the last, required step,
+   not an optional hardening pass.
 
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
