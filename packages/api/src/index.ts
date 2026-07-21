@@ -4,6 +4,7 @@ import type { Context } from "hono";
 import type { QueueMessage } from "@clipfeed/shared/types";
 import { accessAuth, type AppEnv } from "./access-middleware.ts";
 import { readTurnstileConfig } from "./turnstile-middleware.ts";
+import type { ListArticlesParams } from "./db.ts";
 import {
   backfillNormalizedTags,
   deleteArticle,
@@ -19,6 +20,7 @@ import {
   resetHealAttempts,
   sweepStalePending,
   toPublicArticle,
+  toPublicListItem,
 } from "./db.ts";
 import {
   DEAD_LETTER_QUEUE_NAME,
@@ -38,6 +40,7 @@ import { handleTelegramWebhook } from "./telegram-webhook.ts";
 import { runAgentJob } from "./agent.ts";
 import { handleScheduled } from "./scheduled.ts";
 import { listLearnedThinHosts } from "./thin-host-learning.ts";
+import { readSummaryBudgetUsage } from "./cost-guard.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -84,10 +87,10 @@ async function readJsonBody(
   }
 }
 
-app.get("/api/articles", async (c) => {
-  // Lazy stale-pending sweeper — see sweepStalePending() in db.ts.
-  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN);
-
+// Shared by the public and owner-only list routes below — same filters,
+// same cursor pagination; only the returned row shape differs (see each
+// route's own comment).
+function parseArticleListParams(c: Context<AppEnv>): ListArticlesParams {
   const query = c.req.query();
   const limitRaw = query.limit ? Number(query.limit) : 20;
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 100
@@ -98,16 +101,27 @@ app.get("/api/articles", async (c) => {
   if (query.archived === "1") archived = true;
   else if (query.archived === "0") archived = false;
 
-  const result = await listArticles(c.env.DB, {
+  return {
     cursor: query.cursor || undefined,
     limit,
     tag: query.tag || undefined,
     source: query.source || undefined,
     q: query.q || undefined,
     archived,
-  });
+  };
+}
 
-  return c.json(result);
+// Public — excludes the raw `error` string per row (see toPublicListItem):
+// an anonymous visitor must never see internal pipeline error detail
+// (upstream URLs, stack fragments) on a failed card. Only `has_error` and
+// `fail_class` are exposed, which is enough for the SPA's localized
+// failed-card copy in visitor mode. The owner-only equivalent, with the
+// real `error` field, is GET /api/admin/articles below.
+app.get("/api/articles", async (c) => {
+  // Lazy stale-pending sweeper — see sweepStalePending() in db.ts.
+  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN);
+  const result = await listArticles(c.env.DB, parseArticleListParams(c));
+  return c.json({ items: result.items.map(toPublicListItem), next_cursor: result.next_cursor });
 });
 
 // Public — excludes full_text and the raw error string (see
@@ -148,6 +162,16 @@ app.get("/api/admin/login", (c) => {
 </html>
 `,
   );
+});
+
+// Owner-only equivalent of GET /api/articles — same filters/pagination,
+// but full rows (error included, full_text still excluded — same shape as
+// GET /api/admin/articles/:id minus full_text) since the owner needs the
+// real error text to decide whether a failure is worth investigating.
+app.get("/api/admin/articles", async (c) => {
+  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN);
+  const result = await listArticles(c.env.DB, parseArticleListParams(c));
+  return c.json(result);
 });
 
 // Owner-only full row, including full_text and the raw error string.
@@ -274,11 +298,12 @@ app.post("/api/admin/agent/run", (c) => {
 // intended for curl/owner tooling. Three cheap D1/KV reads, no article
 // content.
 app.get("/api/admin/health-report", async (c) => {
-  const [{ failed_by_class, heal_attempts_totals }, learnedThinhosts, lastAgentActivity] =
+  const [{ failed_by_class, heal_attempts_totals }, learnedThinhosts, lastAgentActivity, llmCalls] =
     await Promise.all([
       getFailureStats(c.env.DB),
       listLearnedThinHosts(c.env.CACHE),
       getLastAgentActivity(c.env.DB),
+      readSummaryBudgetUsage(c.env.CACHE, c.env.DAILY_SUMMARY_LIMIT),
     ]);
 
   return c.json({
@@ -286,6 +311,12 @@ app.get("/api/admin/health-report", async (c) => {
     heal_attempts_totals,
     learned_thinhosts: learnedThinhosts,
     last_agent_run: { last_added_at: lastAgentActivity },
+    // Today's daily-limit budget usage — a run that silently fails with
+    // 'daily-limit' (fetch->extract->done, no summarize stage — see
+    // pipeline.ts's budget stage log) previously cost the owner a
+    // debugging session with no way to check this short of reading KV
+    // directly.
+    llm_calls: llmCalls,
   });
 });
 

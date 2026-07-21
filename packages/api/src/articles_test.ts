@@ -507,14 +507,61 @@ Deno.test("GET /api/articles: sweeps a stale pending row to failed before listin
 
   const res = await app.request("/api/articles", {}, env, ctx);
   const body = await res.json();
-  const items = body.items as { id: string; status: string; error: string | null }[];
+  const items = body.items as { id: string; status: string; has_error: boolean }[];
 
   assertEquals(items.find((i) => i.id === "stale-1")?.status, "failed");
-  assertEquals(
-    items.find((i) => i.id === "stale-1")?.error,
-    "timeout: processing did not complete",
-  );
+  // Public list — no raw `error` field (see the privacy-incident regression
+  // test below); has_error is the public-safe signal instead.
+  assertEquals(items.find((i) => i.id === "stale-1")?.has_error, true);
   assertEquals(items.find((i) => i.id === "fresh-1")?.status, "pending");
+});
+
+// Regression test for a live-confirmed privacy incident: the public list
+// endpoint was including the raw `error` column verbatim — internal
+// pipeline detail (upstream URLs, stack fragments) visible to any
+// anonymous visitor on a failed card. GET /api/articles/:id (single item)
+// was already correct; only the list endpoint leaked it. Fixed by mapping
+// every row through toPublicListItem() before responding — see index.ts.
+Deno.test("GET /api/articles: never includes the raw error field, even for a failed article (privacy incident regression)", async () => {
+  const restoreFetch = stubFetch();
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx, settle } = makeExecutionContext();
+
+  try {
+    const res = await app.request(
+      "/api/admin/articles",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders },
+        body: JSON.stringify({ url: "https://leaky-error-test.example.com/article" }),
+      },
+      env,
+      ctx,
+    );
+    const { id } = await res.json();
+    await settle();
+
+    const db = env.DB as unknown as FakeD1;
+    const row = db.rows.find((r) => r.id === id)!;
+    row.status = "failed";
+    row.error =
+      "internal: fetch: upstream responded 500 at https://internal-upstream.example/secret-path";
+
+    const listRes = await app.request("/api/articles", {}, env, ctx);
+    const listBody = await listRes.json();
+    const item = listBody.items.find((i: { id: string }) => i.id === id);
+
+    assertEquals("error" in item, false);
+    assertEquals(item.has_error, true);
+    assertEquals(JSON.stringify(listBody).includes("internal-upstream.example"), false);
+
+    const detailRes = await app.request(`/api/articles/${id}`, {}, env, ctx);
+    const detailBody = await detailRes.json();
+    assertEquals("error" in detailBody, false);
+    assertEquals(detailBody.has_error, true);
+  } finally {
+    restoreFetch();
+  }
 });
 
 Deno.test("PATCH /api/admin/articles/:id: updates archived and tags", async () => {
