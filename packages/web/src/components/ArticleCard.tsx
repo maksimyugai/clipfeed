@@ -15,6 +15,8 @@ import {
 } from "../lib/failureDisplay.ts";
 import { scrollTitleIntoView } from "../lib/scroll.ts";
 import { faithfulnessCounts } from "../lib/faithfulness.ts";
+import { usePrefersReducedMotion, withMotionClass } from "../lib/motion.ts";
+import { pendingCardVariant } from "../lib/agentBatch.ts";
 
 const JUST_READY_HIGHLIGHT_MS = 2000;
 
@@ -220,6 +222,7 @@ export function ArticleCard(props: ArticleCardProps) {
   const { pollState, checkNow } = usePendingPoll(article, onArticleUpdate);
   const justReady = useJustReadyHighlight(article.status);
   const givenUpPolling = pollState === "given-up";
+  const reducedMotion = usePrefersReducedMotion();
 
   // Only scroll on the transition INTO expanded — collapsing must stay put
   // (jumpy otherwise), and this only fires on the `expanded` flip, not on
@@ -230,10 +233,36 @@ export function ArticleCard(props: ArticleCardProps) {
   }, [expanded]);
 
   if (article.status === "pending") {
+    // Task 25 Part A: an agent-added pending article is never rendered as
+    // its own card — usePendingPoll above still runs (this component stays
+    // mounted), so the pending->ready transition is still detected; it's
+    // just represented by the aggregate AgentBatchIndicator at the top of
+    // the section instead (see Feed.tsx/lib/agentBatch.ts) rather than by
+    // ten individual spinner cards.
+    if (pendingCardVariant(article) === "hidden") return null;
+
+    // Task 25 Part B: the owner deliberately added this one (manual,
+    // extension, or Telegram) and wants "received, working on it"
+    // feedback — a skeleton card, never the raw source title (that would
+    // flip to the Russian title once summarization finishes, which is
+    // exactly the visual noise this task removes).
+    const shimmerClass = withMotionClass(
+      "skeleton-shimmer",
+      "skeleton-shimmer--animated",
+      reducedMotion,
+    );
     return (
-      <article class="card card--pending">
+      <article class="card card--skeleton">
         <div class="card-date">{formatDate(article.added_at, lang)}</div>
-        <h3 class="card-title">{article.title}</h3>
+        <div class={shimmerClass} aria-hidden="true">
+          <div class="skeleton-line skeleton-line--title" />
+          <div class="skeleton-line skeleton-line--body" />
+          <div class="skeleton-line skeleton-line--body skeleton-line--short" />
+          <div class="skeleton-tags-row">
+            <span class="skeleton-pill" />
+            <span class="skeleton-pill" />
+          </div>
+        </div>
         {givenUpPolling
           ? (
             <div class="pending-stuck-note">
@@ -243,12 +272,7 @@ export function ArticleCard(props: ArticleCardProps) {
               </button>
             </div>
           )
-          : (
-            <div class="pending-row">
-              <span class="spinner" aria-hidden="true" />
-              <span>{dict.pendingLabel}</span>
-            </div>
-          )}
+          : <p class="pending-processing-caption">{dict.pendingProcessingCaption}</p>}
       </article>
     );
   }
@@ -307,8 +331,13 @@ export function ArticleCard(props: ArticleCardProps) {
 
   const fields = selectSummaryFields(article.title, article.summary_json, lang);
   const source = article.source;
+  // Task 25 Part A point 2: a card that just finished (pending->ready,
+  // whether an agent-batch member or an owner add) gets a gentle
+  // slide+fade-in on top of the existing highlight glow — skipped
+  // entirely under prefers-reduced-motion via withMotionClass, so a
+  // reduced-motion visitor just sees the final state appear, no motion.
   const cardClass = `card${isPickOfDay ? " card--highlighted" : ""}${
-    justReady ? " card--just-ready" : ""
+    justReady ? ` ${withMotionClass("card--just-ready", "card--slide-fade-in", reducedMotion)}` : ""
   }`;
 
   // 'pass' and null (check disabled/not run) get no badge at all — only

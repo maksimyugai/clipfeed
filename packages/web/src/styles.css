@@ -12,6 +12,7 @@
   --acc: #7F77DD;
   --danger: #D64545;
   --warn: #A8720A;
+  --shimmer-sweep: rgba(83, 74, 183, 0.14);
 
   --grad-brand: linear-gradient(90deg, #7F77DD, #D4537E);
   --grad-action: linear-gradient(135deg, #7F77DD, #534AB7);
@@ -36,6 +37,7 @@
   --acc: #AFA9EC;
   --danger: #E5726B;
   --warn: #E0B84B;
+  --shimmer-sweep: rgba(206, 203, 246, 0.16);
 
   --grad-brand: linear-gradient(90deg, #AFA9EC, #ED93B1);
 
@@ -957,6 +959,143 @@ ul {
 
 .check-now-button:hover {
   background: var(--tag-bg);
+}
+
+/* --- Task 25: shimmer (shared by the skeleton card and the agent-batch
+   indicator bar) — a translateX-only sweep so the animated property is
+   always `transform`, never a layout-triggering one. `--animated` is only
+   applied by JS when motion is allowed (see lib/motion.ts); the
+   `prefers-reduced-motion` block below is a redundant CSS-level guarantee
+   on top of that, per Part C's "fully disabled" requirement. --- */
+
+.skeleton-shimmer,
+.shimmer-bar {
+  position: relative;
+  overflow: hidden;
+  background: var(--tag-bg);
+}
+
+.skeleton-shimmer--animated::after,
+.shimmer-bar--animated::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--shimmer-sweep), transparent);
+  transform: translateX(-100%);
+  animation: shimmer-sweep 1.5s ease-in-out infinite;
+}
+
+@keyframes shimmer-sweep {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer--animated::after,
+  .shimmer-bar--animated::after {
+    animation: none;
+    content: none;
+  }
+}
+
+.card--skeleton {
+  border-style: dashed;
+}
+
+.skeleton-shimmer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 2px 0;
+}
+
+.skeleton-line {
+  height: 14px;
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.skeleton-line--title {
+  height: 18px;
+  width: 55%;
+}
+
+.skeleton-line--body {
+  width: 100%;
+}
+
+.skeleton-line--short {
+  width: 40%;
+}
+
+.skeleton-tags-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.skeleton-pill {
+  width: 64px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.pending-processing-caption {
+  margin: 10px 0 0;
+  font-size: 0.8125rem;
+  color: var(--mut);
+}
+
+.agent-batch-indicator {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.shimmer-bar {
+  height: 6px;
+  border-radius: 999px;
+  margin-bottom: 10px;
+}
+
+.agent-batch-text {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--txt);
+}
+
+.agent-batch-progress {
+  color: var(--mut);
+}
+
+/* Task 25 Part A point 2: a card that just finished (pending->ready) slides
+   in with a gentle fade on top of the existing highlight glow — see
+   .card--just-ready above. Only applied alongside that class (never alone),
+   and only when motion is allowed (see ArticleCard.tsx's withMotionClass
+   usage) — the reduced-motion block is a redundant CSS-level guarantee. */
+.card--slide-fade-in {
+  animation: card--slide-fade-in 0.4s ease-out;
+}
+
+@keyframes card--slide-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card--slide-fade-in {
+    animation: none;
+  }
 }
 
 .card--failed {
