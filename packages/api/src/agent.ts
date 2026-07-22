@@ -1,11 +1,16 @@
 import "./env.d.ts";
 import type { Candidate, SourceConfig } from "./agent-types.ts";
 import { fetchAllCandidates, SOURCES } from "./sources.ts";
-import { buildCandidatePool } from "./agent-pool.ts";
+import {
+  buildCandidatePool,
+  parseSemanticDedupMaxCandidates,
+  parseSemanticDedupThreshold,
+} from "./agent-pool.ts";
 import { rankCandidates } from "./ranking.ts";
 import { findArticleIdByUrl, insertPendingArticle } from "./db.ts";
 import { enqueueArticleJob } from "./queue.ts";
 import { sourceFromUrl } from "./validation.ts";
+import { resolveEmbeddingModel } from "./embeddings.ts";
 
 // Structured, category-level stage log for the agent job — counts and ids
 // only, never candidate titles/snippets or credentials.
@@ -32,8 +37,20 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
   });
 
   const poolStart = performance.now();
-  const { pool, dedupDrops } = await buildCandidatePool(env.DB, env.CACHE, candidates, new Date());
-  const dedupDropCounts = { url: 0, title: 0, jaccard: 0 };
+  const { pool, dedupDrops } = await buildCandidatePool(
+    env.DB,
+    env.CACHE,
+    candidates,
+    new Date(),
+    {
+      ai: env.AI,
+      vectors: env.VECTORS,
+      model: resolveEmbeddingModel(env.EMBEDDING_MODEL),
+      maxCandidates: parseSemanticDedupMaxCandidates(env.SEMANTIC_DEDUP_MAX_CANDIDATES),
+      threshold: parseSemanticDedupThreshold(env.SEMANTIC_DEDUP_THRESHOLD),
+    },
+  );
+  const dedupDropCounts = { url: 0, title: 0, jaccard: 0, semantic: 0 };
   for (const drop of dedupDrops) dedupDropCounts[drop.reason] += 1;
   logAgentStage("pool", {
     duration_ms: Math.round(performance.now() - poolStart),
