@@ -531,9 +531,11 @@ value):
 Plus `[vars]`, all optional:
 
 - `PUBLIC_BASE_URL` (e.g. `https://example.com`) — used to build links in bot messages (each drip
-  post's card link, the digest footer, the "saved" reply). Left as `""` by default; bot messages
-  simply omit the link when it's empty. **Set this before relying on the drip's card links** — they
-  point at `PUBLIC_BASE_URL + "/#article-<id>"`, which is meaningless while it's blank.
+  post's card link, the digest footer, the "saved" reply) and the `GET /a/:id` link-preview route's
+  `og:url`. Left as `""` by default; bot messages simply omit the link when it's empty, and `/a/:id`
+  serves the plain SPA shell instead of injecting Open Graph tags. **Set this before relying on the
+  drip's card links** — they point at `PUBLIC_BASE_URL + "/a/<id>"`, which is meaningless while it's
+  blank.
 - `TELEGRAM_CHANNEL_ID` (default `""`) — when set, drip posts go to this channel instead of your own
   DM. See "Publishing to a channel" below.
 - `PUBLISH_START_HOUR_UTC` / `PUBLISH_END_HOUR_UTC` (defaults `4` / `18`) and `PUBLISH_ENABLED`
@@ -624,11 +626,25 @@ crons = ["0 * * * *"]
 Each tick, if the current UTC hour falls inside `[PUBLISH_START_HOUR_UTC, PUBLISH_END_HOUR_UTC)` and
 `PUBLISH_ENABLED` isn't the literal `"false"`, ClipFeed picks the **oldest** `ready`, non-archived,
 not-yet-published article added within the last 48h and posts it as a proper standalone message:
-title in bold, the TL;DR, the key-point bullets, a "Читать полностью →" link to its card in the SPA
-(`PUBLIC_BASE_URL + "/#article-<id>"`), and a source attribution line. At most one article goes out
-per tick, so across the default 4–18 UTC window that's up to 14 posts a day, spread out instead of
+title in bold, the TL;DR, the key-point bullets, a "Читать полностью →" link to its card
+(`PUBLIC_BASE_URL + "/a/<id>"` — a real path, not a hash fragment; see "Link previews" below), and a
+plain-text source line (just the domain, e.g. `Источник: example.com` — no link). The message
+therefore contains **exactly one** link, the ClipFeed card, so Telegram's own link-preview crawler
+builds its preview from that card instead of the original article. At most one article goes out per
+tick, so across the default 4–18 UTC window that's up to 14 posts a day, spread out instead of
 arriving as one unreadable wall of text. An article is marked published the moment it's posted (or
 skipped — see below) so it's never sent twice, even across restarts or config changes.
+
+### Link previews (`GET /a/:id`)
+
+A hash fragment (`#article-<id>`, still accepted by the SPA for already-published posts) is never
+sent to the server — link-preview crawlers (Telegram's included) only ever fetch a URL's raw HTML,
+so a hash-only link can never get its own preview. Drip posts therefore link to `/a/<id>`, a real
+path the Worker serves directly: it reads the SPA's own `index.html` from the static assets and
+injects per-article `og:title`/`og:description`/`og:url`/`og:site_name`/`og:type`/`twitter:card`
+meta tags into it (`Cache-Control: public, max-age=300`), then hands the same page to the browser,
+which boots the SPA as normal and expands that card. An unknown id, a not-yet-`ready` article, or an
+unset `PUBLIC_BASE_URL` all serve the plain, un-modified shell instead — never a 404.
 
 An article whose faithfulness check came back `'fail'` (see "Faithfulness check" below) is **skipped
 silently** — never posted, since broadcasting a likely-inaccurate summary is worse than staying
@@ -989,6 +1005,21 @@ localized copy for it. In the SPA, once the search box has a query, a small togg
 persists in `localStorage`. Deliberately no visible relevance score anywhere; ordering alone carries
 the ranking. An empty result set shows the existing empty-feed layout with a hint to try the other
 mode.
+
+**Keyword search semantics (`GET /api/articles?q=...` / `GET /api/admin/articles?q=...`) —
+AND-of-terms.** The query is whitespace-tokenized into individual terms (repeated/leading/trailing
+whitespace collapses to nothing); every term must appear **somewhere** across `title`, `summary_ru`,
+and `summary_en` combined (not necessarily the same field, not necessarily as a contiguous phrase)
+for an article to match — a query matching only one of several terms excludes that row. Capped at 6
+terms; extra terms beyond that are dropped rather than erroring. Each term is truncated to a safe
+UTF-8 byte length before being turned into a `LIKE` pattern, and a literal `%`/`_` in a term is
+escaped (`ESCAPE '\'`) so it matches literally instead of acting as a SQL wildcard. This fixes a
+live incident: a multi-word query longer than ~48 bytes previously 500'd with
+`D1_ERROR: LIKE or GLOB
+pattern too complex` — D1/SQLite's default `LIKE` pattern-length limit is
+**50 bytes, not characters** (confirmed empirically; a 50-character Cyrillic term is ~100 bytes and
+would still overflow a naive character-based cap), so tokenizing into short per-term patterns keeps
+every generated pattern comfortably under that limit regardless of how long the overall query is.
 
 **Backfill — `POST /api/admin/embeddings/backfill`** (Access-protected): embeds every `'ready'`,
 non-archived article with `embedded_at IS NULL`, 20 per call, returns `{processed, remaining}`. Same

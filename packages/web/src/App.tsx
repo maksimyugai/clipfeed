@@ -33,7 +33,7 @@ import { loadAgentSchedule } from "./lib/agentSchedule.ts";
 import { loadRepoUrl } from "./lib/repoConfig.ts";
 import { classifyApiError, localizedErrorMessage } from "./lib/errorMessages.ts";
 import { mergeRefreshedArticles, pickFailedIds } from "./lib/failedRefresh.ts";
-import { isArticleInList, parseArticleHash } from "./lib/deepLink.ts";
+import { isArticleInList, parseDeepLinkId } from "./lib/deepLink.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
 import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
@@ -162,17 +162,20 @@ export function App() {
   // footer's license link (see repoConfig.ts, Header.tsx, Footer.tsx).
   const [repoUrl, setRepoUrl] = useState<string | null>(null);
 
-  // Deep-link resolution (Part B: a Telegram drip post links to
-  // "#article-<id>", see lib/deepLink.ts). deepLinkPending is the id still
-  // waiting to be resolved (consumed exactly once, either by finding it in
-  // the loaded list or by fetching it standalone); deepLinkedArticle holds
-  // the standalone-fetched result, which REPLACES the normal Feed view
-  // entirely while set (see the render below); forceOpenSection is a
-  // session-only override so a deep-linked article's date section renders
-  // open even if its persisted default is closed, without ever writing
-  // that override into localStorage (see Feed.tsx's `open` computation).
+  // Deep-link resolution (Task 29 Part B, extended in Task 32 Part B: a
+  // Telegram drip post links to "/a/<id>" now — a real path, required for
+  // link previews — but the legacy "#article-<id>" hash from
+  // already-published posts is still parsed; see lib/deepLink.ts).
+  // deepLinkPending is the id still waiting to be resolved (consumed
+  // exactly once, either by finding it in the loaded list or by fetching
+  // it standalone); deepLinkedArticle holds the standalone-fetched result,
+  // which REPLACES the normal Feed view entirely while set (see the render
+  // below); forceOpenSection is a session-only override so a deep-linked
+  // article's date section renders open even if its persisted default is
+  // closed, without ever writing that override into localStorage (see
+  // Feed.tsx's `open` computation).
   const [deepLinkPending, setDeepLinkPending] = useState<string | null>(() =>
-    parseArticleHash(globalThis.location?.hash ?? "")
+    parseDeepLinkId(globalThis.location?.pathname ?? "", globalThis.location?.hash ?? "")
   );
   const [deepLinkedArticle, setDeepLinkedArticle] = useState<ArticleListItem | null>(null);
   const [forceOpenSection, setForceOpenSection] = useState<DateSection | null>(null);
@@ -329,11 +332,21 @@ export function App() {
     };
   }, [deepLinkPending, initialLoadDone, articles, isOwner]);
 
+  // Resets the visible URL back to "/" — covers both deep-link shapes
+  // (the "/a/<id>" path and the legacy "#article-<id>" hash) so a stale
+  // deep link never fights the feed's own (in-memory, not URL-driven)
+  // filter state on a later reload.
+  const clearDeepLinkUrl = () => {
+    if (globalThis.location && (globalThis.location.hash || globalThis.location.pathname !== "/")) {
+      history.replaceState(null, "", "/");
+    }
+  };
+
   // Any explicit filter/search interaction drops deep-link state — a user
   // who starts filtering clearly isn't interested in the linked article
-  // anymore, and leaving the hash in the URL would otherwise re-resolve it
-  // (or just look stale) the next time initialLoadDone flips. Skips its
-  // own first run so mount doesn't immediately clear the very hash it's
+  // anymore, and leaving the URL as-is would otherwise re-resolve it (or
+  // just look stale) the next time initialLoadDone flips. Skips its own
+  // first run so mount doesn't immediately clear the very deep link it's
   // meant to resolve.
   const skipFirstDeepLinkClear = useRef(true);
   useEffect(() => {
@@ -341,9 +354,7 @@ export function App() {
       skipFirstDeepLinkClear.current = false;
       return;
     }
-    if (globalThis.location?.hash) {
-      history.replaceState(null, "", location.pathname + location.search);
-    }
+    clearDeepLinkUrl();
     setDeepLinkPending(null);
     setDeepLinkedArticle(null);
     setForceOpenSection(null);
@@ -351,9 +362,7 @@ export function App() {
 
   const handleBackToFeed = () => {
     setDeepLinkedArticle(null);
-    if (globalThis.location?.hash) {
-      history.replaceState(null, "", location.pathname + location.search);
-    }
+    clearDeepLinkUrl();
   };
 
   const handleShowMore = async () => {

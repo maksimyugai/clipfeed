@@ -696,6 +696,58 @@ export interface ListQuery {
   binds: unknown[];
 }
 
+// Task 32 incident: D1/SQLite's LIKE implementation rejects any pattern
+// (including the two wildcard `%` characters) longer than 50 BYTES with
+// `D1_ERROR: LIKE or GLOB pattern too complex` — confirmed empirically
+// while root-causing a live 500 on multi-word queries: a 48-byte raw `q`
+// (-> a 50-byte pattern) succeeded, 49 bytes (-> 51-byte pattern) failed,
+// identically for pure-ASCII and Cyrillic input. This is a BYTE limit, not
+// a character count — the task spec's "cap at 50 chars" would still
+// overflow it for any multi-byte script (a 50-character Cyrillic term is
+// ~100 bytes) and silently reintroduce this exact bug for non-Latin
+// search terms. MAX_TERM_BYTES is therefore a UTF-8 byte cap, comfortably
+// under the 50-byte ceiling once the two wildcard bytes are added back.
+const MAX_TERM_BYTES = 45;
+const MAX_SEARCH_TERMS = 6;
+
+function truncateToByteLength(s: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(s).length <= maxBytes) return s;
+  let end = s.length;
+  // Shrink one UTF-16 code unit at a time until the UTF-8 encoding fits —
+  // never slices a multi-byte code point in half.
+  while (end > 0 && encoder.encode(s.slice(0, end)).length > maxBytes) {
+    end--;
+  }
+  return s.slice(0, end);
+}
+
+// Multi-word search semantics (documented in README "Keyword search"):
+// AND-of-terms — every whitespace-separated term must appear SOMEWHERE
+// across title/summary_ru/summary_en (not necessarily the same field, not
+// necessarily as a phrase). Repeated/leading/trailing whitespace collapses
+// to nothing (empty tokens dropped); extra terms beyond MAX_SEARCH_TERMS
+// are silently dropped rather than erroring — a long query still searches
+// meaningfully on its first few words.
+export function tokenizeSearchQuery(q: string): string[] {
+  return q
+    .split(/\s+/)
+    .filter((term) => term.length > 0)
+    .slice(0, MAX_SEARCH_TERMS)
+    .map((term) => truncateToByteLength(term, MAX_TERM_BYTES));
+}
+
+// Escapes SQLite LIKE wildcards so a term containing a literal `%` or `_`
+// matches that literal character instead of acting as a wildcard (which
+// could otherwise match far more than intended, or — for a pattern built
+// entirely from `%`/`_` — degrade toward the pathological-scan case this
+// whole length limit exists to guard against). Paired with `ESCAPE '\'` in
+// the generated SQL; backslash is escaped first so a literal backslash in
+// the term doesn't get misread as introducing one of the other escapes.
+export function escapeLikeTerm(term: string): string {
+  return term.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
 // Pure query builder, factored out so cursor pagination + filtering can be
 // unit tested without a real D1 binding.
 export function buildListQuery(params: ListArticlesParams): ListQuery {
@@ -715,9 +767,13 @@ export function buildListQuery(params: ListArticlesParams): ListQuery {
     binds.push(params.source);
   }
   if (params.q) {
-    conditions.push("(title LIKE ? OR summary_ru LIKE ? OR summary_en LIKE ?)");
-    const like = `%${params.q}%`;
-    binds.push(like, like, like);
+    for (const term of tokenizeSearchQuery(params.q)) {
+      conditions.push(
+        "(title LIKE ? ESCAPE '\\' OR summary_ru LIKE ? ESCAPE '\\' OR summary_en LIKE ? ESCAPE '\\')",
+      );
+      const like = `%${escapeLikeTerm(term)}%`;
+      binds.push(like, like, like);
+    }
   }
   if (params.archived !== undefined) {
     conditions.push("archived = ?");
