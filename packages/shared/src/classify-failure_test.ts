@@ -137,14 +137,26 @@ Deno.test("classifyFailure: permanentReasonKey is null for transient and unknown
   assertEquals(classifyFailure("something unrecognized").permanentReasonKey, null);
 });
 
-// --- unknown ---
+// --- content ---
 
-Deno.test("classifyFailure: summary validation failures are unknown (content-shaped, not infra-shaped)", () => {
+Deno.test("classifyFailure: summary validation failures are their own 'content' class (not unknown)", () => {
   const result = classifyFailure(
     "internal: summarize: summary validation: tldr_ru must be at least 200 characters (got 58)",
   );
-  assertEquals(result.class, "unknown");
+  assertEquals(result.class, "content");
+  assertEquals(result.permanentReasonKey, null);
 });
+
+Deno.test("classifyFailure: a bullet-duplicates-tldr validation failure is also 'content'", () => {
+  assertEquals(
+    classifyFailure(
+      "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr instead of adding new detail",
+    ).class,
+    "content",
+  );
+});
+
+// --- unknown ---
 
 Deno.test("classifyFailure: an unrecognized reason is unknown", () => {
   assertEquals(classifyFailure("something completely unexpected happened").class, "unknown");

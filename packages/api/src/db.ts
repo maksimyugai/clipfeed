@@ -385,6 +385,7 @@ export interface HealableArticle {
 export interface HealCaps {
   transient: number;
   unknown: number;
+  content: number;
 }
 
 // Candidates for an automatic retry — PERMANENT is deliberately excluded
@@ -404,11 +405,12 @@ export async function listHealableFailedArticles(
      WHERE status = 'failed' AND archived = 0
        AND (
          (fail_class = 'transient' AND heal_attempts < ?) OR
-         (fail_class = 'unknown' AND heal_attempts < ?)
+         (fail_class = 'unknown' AND heal_attempts < ?) OR
+         (fail_class = 'content' AND heal_attempts < ?)
        )
      ORDER BY added_at ASC
      LIMIT ?`,
-  ).bind(caps.transient, caps.unknown, maxRows).all<
+  ).bind(caps.transient, caps.unknown, caps.content, maxRows).all<
     { id: string; fail_class: string; heal_attempts: number }
   >();
   return (result.results ?? []).map((row) => ({
@@ -561,9 +563,17 @@ export async function sweepStalePending(
   ).bind(cutoff).run();
 }
 
+// Deliberately leaves `error`/`fail_class` untouched — a re-run (retry,
+// resummarize, or a healing-sweep re-enqueue) reads the row again just
+// before its pipeline stage runs (see queue.ts's processQueueMessage), and
+// for a 'content'-classified retry that previous error is exactly what
+// becomes the informed-retry `priorViolations` text (see pipeline.ts). Both
+// columns are always overwritten again once the run reaches a terminal
+// state (markArticleReady clears them; markArticleFailed replaces them), so
+// leaving the old value visible during the 'pending' window is harmless —
+// nothing renders `error` for a pending article.
 export async function markArticlePending(db: D1Database, id: string): Promise<void> {
-  await db.prepare(`UPDATE articles SET status = 'pending', error = NULL WHERE id = ?`).bind(id)
-    .run();
+  await db.prepare(`UPDATE articles SET status = 'pending' WHERE id = ?`).bind(id).run();
 }
 
 export async function getArticleById(db: D1Database, id: string): Promise<Article | null> {

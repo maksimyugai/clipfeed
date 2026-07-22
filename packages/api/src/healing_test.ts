@@ -152,18 +152,67 @@ Deno.test("runHealingJob: a transient failure stops being retried once it hits i
   assertEquals(jobs.sent.length, 2);
 });
 
-Deno.test("runHealingJob: an 'unknown' failure gets only 1 attempt (lower cap than transient)", async () => {
+Deno.test("runHealingJob: a genuinely 'unknown' failure gets only 1 attempt (lower cap than transient/content)", async () => {
   const jobs = new FakeQueue();
   const env = makeEnv({ JOBS: jobs });
-  await insertFailed(env, "u1", { error: "internal: summarize: summary validation: too short" });
+  await insertFailed(env, "u1", { error: "something completely unrecognized happened" });
 
   await runHealingJob(env); // attempt 1
-  await markArticleFailed(env.DB, "u1", "internal: summarize: summary validation: too short");
+  await markArticleFailed(env.DB, "u1", "something completely unrecognized happened");
   await runHealingJob(env); // cap (1) already reached -> no second attempt
 
   const row = rowsOf(env).find((r) => r.id === "u1")!;
+  assertEquals(row.fail_class, "unknown");
   assertEquals(row.heal_attempts, 1);
   assertEquals(jobs.sent.length, 1);
+});
+
+// --- 'content' (summary validation failures) retried up to its own, higher cap (Task 26.5) ---
+
+Deno.test("runHealingJob: a summary-validation failure is classified 'content', not 'unknown'", async () => {
+  const jobs = new FakeQueue();
+  const env = makeEnv({ JOBS: jobs });
+  await insertFailed(env, "c1", {
+    error: "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr",
+  });
+
+  const row = rowsOf(env).find((r) => r.id === "c1")!;
+  assertEquals(row.fail_class, "content");
+});
+
+Deno.test("runHealingJob: a 'content' failure gets 3 attempts (higher cap than 'unknown' — the retry is informed, not blind)", async () => {
+  const jobs = new FakeQueue();
+  const env = makeEnv({ JOBS: jobs });
+  const error = "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr";
+  await insertFailed(env, "c2", { error });
+
+  await runHealingJob(env); // attempt 1 -> heal_attempts=1
+  await markArticleFailed(env.DB, "c2", error);
+  await runHealingJob(env); // attempt 2 -> heal_attempts=2
+  await markArticleFailed(env.DB, "c2", error);
+  await runHealingJob(env); // attempt 3 -> heal_attempts=3
+  await markArticleFailed(env.DB, "c2", error);
+  await runHealingJob(env); // cap (3) already reached -> no 4th attempt
+
+  const row = rowsOf(env).find((r) => r.id === "c2")!;
+  assertEquals(row.heal_attempts, 3);
+  assertEquals(jobs.sent.length, 3);
+});
+
+Deno.test("runHealingJob: a 'content' failure that exhausts its cap stays 'failed', not archived (owner may want to resummarize manually)", async () => {
+  const jobs = new FakeQueue();
+  const env = makeEnv({ JOBS: jobs, DAILY_SUMMARY_LIMIT: 50 });
+  const error = "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr";
+  await insertFailed(env, "c3", { addedVia: "agent", error });
+  const row = rowsOf(env).find((r) => r.id === "c3")!;
+  row.heal_attempts = 3; // already at cap
+
+  await runHealingJob(env);
+
+  const after = rowsOf(env).find((r) => r.id === "c3")!;
+  assertEquals(jobs.sent, []); // not retried again
+  assertEquals(after.status, "failed"); // stays failed, visible to the owner
+  assertEquals(after.archived, 0); // 'content' never auto-archives, unlike 'permanent'
 });
 
 Deno.test("runHealingJob: a permanent failure is never retried (cap is 0)", async () => {
@@ -346,5 +395,58 @@ Deno.test("runHealingJob end-to-end: a 'daily-limit' failure heals to 'ready' on
     assertEquals(afterProcess.heal_attempts, 0);
   } finally {
     restoreFetch();
+  }
+});
+
+Deno.test("runHealingJob end-to-end: a 'content' failure heals to 'ready', and the retry's prompt names the exact prior violation", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedFirstBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = input.toString();
+    let isAnthropicApi = false;
+    try {
+      isAnthropicApi = new URL(url).hostname === "api.anthropic.com";
+    } catch {
+      isAnthropicApi = false;
+    }
+    if (isAnthropicApi) {
+      capturedFirstBody ??= JSON.parse(String(init?.body));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const jobs = new FakeQueue();
+    const env = makeEnv({ JOBS: jobs });
+    const priorError =
+      "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr instead of adding new detail";
+    await insertFailed(env, "c-e2e", { addedVia: "agent", error: priorError });
+
+    const before = rowsOf(env).find((r) => r.id === "c-e2e")!;
+    assertEquals(before.fail_class, "content");
+
+    await runHealingJob(env);
+    for (const message of jobs.sent) {
+      await processQueueMessage(env, message);
+    }
+
+    const after = rowsOf(env).find((r) => r.id === "c-e2e")!;
+    assertEquals(after.status, "ready");
+    const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation with:"), true);
+    assertEquals(
+      firstMessage.includes("bullets_ru[0] duplicates the tldr instead of adding new detail"),
+      true,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

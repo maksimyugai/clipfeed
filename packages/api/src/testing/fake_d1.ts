@@ -114,8 +114,10 @@ export class FakeD1 implements D1Database {
         return;
       }
       if (sql.includes("SET status = 'pending'")) {
+        // Deliberately leaves error/fail_class untouched — see db.ts's
+        // markArticlePending doc comment (Task 26.5's priorViolations
+        // plumbing reads them back on the very next processQueueMessage).
         row.status = "pending";
-        row.error = null;
         return;
       }
       if (sql.startsWith("UPDATE articles SET fail_class = ?")) {
@@ -187,12 +189,18 @@ export class FakeD1 implements D1Database {
     }
 
     if (sql.startsWith("SELECT id, fail_class, heal_attempts FROM articles")) {
-      const [transientCap, unknownCap, maxRows] = values as [number, number, number];
+      const [transientCap, unknownCap, contentCap, maxRows] = values as [
+        number,
+        number,
+        number,
+        number,
+      ];
       const candidates = this.rows
         .filter((r) =>
           r.status === "failed" && r.archived === 0 &&
           ((r.fail_class === "transient" && (r.heal_attempts as number) < transientCap) ||
-            (r.fail_class === "unknown" && (r.heal_attempts as number) < unknownCap))
+            (r.fail_class === "unknown" && (r.heal_attempts as number) < unknownCap) ||
+            (r.fail_class === "content" && (r.heal_attempts as number) < contentCap))
         )
         .sort((a, b) => (a.added_at as string).localeCompare(b.added_at as string))
         .slice(0, maxRows);

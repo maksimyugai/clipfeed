@@ -64,6 +64,13 @@ export interface Dictionary {
   viaAgent: string;
   viaTelegram: string;
   toastErrorPrefix: string;
+  errorAlreadyReady: string;
+  errorDuplicateUrl: string;
+  errorSimilarTitle: string;
+  errorUnauthorized: string;
+  errorRateLimited: string;
+  errorServerError: string;
+  errorGeneric: string;
   turnstileRequiredError: string;
   turnstileFailedError: string;
   turnstileUnavailableError: string;
@@ -149,6 +156,13 @@ const ru: Dictionary = {
   viaAgent: "агентом",
   viaTelegram: "из телеграма",
   toastErrorPrefix: "Ошибка",
+  errorAlreadyReady: "Статья уже обработана.",
+  errorDuplicateUrl: "Эта ссылка уже добавлена в ленту.",
+  errorSimilarTitle: "Похожая статья уже добавлена недавно.",
+  errorUnauthorized: "Требуется вход в систему.",
+  errorRateLimited: "Слишком много запросов — попробуйте чуть позже.",
+  errorServerError: "Сервер временно недоступен — попробуйте позже.",
+  errorGeneric: "Что-то пошло не так.",
   turnstileRequiredError: "Требуется проверка — попробуйте ещё раз.",
   turnstileFailedError: "Проверка не пройдена — попробуйте ещё раз.",
   turnstileUnavailableError: "Сервис проверки временно недоступен — попробуйте чуть позже.",
@@ -234,6 +248,13 @@ const en: Dictionary = {
   viaAgent: "by the agent",
   viaTelegram: "via telegram",
   toastErrorPrefix: "Error",
+  errorAlreadyReady: "This article has already been processed.",
+  errorDuplicateUrl: "That link is already in the feed.",
+  errorSimilarTitle: "A similar article was already added recently.",
+  errorUnauthorized: "Sign-in required.",
+  errorRateLimited: "Too many requests — please try again shortly.",
+  errorServerError: "The server is temporarily unavailable — please try again later.",
+  errorGeneric: "Something went wrong.",
   turnstileRequiredError: "Verification required — please try again.",
   turnstileFailedError: "Verification failed — please try again.",
   turnstileUnavailableError:

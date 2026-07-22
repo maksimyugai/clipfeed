@@ -30,7 +30,7 @@ export type FaithfulnessJson =
 // packages/api/src/classify-failure.ts for the mapping from the stored
 // `error` string. null until a failure has actually been classified (old
 // rows from before this column existed, or a row that isn't 'failed').
-export type FailureClass = "transient" | "permanent" | "unknown";
+export type FailureClass = "transient" | "permanent" | "unknown" | "content";
 
 // body_ru/body_en: 2-4 self-contained prose paragraphs (what happened,
 // how/why, key context, implications) — the readable digest a reader can
