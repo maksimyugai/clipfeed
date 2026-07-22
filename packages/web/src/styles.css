@@ -13,6 +13,7 @@
   --danger: #D64545;
   --warn: #A8720A;
   --shimmer-sweep: rgba(83, 74, 183, 0.14);
+  --takeaways-bg: rgba(127, 119, 221, 0.07);
 
   --grad-brand: linear-gradient(90deg, #7F77DD, #D4537E);
   --grad-action: linear-gradient(135deg, #7F77DD, #534AB7);
@@ -38,6 +39,7 @@
   --danger: #E5726B;
   --warn: #E0B84B;
   --shimmer-sweep: rgba(206, 203, 246, 0.16);
+  --takeaways-bg: rgba(175, 169, 236, 0.10);
 
   --grad-brand: linear-gradient(90deg, #AFA9EC, #ED93B1);
 
@@ -324,11 +326,12 @@ ul {
 
 .main-column {
   min-width: 0;
-  /* Caps the reading measure at ~70-75 characters/line for the new 1rem
-     Cyrillic body text (measured at ~8.3px/char in Ubuntu — see Task 22
-     report) — otherwise the grid track (up to ~848px next to the
-     sidebar) runs noticeably wider than optimal. */
-  max-width: 640px;
+  /* Caps the reading measure for the 1rem Cyrillic body text. Cyrillic
+     glyphs run wider per character than Latin, so 640px (~66 CPL) read
+     cramped — 720px lands at ~75-85 CPL at 16px Ubuntu Cyrillic, see
+     Task 26 report. The 1fr grid track (up to ~808px next to the 320px
+     sidebar, see .layout below) has room to spare at this width. */
+  max-width: 720px;
 }
 
 .sidebar {
@@ -844,24 +847,74 @@ ul {
   font-size: 1rem;
   line-height: 1.65;
   color: var(--txt);
-  margin: 0 0 10px;
+  margin: 1.1em 0 0;
 }
 
-.card-body p:last-child {
-  margin-bottom: 0;
+.card-body p:first-child {
+  margin-top: 0;
+}
+
+/* --- Key takeaways block (bullets, expanded card only) ---
+   The bullets are the article's conclusion/key facts, not more prose —
+   set apart with a tinted panel + left accent bar so it reads as a
+   distinct "conclusion" zone between the body and the tags row. */
+.key-takeaways {
+  position: relative;
+  margin: 20px 0 16px;
+  padding: 14px 16px 14px 20px;
+  border-radius: 10px;
+  background: var(--takeaways-bg);
+}
+
+.key-takeaways::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+  background: var(--grad-action);
+}
+
+.key-takeaways-heading {
+  margin: 0 0 8px;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sub);
 }
 
 .bullet-list {
-  margin: 0 0 16px;
-  padding-left: 20px;
-  list-style: disc;
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
   color: var(--txt);
   font-size: 1rem;
   line-height: 1.6;
 }
 
 .bullet-list li {
-  margin-bottom: 4px;
+  position: relative;
+  padding-left: 20px;
+  margin-bottom: 6px;
+}
+
+.bullet-list li:last-child {
+  margin-bottom: 0;
+}
+
+.bullet-list li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0.55em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--acc);
 }
 
 .expanded-tags-row {
