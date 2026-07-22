@@ -5,6 +5,7 @@ import type { Theme } from "../theme.ts";
 export interface HeaderProps {
   dict: Dictionary;
   lang: Lang;
+  onLogoClick: () => void;
   onLangChange: (lang: Lang) => void;
   theme: Theme;
   onThemeToggle: () => void;
@@ -21,6 +22,7 @@ export function Header(
   {
     dict,
     lang,
+    onLogoClick,
     onLangChange,
     theme,
     onThemeToggle,
@@ -36,7 +38,14 @@ export function Header(
   return (
     <header class="app-header">
       <div class="header-inner">
-        <span class="logo">{dict.brand}</span>
+        <button
+          type="button"
+          class="logo logo-button"
+          aria-label={dict.logoHomeAria}
+          onClick={onLogoClick}
+        >
+          {dict.brand}
+        </button>
 
         {
           /* Decorative — conveys nothing a screen reader needs; the visible

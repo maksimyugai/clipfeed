@@ -17,6 +17,7 @@ import {
   searchArticles,
 } from "./api.ts";
 import { readStoredSearchMode, type SearchMode, writeStoredSearchMode } from "./lib/searchMode.ts";
+import { computeLogoResetState } from "./lib/feedReset.ts";
 import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { EMPTY_FILTER_STATE, filterReducer } from "./lib/filterState.ts";
@@ -35,6 +36,7 @@ import { AddModal } from "./components/AddModal.tsx";
 import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
 import { Feed } from "./components/Feed.tsx";
 import { Toast } from "./components/Toast.tsx";
+import { Footer } from "./components/Footer.tsx";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PAGE_LIMIT = 20;
@@ -463,6 +465,20 @@ export function App() {
     setSearchInput("");
     dispatchFilter({ type: "set-query", query: "" });
   };
+  // The "clipfeed" wordmark: resets to the default feed view — filters,
+  // search, mode, and archived view all clear at once, same spirit as
+  // handleClearAll but also covering the two pieces of state that pill
+  // doesn't touch (searchMode, archivedView). Section open/closed state is
+  // deliberately left alone — it's the user's persisted preference, not
+  // part of "back to default".
+  const handleLogoClick = () => {
+    dispatchFilter({ type: "clear-all" });
+    setSearchInput("");
+    const reset = computeLogoResetState();
+    setSearchMode(reset.searchMode);
+    setArchivedView(reset.archivedView);
+    globalThis.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const tagFacets = useMemo(() => computeTagFacets(articles), [articles]);
   const sourceFacets = useMemo(() => computeSourceFacets(articles), [articles]);
@@ -477,6 +493,7 @@ export function App() {
       <Header
         dict={dict}
         lang={lang}
+        onLogoClick={handleLogoClick}
         onLangChange={setLang}
         theme={theme}
         onThemeToggle={toggleTheme}
@@ -537,6 +554,7 @@ export function App() {
             sectionOpen={sectionOpen}
             onToggleSection={handleToggleSection}
             isSearching={query.trim() !== ""}
+            searchMode={searchMode}
             agentHourUtc={agentHourUtc}
           />
         </main>
@@ -558,6 +576,8 @@ export function App() {
           isOwner={isOwner}
         />
       </div>
+
+      <Footer dict={dict} />
 
       {modalOpen && isOwner && (
         <AddModal

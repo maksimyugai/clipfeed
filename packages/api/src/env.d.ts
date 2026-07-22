@@ -246,6 +246,13 @@ declare global {
     // per-minute KV counter (see search.ts), [vars] string, default 30,
     // parsed defensively.
     SEARCH_RATE_PER_MIN?: string;
+    // Vectorize's topK always returns the K nearest vectors regardless of
+    // absolute similarity — with a narrow/off-topic query and a small
+    // corpus, that means "least far" noise instead of an honest empty
+    // result. SEARCH_MIN_SCORE (default 0.5, bge-m3 cosine) filters those
+    // out before D1 hydration; see search.ts's searchArticles and README
+    // for the live-tuned derivation. [vars] string, parsed defensively.
+    SEARCH_MIN_SCORE?: string;
   }
 }
 
