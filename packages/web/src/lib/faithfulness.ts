@@ -1,4 +1,5 @@
-import type { FaithfulnessJson } from "@clipfeed/shared/types";
+import type { FaithfulnessJson, FaithfulnessVerdict } from "@clipfeed/shared/types";
+import type { Dictionary } from "../i18n.ts";
 
 // Pure helper reading the judge's per-claim detail out of the owner-only
 // faithfulness_json field (see ArticleCard.tsx's owner-mode footnote under
@@ -14,4 +15,34 @@ export function faithfulnessCounts(
     unsupported: json.claims.filter((c) => c.verdict === "unsupported").length,
     contradicted: json.claims.filter((c) => c.verdict === "contradicted").length,
   };
+}
+
+export interface FaithfulnessBadgeInfo {
+  badgeText: string;
+  tooltipText: string;
+}
+
+// Task 34 Part B: the badge (and its tooltip) only ever appear for 'weak'/
+// 'fail' — 'pass' and null (check disabled/not run/visitor-stripped) get
+// nothing, a normal summary needs no caveat. Pulled out as its own pure
+// function (rather than inlined ternaries in ArticleCard.tsx) so "which
+// verdicts get a badge at all" is directly unit-testable without rendering
+// the component.
+export function faithfulnessBadgeInfo(
+  dict: Dictionary,
+  verdict: FaithfulnessVerdict | null,
+): FaithfulnessBadgeInfo | null {
+  if (verdict === "weak") {
+    return {
+      badgeText: dict.faithfulnessBadgeWeak,
+      tooltipText: `${dict.faithfulnessTooltipWeak} ${dict.faithfulnessTooltipTrailer}`,
+    };
+  }
+  if (verdict === "fail") {
+    return {
+      badgeText: dict.faithfulnessBadgeFail,
+      tooltipText: `${dict.faithfulnessTooltipFail} ${dict.faithfulnessTooltipTrailer}`,
+    };
+  }
+  return null;
 }
