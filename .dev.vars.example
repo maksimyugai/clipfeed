@@ -52,13 +52,12 @@
 # Daily scraping agent (see README "Daily scraping agent"; sources live in
 # packages/api/sources.json, not here). INTEREST_TOPICS steers the ranking
 # call's taste — free text, edit to match what you actually want surfaced.
-# AGENT_HOUR_UTC/DIGEST_HOUR_UTC are UTC hours (0-23); clearing either to an
-# empty string disables that job. AGENT_DAILY_PICKS is how many candidates
-# the agent saves per run — valid range 1-20, anything missing/invalid falls
-# back to 10.
+# AGENT_HOUR_UTC is a UTC hour (0-23); clearing it to an empty string
+# disables the job. AGENT_DAILY_PICKS is how many candidates the agent
+# saves per run — valid range 1-20, anything missing/invalid falls back to
+# 10.
 # INTEREST_TOPICS=AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news
 # AGENT_HOUR_UTC=5
-# DIGEST_HOUR_UTC=6
 # AGENT_DAILY_PICKS=10
 
 # Cloudflare Access protection (see README "Protecting your instance").
@@ -100,10 +99,24 @@
 # TELEGRAM_WEBHOOK_SECRET=
 # TELEGRAM_OWNER_CHAT_ID=
 
+# Telegram drip publishing (see README "Telegram bot"): one standalone post
+# per hour, replacing the old once-daily digest. TELEGRAM_CHANNEL_ID empty
+# (default) means posts go to your own DM (TELEGRAM_OWNER_CHAT_ID) instead
+# of a channel — set it once you've created a channel and added the bot as
+# admin (e.g. "@your_channel" or a "-100..." numeric id). PUBLISH_START_
+# HOUR_UTC/PUBLISH_END_HOUR_UTC (defaults 4/18) bound the daily publish
+# window in UTC; PUBLISH_ENABLED (default "true") is the on/off switch —
+# only the literal "false" disables it.
+# TELEGRAM_CHANNEL_ID=
+# PUBLISH_START_HOUR_UTC=4
+# PUBLISH_END_HOUR_UTC=18
+# PUBLISH_ENABLED=true
+
 # Public origin of this deployed instance, e.g. https://example.com — used
-# only to build links in Telegram messages (digest footer, "saved" reply).
-# [vars] default "" (no scheme/domain baked in, per the forkability policy);
-# links are simply omitted from bot messages when this is empty.
+# only to build links in Telegram messages (the drip post's card link,
+# "saved" reply). [vars] default "" (no scheme/domain baked in, per the
+# forkability policy); links are simply omitted from bot messages when this
+# is empty.
 # PUBLIC_BASE_URL=
 
 # Embeddings — semantic dedup (agent-pool.ts) + semantic search

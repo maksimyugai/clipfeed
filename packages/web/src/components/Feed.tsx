@@ -3,8 +3,9 @@ import type { Dictionary, Lang } from "../i18n.ts";
 import { DATE_SECTIONS, type DateSection, groupArticlesBySection } from "../lib/dateGrouping.ts";
 import { isSectionOpenTodayEmptyAware, type SectionOpenState } from "../lib/sectionState.ts";
 import { scrollElementIntoView } from "../lib/scroll.ts";
-import { computeAgentBatchIndicator, shouldShowEmptyCountdown } from "../lib/agentBatch.ts";
+import { computeAgentBatchIndicator, computeTodayIsEmpty } from "../lib/agentBatch.ts";
 import { isFlatSemanticView, type SearchMode } from "../lib/searchMode.ts";
+import { hasActiveFilters } from "../lib/filterState.ts";
 import { ArticleCard } from "./ArticleCard.tsx";
 import { TodayEmptyState } from "./TodayEmptyState.tsx";
 import { AgentBatchIndicator } from "./AgentBatchIndicator.tsx";
@@ -36,9 +37,19 @@ export interface FeedProps {
   // open via the Today-empty default, and toggling from the wrong baseline
   // would invert the user's intent on their very first click.
   onToggleSection: (section: DateSection, currentlyOpen: boolean) => void;
+  // Task 29 Part B: a deep-linked article's section renders open for this
+  // render only, regardless of sectionOpen/its computed default — never
+  // written to localStorage (see App.tsx's forceOpenSection state).
+  forceOpenSection: DateSection | null;
   isSearching: boolean;
   searchMode: SearchMode;
   agentHourUtc: number | null;
+  // Task 29 Part C: whether a tag/source filter is active, so the Today
+  // countdown and the generic empty state both know the difference between
+  // "genuinely nothing yet" and "the filter excludes everything".
+  activeTag: string | null;
+  activeSource: string | null;
+  onResetFilters: () => void;
 }
 
 export function Feed(props: FeedProps) {
@@ -52,17 +63,30 @@ export function Feed(props: FeedProps) {
     isOwner,
     sectionOpen,
     onToggleSection,
+    forceOpenSection,
     isSearching,
     searchMode,
     agentHourUtc,
+    activeTag,
+    activeSource,
+    onResetFilters,
   } = props;
 
+  // Any active tag/source filter OR a search query counts as "filtered" —
+  // under either, an empty result means the filter excludes everything,
+  // not that the feed itself has nothing (see computeTodayIsEmpty and the
+  // empty-state branch below, both of which key off this).
+  const isFilteredView = isSearching || hasActiveFilters({ tag: activeTag, source: activeSource });
+
   if (articles.length === 0) {
-    if (isSearching) {
+    if (isFilteredView) {
       return (
         <div class="empty-state">
           <p class="empty-state-title">{dict.emptySearchTitle}</p>
           <p class="empty-state-hint">{dict.emptySearchHint}</p>
+          <button type="button" class="empty-state-reset" onClick={onResetFilters}>
+            {dict.resetFiltersAction}
+          </button>
         </div>
       );
     }
@@ -124,16 +148,21 @@ export function Feed(props: FeedProps) {
   };
   // Task 24 Part D: Today keeps rendering (with its live countdown card)
   // even at zero articles — overriding the hide-empty-sections rule below
-  // for "today" specifically — but only in the normal feed view; an
-  // archived view showing "new articles soon" would be nonsensical, and the
-  // all-articles-empty case above already has its own dedicated empty state.
+  // for "today" specifically — but only in the normal, UNFILTERED feed
+  // view; an archived view showing "new articles soon" would be
+  // nonsensical, and Task 29 Part C extends that same reasoning to any
+  // active tag/source filter or search query — a filter excluding
+  // everything isn't "something is being prepared" either. The
+  // all-articles-empty case above already has its own dedicated empty
+  // state either way.
   //
-  // Task 25 precedence: shouldShowEmptyCountdown accounts for the case
-  // where Today has agent-pending articles but nothing visible YET (they
-  // render as null — see ArticleCard.tsx's Part A branch) — in that case
-  // the AgentBatchIndicator below takes over the "something is happening"
-  // signal instead of the countdown (see lib/agentBatch.ts's doc comment).
-  const todayIsEmpty = !archivedView && shouldShowEmptyCountdown(grouped.today);
+  // Task 25 precedence (still applies within the unfiltered case):
+  // shouldShowEmptyCountdown accounts for Today having agent-pending
+  // articles but nothing visible YET (they render as null — see
+  // ArticleCard.tsx's Part A branch) — in that case the AgentBatchIndicator
+  // below takes over the "something is happening" signal instead of the
+  // countdown (see lib/agentBatch.ts's doc comment).
+  const todayIsEmpty = computeTodayIsEmpty(archivedView, isFilteredView, grouped.today);
 
   const handleReadYesterday = () => {
     scrollElementIntoView(document.getElementById("feed-section-yesterday"));
@@ -153,7 +182,13 @@ export function Feed(props: FeedProps) {
         const isTodayEmptyState = section === "today" && todayIsEmpty;
         if (items.length === 0 && !isEarlierPending && !isTodayEmptyState) return null;
 
-        const open = isSectionOpenTodayEmptyAware(section, sectionOpen, isSearching, todayIsEmpty);
+        // Task 29 Part B: a deep-linked article's section always renders
+        // open, overriding both the persisted choice and the computed
+        // default — see App.tsx's forceOpenSection doc comment for why
+        // this is deliberately NOT threaded through sectionOpen/localStorage.
+        const open = section === forceOpenSection
+          ? true
+          : isSectionOpenTodayEmptyAware(section, sectionOpen, isSearching, todayIsEmpty);
         // Task 25 Part A: the header count reflects what's actually
         // visible, not the raw row count — an agent-pending row renders as
         // null (see ArticleCard.tsx), so counting it here would show e.g.

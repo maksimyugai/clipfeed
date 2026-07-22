@@ -29,7 +29,10 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     AGENT_HOUR_UTC: "5",
     AGENT_DAILY_PICKS: "10",
     SUMMARY_BODY_TARGET_CHARS: "1200",
-    DIGEST_HOUR_UTC: "6",
+    // Outside the default publish window (4-18 UTC) and disabled — most
+    // tests below aren't exercising the publish job, and its own dedicated
+    // tests further down override these explicitly.
+    PUBLISH_ENABLED: "false",
     ...overrides,
   };
 }
@@ -77,7 +80,7 @@ Deno.test("handleScheduled: on the agent hour, runs the agent job (fetches sourc
     return new Response("nope", { status: 500 });
   });
   try {
-    const env = makeEnv({ AGENT_HOUR_UTC: "5", DIGEST_HOUR_UTC: "" });
+    const env = makeEnv({ AGENT_HOUR_UTC: "5" });
     const scheduledTime = new Date("2026-01-01T05:00:00Z").getTime();
     await handleScheduled(env, scheduledTime);
     assertEquals(fetchCalled, true);
@@ -93,7 +96,7 @@ Deno.test("handleScheduled: off the agent hour, does not run the agent job", asy
     return new Response("nope", { status: 500 });
   });
   try {
-    const env = makeEnv({ AGENT_HOUR_UTC: "5", DIGEST_HOUR_UTC: "" });
+    const env = makeEnv({ AGENT_HOUR_UTC: "5" });
     const scheduledTime = new Date("2026-01-01T04:00:00Z").getTime();
     await handleScheduled(env, scheduledTime);
     assertEquals(fetchCalled, false);
@@ -109,7 +112,7 @@ Deno.test("handleScheduled: an invalid/empty AGENT_HOUR_UTC disables the job ent
     return new Response("nope", { status: 500 });
   });
   try {
-    const env = makeEnv({ AGENT_HOUR_UTC: "", DIGEST_HOUR_UTC: "" });
+    const env = makeEnv({ AGENT_HOUR_UTC: "" });
     for (let hour = 0; hour < 24; hour++) {
       const scheduledTime = new Date(Date.UTC(2026, 0, 1, hour)).getTime();
       await handleScheduled(env, scheduledTime);
@@ -120,31 +123,45 @@ Deno.test("handleScheduled: an invalid/empty AGENT_HOUR_UTC disables the job ent
   }
 });
 
-Deno.test("handleScheduled: digest hour sends the morning digest (Telegram configured, no ready articles -> silent, no throw)", async () => {
+// --- runPublishJob wiring (see telegram-publish_test.ts for the job's own
+// window/enabled/candidate-selection unit tests — these just cover that
+// handleScheduled actually calls it on every tick, agent hour or not) ---
+
+Deno.test("handleScheduled: within the publish window, attempts to publish (Telegram configured, empty queue -> silent, no throw)", async () => {
   const env = makeEnv({
     AGENT_HOUR_UTC: "",
-    AGENT_DAILY_PICKS: "10",
-    DIGEST_HOUR_UTC: "6",
+    PUBLISH_ENABLED: "true",
+    PUBLISH_START_HOUR_UTC: "4",
+    PUBLISH_END_HOUR_UTC: "18",
     TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-secret",
     TELEGRAM_OWNER_CHAT_ID: "12345",
   });
   const scheduledTime = new Date("2026-01-01T06:00:00Z").getTime();
-  // No articles ready -> sendMorningDigest's buildAndSendDigest sends
-  // nothing and returns; must not throw even without a fetch stub.
+  // No 'ready' articles -> getNextPublishCandidate finds nothing, publish
+  // is a silent no-op; must not throw even without a fetch stub.
   await handleScheduled(env, scheduledTime);
 });
 
-Deno.test("handleScheduled: both jobs can fire on the same tick when set to the same hour", async () => {
+Deno.test("handleScheduled: publish job runs every tick regardless of the agent hour", async () => {
   let fetchCalled = false;
   const restore = stubFetch(() => {
     fetchCalled = true;
     return new Response("nope", { status: 500 });
   });
   try {
-    const env = makeEnv({ AGENT_HOUR_UTC: "5", DIGEST_HOUR_UTC: "5" });
+    const env = makeEnv({
+      AGENT_HOUR_UTC: "5",
+      PUBLISH_ENABLED: "true",
+      PUBLISH_START_HOUR_UTC: "4",
+      PUBLISH_END_HOUR_UTC: "18",
+    });
     const scheduledTime = new Date("2026-01-01T05:00:00Z").getTime();
     await handleScheduled(env, scheduledTime);
+    // Agent hour matched -> its sources.json fetch fired. Telegram isn't
+    // configured in this env, so the publish job itself no-ops before
+    // touching D1/fetch — this just proves the agent branch and the
+    // always-run publish call coexist without one breaking the other.
     assertEquals(fetchCalled, true);
   } finally {
     restore();

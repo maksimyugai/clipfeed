@@ -104,6 +104,8 @@ export interface Dictionary {
   logoHomeAria: string;
   footerLicenseLabel: string;
   footerContentNotice: string;
+  backToFeedLink: string;
+  resetFiltersAction: string;
 }
 
 const ru: Dictionary = {
@@ -208,6 +210,8 @@ const ru: Dictionary = {
   logoHomeAria: "На главную",
   footerLicenseLabel: "код под MIT",
   footerContentNotice: "Выжимки созданы ИИ. Права на исходные статьи принадлежат их авторам.",
+  backToFeedLink: "показать всю ленту",
+  resetFiltersAction: "Сбросить фильтры",
 };
 
 const en: Dictionary = {
@@ -314,6 +318,8 @@ const en: Dictionary = {
   footerLicenseLabel: "code under MIT",
   footerContentNotice:
     "Summaries are AI-generated. Rights to the source articles belong to their authors.",
+  backToFeedLink: "back to feed",
+  resetFiltersAction: "Reset filters",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };

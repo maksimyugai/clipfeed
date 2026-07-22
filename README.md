@@ -390,7 +390,7 @@ you'd rather opt in later once Access/LLM mode are set up the way you want.
 
 Two more optional pieces, once the above is working: "Protecting your instance" below (required
 before real use — reads are public by design, but writes need this) and "Telegram bot" further down
-(an optional capture path + daily digest, off by default).
+(an optional capture path + hourly drip publishing, off by default).
 
 ## Protecting your instance
 
@@ -483,12 +483,15 @@ with no secret, is inert — `readTurnstileConfig()` requires both).
 
 ## Telegram bot
 
-Optional capture path + a daily digest, entirely separate from the extension/SPA. Send the bot a
-link and it saves the article the same way the web UI does; `/digest` (or a daily cron, `06:00 UTC`
-by default — see "The morning digest (cron)" below) sends a plain-text summary of everything that
-finished processing in the last 24h; `/scrape` runs the daily scraping agent (see "Daily scraping
-agent" below) on demand instead of waiting for its own cron hour. The bot is **private** — it
-answers exactly one chat (yours) and politely refuses everyone else.
+Optional capture path + hourly drip publishing, entirely separate from the extension/SPA. Send the
+bot a link and it saves the article the same way the web UI does. Instead of a once-daily
+wall-of-text digest, ClipFeed publishes **one standalone post per hour** — title, TL;DR, key points,
+and a link to the full card — during a configurable daily window (see "Drip publishing (cron)"
+below); `/publish` forces the next queued article out immediately instead of waiting for the next
+tick, and `/digest` still exists for an on-demand plain-text summary of the last 24h if you want
+one. `/scrape` runs the daily scraping agent (see "Daily scraping agent" below) on demand instead of
+waiting for its own cron hour. The bot only ever acts on messages from your own chat — every other
+chat gets a one-line refusal and nothing else happens.
 
 ### How auth works here (read this before wiring it up)
 
@@ -511,9 +514,16 @@ value):
   you.
 - `TELEGRAM_OWNER_CHAT_ID` — your numeric chat id; see "Finding your chat id" below.
 
-Plus one `[vars]`, optional: `PUBLIC_BASE_URL` (e.g. `https://example.com`) — used only to build the
-feed link in bot messages (the digest footer, the "saved" reply). Left as `""` by default; bot
-messages simply omit the link when it's empty.
+Plus `[vars]`, all optional:
+
+- `PUBLIC_BASE_URL` (e.g. `https://example.com`) — used to build links in bot messages (each drip
+  post's card link, the digest footer, the "saved" reply). Left as `""` by default; bot messages
+  simply omit the link when it's empty. **Set this before relying on the drip's card links** — they
+  point at `PUBLIC_BASE_URL + "/#article-<id>"`, which is meaningless while it's blank.
+- `TELEGRAM_CHANNEL_ID` (default `""`) — when set, drip posts go to this channel instead of your own
+  DM. See "Publishing to a channel" below.
+- `PUBLISH_START_HOUR_UTC` / `PUBLISH_END_HOUR_UTC` (defaults `4` / `18`) and `PUBLISH_ENABLED`
+  (default `true`) — see "Drip publishing (cron)" below.
 
 ### Setup
 
@@ -550,7 +560,23 @@ webhook can't both be active for the same bot, so doing this after step 5 below 
    also accepted for non-interactive use, but note those land in shell history, so prefer the
    prompts for a one-off run.)
 6. Message your bot: `/start` for help, paste a link to save it, `/digest` for an on-demand summary,
-   `/scrape` to run the daily scraping agent right now.
+   `/publish` to force the next queued article out right now, `/scrape` to run the daily scraping
+   agent right now.
+
+### Publishing to a channel
+
+By default, drip posts land in your own DM — the same surface the old digest used, so the feature
+works before you've set anything else up. To publish to a channel instead:
+
+1. Create a Telegram channel (public or private).
+2. Add your bot as an **admin** of the channel, with permission to post messages.
+3. Set `TELEGRAM_CHANNEL_ID` to the channel's `@username` (public channels) or its numeric id, which
+   looks like `-100XXXXXXXXXX` (private channels — forward a message from the channel to
+   [@userinfobot](https://t.me/userinfobot) to get it). Either a `[vars]` entry in `wrangler.toml`
+   or a secret works; it isn't sensitive.
+
+Once set, both the hourly drip and `/publish` post there instead of your DM. Clear it back to `""`
+to revert to DMs.
 
 **Finding your chat id:** message your bot at least once (anything — even just `/start`), then run:
 
@@ -570,37 +596,46 @@ deno task telegram:setup --get-chat-id
 deno task telegram:setup                    # re-registers the webhook once you have the id
 ```
 
-### The morning digest (cron)
+### Drip publishing (cron)
 
-`wrangler.toml`'s `[triggers]` section runs a single **hourly** cron, dispatched by UTC hour to
-whichever daily jobs are configured for that hour (see "Daily scraping agent" below for the other
-job it dispatches):
+`wrangler.toml`'s `[triggers]` section runs a single **hourly** cron. The scraping agent (see "Daily
+scraping agent" below) dispatches once at `AGENT_HOUR_UTC`; the drip publish job runs on **every**
+tick instead of a single hour, gated by its own window:
 
 ```
 [triggers]
 crons = ["0 * * * *"]
 ```
 
-Two `[vars]` control the schedule — both plain UTC hours (`0`–`23`) as strings, both optional:
+Each tick, if the current UTC hour falls inside `[PUBLISH_START_HOUR_UTC, PUBLISH_END_HOUR_UTC)` and
+`PUBLISH_ENABLED` isn't the literal `"false"`, ClipFeed picks the **oldest** `ready`, non-archived,
+not-yet-published article added within the last 48h and posts it as a proper standalone message:
+title in bold, the TL;DR, the key-point bullets, a "Читать полностью →" link to its card in the SPA
+(`PUBLIC_BASE_URL + "/#article-<id>"`), and a source attribution line. At most one article goes out
+per tick, so across the default 4–18 UTC window that's up to 14 posts a day, spread out instead of
+arriving as one unreadable wall of text. An article is marked published the moment it's posted (or
+skipped — see below) so it's never sent twice, even across restarts or config changes.
 
-- `DIGEST_HOUR_UTC` (default `6`) — when the morning digest fires.
-- `AGENT_HOUR_UTC` (default `5`) — when the scraping agent fires, one hour before the digest by
-  default so a run's picks are already summarized by the time the digest goes out. This isn't a hard
-  requirement, though: the digest covers "everything ready in the last 24h" regardless of ordering,
-  so either hour can safely come first.
+An article whose faithfulness check came back `'fail'` (see "Faithfulness check" below) is **skipped
+silently** — never posted, since broadcasting a likely-inaccurate summary is worse than staying
+quiet — but still marked as handled, so the drip queue advances past it instead of retrying the same
+skip forever. Nothing in the SPA or `/digest` is affected; this only changes what the bot
+broadcasts.
 
-Clear either var to an empty string (or set something out of range) to disable that job entirely —
-it just never fires, same as leaving the whole Telegram feature unconfigured disables the digest
-altogether. Edit the hours to whatever suits you; they're always **UTC**, regardless of your own
-timezone. `deno task deploy` (and the CD workflow on merge to `main`) applies `wrangler.toml`'s
-triggers automatically; no separate registration step like the webhook needs. If there's nothing new
-to report, the cron digest sends **nothing** — unlike `/digest`, which always replies (with a
-"nothing new" message) since you asked for it directly.
+`PUBLISH_ENABLED` set to `"false"` turns the whole job off (no posts, cron or `/publish`); any other
+value, including leaving it unset, means "on" — same "only the literal false disables it" convention
+as `FAITHFULNESS_CHECK`. `PUBLISH_START_HOUR_UTC`/`PUBLISH_END_HOUR_UTC` are `[vars]` strings parsed
+defensively (an invalid or missing value falls back to the documented default, `4`/`18`) rather than
+disabling anything — they only bound the window, they aren't an on/off switch themselves. Always
+**UTC**, regardless of your own timezone. `deno task deploy` (and the CD workflow on merge to
+`main`) applies `wrangler.toml`'s triggers automatically; no separate registration step like the
+webhook needs.
 
 ### Privacy
 
-This is a single-owner bot by design: article titles, summaries, and links are never sent to any
-chat other than the one in `TELEGRAM_OWNER_CHAT_ID`. Saving via Telegram reuses the exact same
+Drip posts go to `TELEGRAM_CHANNEL_ID` if you've set one, otherwise to your own
+`TELEGRAM_OWNER_CHAT_ID` — never anywhere else. The webhook (saving links, `/digest`, `/publish`,
+`/scrape`) only ever acts on messages from your own chat. Saving via Telegram reuses the exact same
 extract → summarize → persist pipeline as every other capture path (including the daily cost guard)
 — nothing Telegram-specific is duplicated.
 
@@ -826,9 +861,9 @@ no required format, just describe what you'd want picked.
 
 ### Schedule and manual trigger
 
-Runs on `AGENT_HOUR_UTC` (default `5`) via the same hourly cron the Telegram digest uses — see "The
-morning digest (cron)" above for both vars and how to disable either job. Two ways to run it on
-demand instead of waiting for the clock:
+Runs on `AGENT_HOUR_UTC` (default `5`) via the same hourly cron the Telegram drip publish job uses —
+see "Drip publishing (cron)" above for the publish job's own (always-on-every-tick) schedule and how
+to disable the agent. Two ways to run the agent on demand instead of waiting for the clock:
 
 - `POST /api/admin/agent/run` — Access-protected, returns `202` immediately and runs the job in the
   background.

@@ -102,12 +102,21 @@ async function callTelegram<T>(
   return data.result as T;
 }
 
+export interface SendMessageOptions {
+  parseMode?: "HTML";
+}
+
 export async function sendMessage(
   botToken: string,
   chatId: string,
   text: string,
+  options?: SendMessageOptions,
 ): Promise<SentMessage> {
-  return await callTelegram<SentMessage>(botToken, "sendMessage", { chat_id: chatId, text });
+  return await callTelegram<SentMessage>(botToken, "sendMessage", {
+    chat_id: chatId,
+    text,
+    ...(options?.parseMode ? { parse_mode: options.parseMode } : {}),
+  });
 }
 
 export async function editMessageText(

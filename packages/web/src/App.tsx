@@ -8,6 +8,7 @@ import {
   deleteArticle,
   getAdminArticle,
   getAdminMe,
+  getArticle,
   listAdminArticles,
   listArticles,
   patchArticle,
@@ -21,7 +22,7 @@ import { computeLogoResetState } from "./lib/feedReset.ts";
 import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { EMPTY_FILTER_STATE, filterReducer } from "./lib/filterState.ts";
-import { type DateSection, groupArticlesBySection } from "./lib/dateGrouping.ts";
+import { bucketSection, type DateSection, groupArticlesBySection } from "./lib/dateGrouping.ts";
 import {
   readStoredSectionState,
   type SectionOpenState,
@@ -31,12 +32,14 @@ import { shouldFetchNextInitialPage, shouldFetchOnEarlierExpand } from "./lib/pa
 import { loadAgentSchedule } from "./lib/agentSchedule.ts";
 import { classifyApiError, localizedErrorMessage } from "./lib/errorMessages.ts";
 import { mergeRefreshedArticles, pickFailedIds } from "./lib/failedRefresh.ts";
+import { isArticleInList, parseArticleHash } from "./lib/deepLink.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
 import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
 import { Feed } from "./components/Feed.tsx";
 import { Toast } from "./components/Toast.tsx";
 import { Footer } from "./components/Footer.tsx";
+import { DeepLinkedArticle } from "./components/DeepLinkedArticle.tsx";
 
 const SEARCH_DEBOUNCE_MS = 300;
 const PAGE_LIMIT = 20;
@@ -100,6 +103,16 @@ async function fetchSemanticSearch(isOwner: boolean, query: string): Promise<Art
   }));
 }
 
+// Same owner/visitor redaction split as fetchArticleList above, but for a
+// single row by id — used by the deep-link resolution effect below when a
+// Telegram-post link (#article-<id>, see lib/deepLink.ts) points at an
+// article that isn't in the currently loaded page(s).
+async function fetchArticleById(isOwner: boolean, id: string): Promise<ArticleListItem> {
+  if (isOwner) return await getAdminArticle(id);
+  const article = await getArticle(id);
+  return { ...article, error: null, faithfulness_json: null };
+}
+
 function computeSourceFacets(articles: ArticleListItem[]) {
   const counts = new Map<string, number>();
   for (const article of articles) {
@@ -143,6 +156,22 @@ export function App() {
     readStoredSectionState(localStorage)
   );
   const [agentHourUtc, setAgentHourUtc] = useState<number | null>(null);
+
+  // Deep-link resolution (Part B: a Telegram drip post links to
+  // "#article-<id>", see lib/deepLink.ts). deepLinkPending is the id still
+  // waiting to be resolved (consumed exactly once, either by finding it in
+  // the loaded list or by fetching it standalone); deepLinkedArticle holds
+  // the standalone-fetched result, which REPLACES the normal Feed view
+  // entirely while set (see the render below); forceOpenSection is a
+  // session-only override so a deep-linked article's date section renders
+  // open even if its persisted default is closed, without ever writing
+  // that override into localStorage (see Feed.tsx's `open` computation).
+  const [deepLinkPending, setDeepLinkPending] = useState<string | null>(() =>
+    parseArticleHash(globalThis.location?.hash ?? "")
+  );
+  const [deepLinkedArticle, setDeepLinkedArticle] = useState<ArticleListItem | null>(null);
+  const [forceOpenSection, setForceOpenSection] = useState<DateSection | null>(null);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
 
   const setLang = (next: Lang) => {
     setLangState(next);
@@ -199,6 +228,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     setExpandedId(null);
+    setInitialLoadDone(false);
 
     if (query.trim() !== "" && searchMode === "semantic") {
       fetchSemanticSearch(isOwner, query)
@@ -209,6 +239,9 @@ export function App() {
         })
         .catch((err) => {
           if (!cancelled) showError(err);
+        })
+        .finally(() => {
+          if (!cancelled) setInitialLoadDone(true);
         });
       return () => {
         cancelled = true;
@@ -234,14 +267,83 @@ export function App() {
         if (!shouldFetchNextInitialPage(res.items, res.next_cursor)) break;
         cursor = res.next_cursor ?? undefined;
       }
-    })().catch((err) => {
-      if (!cancelled) showError(err);
-    });
+    })()
+      .catch((err) => {
+        if (!cancelled) showError(err);
+      })
+      .finally(() => {
+        if (!cancelled) setInitialLoadDone(true);
+      });
 
     return () => {
       cancelled = true;
     };
   }, [query, activeTag, activeSource, archivedView, isOwner, searchMode]);
+
+  // Resolves the deep link exactly once, after the initial (unfiltered,
+  // default-view) load has actually settled — a hash present at mount
+  // always lands on the default view first (nothing persists query/filter
+  // state across a reload), so waiting for initialLoadDone here is waiting
+  // for that one real load, not a filtered one. If the article is already
+  // in the loaded page(s), just expand + force its section open (its own
+  // ArticleCard scrolls its title into view on the expand transition — see
+  // scroll.ts). Otherwise fetch it standalone for the focused single-card
+  // view (see the render below).
+  useEffect(() => {
+    if (!deepLinkPending || !initialLoadDone) return;
+    const id = deepLinkPending;
+
+    if (isArticleInList(id, articles)) {
+      const found = articles.find((a) => a.id === id)!;
+      setForceOpenSection(bucketSection(found.added_at));
+      setExpandedId(id);
+      setDeepLinkPending(null);
+      return;
+    }
+
+    let cancelled = false;
+    fetchArticleById(isOwner, id)
+      .then((article) => {
+        if (!cancelled) setDeepLinkedArticle(article);
+      })
+      .catch(() => {
+        // Deleted/bad id — silently fall back to the normal default feed
+        // rather than a scary error toast for a stale link.
+      })
+      .finally(() => {
+        if (!cancelled) setDeepLinkPending(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deepLinkPending, initialLoadDone, articles, isOwner]);
+
+  // Any explicit filter/search interaction drops deep-link state — a user
+  // who starts filtering clearly isn't interested in the linked article
+  // anymore, and leaving the hash in the URL would otherwise re-resolve it
+  // (or just look stale) the next time initialLoadDone flips. Skips its
+  // own first run so mount doesn't immediately clear the very hash it's
+  // meant to resolve.
+  const skipFirstDeepLinkClear = useRef(true);
+  useEffect(() => {
+    if (skipFirstDeepLinkClear.current) {
+      skipFirstDeepLinkClear.current = false;
+      return;
+    }
+    if (globalThis.location?.hash) {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    setDeepLinkPending(null);
+    setDeepLinkedArticle(null);
+    setForceOpenSection(null);
+  }, [activeTag, activeSource, query, archivedView]);
+
+  const handleBackToFeed = () => {
+    setDeepLinkedArticle(null);
+    if (globalThis.location?.hash) {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  };
 
   const handleShowMore = async () => {
     if (!nextCursor || loadingMore) return;
@@ -319,6 +421,7 @@ export function App() {
           faithfulness_json: null,
           faithfulness_checked_at: null,
           embedded_at: null,
+          telegram_published_at: null,
         },
         ...current,
       ]);
@@ -532,31 +635,54 @@ export function App() {
             clearSourceAria={dict.clearSourceFilterAria}
           />
 
-          <Feed
-            dict={dict}
-            lang={lang}
-            articles={articles}
-            expandedId={expandedId}
-            onToggleExpand={(id) => setExpandedId((current) => (current === id ? null : id))}
-            onTagClick={handleTagClick}
-            onSourceClick={handleSourceClick}
-            onArchiveToggle={handleArchiveToggle}
-            onDelete={handleDelete}
-            onRetry={handleRetry}
-            onResummarize={handleResummarize}
-            onArticleUpdate={handleArticleUpdate}
-            hasMore={nextCursor !== null}
-            onShowMore={handleShowMore}
-            loadingMore={loadingMore}
-            archivedView={archivedView}
-            pickOfDayId={pickOfDayId}
-            isOwner={isOwner}
-            sectionOpen={sectionOpen}
-            onToggleSection={handleToggleSection}
-            isSearching={query.trim() !== ""}
-            searchMode={searchMode}
-            agentHourUtc={agentHourUtc}
-          />
+          {deepLinkedArticle
+            ? (
+              <DeepLinkedArticle
+                dict={dict}
+                lang={lang}
+                article={deepLinkedArticle}
+                isOwner={isOwner}
+                onBackToFeed={handleBackToFeed}
+                onTagClick={handleTagClick}
+                onSourceClick={handleSourceClick}
+                onArchiveToggle={handleArchiveToggle}
+                onDelete={handleDelete}
+                onRetry={handleRetry}
+                onResummarize={handleResummarize}
+                onArticleUpdate={setDeepLinkedArticle}
+              />
+            )
+            : (
+              <Feed
+                dict={dict}
+                lang={lang}
+                articles={articles}
+                expandedId={expandedId}
+                onToggleExpand={(id) => setExpandedId((current) => (current === id ? null : id))}
+                onTagClick={handleTagClick}
+                onSourceClick={handleSourceClick}
+                onArchiveToggle={handleArchiveToggle}
+                onDelete={handleDelete}
+                onRetry={handleRetry}
+                onResummarize={handleResummarize}
+                onArticleUpdate={handleArticleUpdate}
+                hasMore={nextCursor !== null}
+                onShowMore={handleShowMore}
+                loadingMore={loadingMore}
+                archivedView={archivedView}
+                pickOfDayId={pickOfDayId}
+                isOwner={isOwner}
+                sectionOpen={sectionOpen}
+                onToggleSection={handleToggleSection}
+                forceOpenSection={forceOpenSection}
+                isSearching={query.trim() !== ""}
+                searchMode={searchMode}
+                agentHourUtc={agentHourUtc}
+                activeTag={activeTag}
+                activeSource={activeSource}
+                onResetFilters={handleClearAll}
+              />
+            )}
         </main>
 
         <Sidebar

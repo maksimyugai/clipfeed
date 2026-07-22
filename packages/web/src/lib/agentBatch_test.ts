@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import {
   computeAgentBatchIndicator,
+  computeTodayIsEmpty,
   isSectionVisiblyEmpty,
   pendingCardVariant,
   shouldShowEmptyCountdown,
@@ -101,4 +102,35 @@ Deno.test("pendingCardVariant - manual/extension/telegram -> skeleton", () => {
   assertEquals(pendingCardVariant({ added_via: "manual" }), "skeleton");
   assertEquals(pendingCardVariant({ added_via: "extension" }), "skeleton");
   assertEquals(pendingCardVariant({ added_via: "telegram" }), "skeleton");
+});
+
+// --- computeTodayIsEmpty: Task 29 Part C visibility matrix (filtered x
+// today-empty x archived) ---
+
+Deno.test("computeTodayIsEmpty - default view, Today genuinely empty -> countdown shows", () => {
+  assertEquals(computeTodayIsEmpty(false, false, []), true);
+});
+
+Deno.test("computeTodayIsEmpty - default view, Today has content -> no countdown", () => {
+  assertEquals(computeTodayIsEmpty(false, false, [item("manual", "ready")]), false);
+});
+
+Deno.test("computeTodayIsEmpty - filtered view, Today empty -> no countdown (filter excludes, nothing is 'coming')", () => {
+  assertEquals(computeTodayIsEmpty(false, true, []), false);
+});
+
+Deno.test("computeTodayIsEmpty - filtered view, Today has content -> no countdown either way", () => {
+  assertEquals(computeTodayIsEmpty(false, true, [item("manual", "ready")]), false);
+});
+
+Deno.test("computeTodayIsEmpty - archived view, Today empty, unfiltered -> no countdown (archived overrides)", () => {
+  assertEquals(computeTodayIsEmpty(true, false, []), false);
+});
+
+Deno.test("computeTodayIsEmpty - archived AND filtered, Today empty -> still no countdown", () => {
+  assertEquals(computeTodayIsEmpty(true, true, []), false);
+});
+
+Deno.test("computeTodayIsEmpty - default view, agent batch in flight -> no countdown (existing precedence unaffected)", () => {
+  assertEquals(computeTodayIsEmpty(false, false, [item("agent", "pending")]), false);
 });
