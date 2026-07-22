@@ -726,6 +726,7 @@ Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verd
     faithfulness_json: { claims: [{ i: 1, verdict: "unsupported", evidence: "x" }], notes: "n" },
     faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
     embedded_at: null,
+    telegram_published_at: null,
   };
   const pub = toPublicArticle(article);
   assertEquals("faithfulness_json" in pub, false);
@@ -760,6 +761,7 @@ Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_ver
     faithfulness_json: { error: "judge unparseable" },
     faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
     embedded_at: null,
+    telegram_published_at: null,
   };
   const pub = toPublicListItem(item);
   assertEquals("faithfulness_json" in pub, false);

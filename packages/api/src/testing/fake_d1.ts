@@ -65,6 +65,7 @@ export class FakeD1 implements D1Database {
         faithfulness_json: null,
         faithfulness_checked_at: null,
         embedded_at: null,
+        telegram_published_at: null,
       };
       let vi = 0;
       for (const col of cols) {
@@ -325,6 +326,26 @@ export class FakeD1 implements D1Database {
       )
         .length;
       return [{ count }];
+    }
+
+    if (
+      sql.startsWith("SELECT id, url, source, faithfulness_verdict, summary_json FROM articles")
+    ) {
+      const since = values[0] as string;
+      return this.rows
+        .filter((r) =>
+          r.status === "ready" && r.archived === 0 && r.telegram_published_at === null &&
+          (r.added_at as string) >= since
+        )
+        .sort((a, b) => (a.added_at as string).localeCompare(b.added_at as string))
+        .slice(0, 20)
+        .map((r) => ({
+          id: r.id,
+          url: r.url,
+          source: r.source,
+          faithfulness_verdict: r.faithfulness_verdict,
+          summary_json: r.summary_json,
+        }));
     }
 
     throw new Error(`FakeD1: unsupported query: ${sql}`);

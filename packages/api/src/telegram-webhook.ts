@@ -18,6 +18,10 @@ import {
   HELP_TEXT,
   NO_DIGEST_ARTICLES_TEXT,
   NON_OWNER_REPLY,
+  PUBLISH_EMPTY_TEXT,
+  PUBLISH_FAILED_TEXT,
+  PUBLISH_SKIPPED_TEXT,
+  PUBLISH_SUCCESS_TEXT,
   SAVING_TEXT,
 } from "./telegram-strings.ts";
 import { timingSafeEqualStrings } from "./telegram-secret.ts";
@@ -25,6 +29,7 @@ import { findArticleIdByUrl, insertPendingArticle, listRecentReadyArticles } fro
 import { enqueueArticleJob } from "./queue.ts";
 import { sourceFromUrl } from "./validation.ts";
 import { runAgentJob } from "./agent.ts";
+import { publishNextArticle } from "./telegram-publish.ts";
 
 const SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token";
 const DIGEST_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -50,14 +55,6 @@ async function buildAndSendDigest(
   for (const text of messages) {
     await sendMessage(config.botToken, config.ownerChatId, text).catch(() => {});
   }
-}
-
-// Called by the cron trigger (see index.ts's `scheduled` export) — silent
-// when there's nothing to report, unlike the interactive /digest command.
-export async function sendMorningDigest(env: Env): Promise<void> {
-  const config = readTelegramConfig(env);
-  if (!config) return;
-  await buildAndSendDigest(env, config, null);
 }
 
 // Task 24 Part C's similar-title 409 (see index.ts's POST /api/admin/articles)
@@ -136,6 +133,31 @@ async function handleOwnerMessage(
   if (text === "/scrape") {
     c.executionCtx.waitUntil(runAgentJob(c.env));
     await sendMessage(config.botToken, config.ownerChatId, AGENT_STARTED_TEXT).catch(() => {});
+    return c.json({ ok: true });
+  }
+
+  // Owner-only, same auth as every other command here (the owner-chat gate
+  // in handleTelegramWebhook below already ran before we got this far).
+  // Bypasses the drip job's window/PUBLISH_ENABLED gating on purpose — this
+  // is an explicit manual override, not the cron — but reuses the exact
+  // same publishNextArticle core (candidate selection, faithfulness skip,
+  // idempotency marker) so there's only one publish code path to reason
+  // about.
+  if (text === "/publish") {
+    const outcome = await publishNextArticle(c.env, config).catch((err) => {
+      console.error(
+        JSON.stringify({ event: "telegram_publish_command_failed", error: String(err) }),
+      );
+      return null;
+    });
+    const reply = outcome === null
+      ? PUBLISH_FAILED_TEXT
+      : outcome.kind === "empty"
+      ? PUBLISH_EMPTY_TEXT
+      : outcome.kind === "skipped-unfaithful"
+      ? PUBLISH_SKIPPED_TEXT
+      : PUBLISH_SUCCESS_TEXT;
+    await sendMessage(config.botToken, config.ownerChatId, reply).catch(() => {});
     return c.json({ ok: true });
   }
 

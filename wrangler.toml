@@ -22,7 +22,17 @@ PUBLIC_BASE_URL = ""
 PENDING_TIMEOUT_MIN = 10
 INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news"
 AGENT_HOUR_UTC = "5"
-DIGEST_HOUR_UTC = "6"
+# Telegram drip publishing (see README "Telegram bot" — replaces the old
+# once-daily digest with one standalone post per hour). TELEGRAM_CHANNEL_ID
+# empty means posts go to the owner's own DM (TELEGRAM_OWNER_CHAT_ID)
+# instead of a channel — set it (e.g. "@your_channel" or "-100...") once
+# you've created a channel and added the bot as admin. PUBLISH_START_HOUR_UTC/
+# PUBLISH_END_HOUR_UTC bound the daily publish window (UTC); PUBLISH_ENABLED
+# is the on/off switch (only the literal "false" disables it).
+TELEGRAM_CHANNEL_ID = ""
+PUBLISH_START_HOUR_UTC = "4"
+PUBLISH_END_HOUR_UTC = "18"
+PUBLISH_ENABLED = "true"
 # How many candidates the agent saves per run. String, parsed defensively
 # (1-20, else this default with a warning) — see README "Daily scraping
 # agent".
@@ -75,16 +85,15 @@ binding = "AI"
 binding = "VECTORS"
 index_name = "clipfeed-embeddings"
 
-# Single hourly cron, dispatched by UTC hour to whichever of the two daily
-# jobs below is configured for it (see packages/api/src/scheduled.ts) — an
-# empty or invalid AGENT_HOUR_UTC/DIGEST_HOUR_UTC disables that job:
-#   - AGENT_HOUR_UTC (default 5): the scraping agent (see README "Daily
-#     scraping agent").
-#   - DIGEST_HOUR_UTC (default 6, after the agent so its picks are already
-#     in by digest time — though the digest covers the last 24h regardless
-#     of order, so either order works): the Telegram morning digest, sent
-#     when TELEGRAM_* secrets are set (see README "Telegram bot").
-# Both are always UTC, unaffected by your own timezone.
+# Single hourly cron (see packages/api/src/scheduled.ts):
+#   - AGENT_HOUR_UTC (default 5, empty/invalid disables it): the scraping
+#     agent (see README "Daily scraping agent"), runs once at this hour.
+#   - The Telegram drip publish job (see README "Telegram bot") runs on
+#     EVERY tick, gated by its own PUBLISH_START_HOUR_UTC/
+#     PUBLISH_END_HOUR_UTC window + PUBLISH_ENABLED above rather than a
+#     single dispatch hour — it publishes at most one article per tick,
+#     across the whole window, replacing the old once-daily digest cron.
+# Always UTC, unaffected by your own timezone.
 [triggers]
 crons = ["0 * * * *"]
 

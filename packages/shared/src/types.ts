@@ -88,6 +88,14 @@ export interface Article {
   // endpoint (POST /api/admin/embeddings/backfill) and idempotent —
   // catches all three by selecting WHERE embedded_at IS NULL.
   embedded_at: string | null;
+  // Set once this article has been drip-published to Telegram (see
+  // packages/api/src/telegram-publish.ts) — null means not yet published.
+  // Named distinctly from `published_at` above (the SOURCE article's own
+  // publish date) to avoid colliding with that unrelated, pre-existing
+  // field. A 'fail'-verdict article is marked here WITHOUT ever actually
+  // being sent (see telegram-publish.ts's doc comment) so the drip queue
+  // advances past it instead of retrying the same skip forever.
+  telegram_published_at: string | null;
 }
 
 export type ArticleListItem = Omit<Article, "full_text">;

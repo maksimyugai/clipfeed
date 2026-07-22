@@ -13,7 +13,7 @@ function truncateToTelegramLimit(text: string): string {
 export const NON_OWNER_REPLY = "Это персональный бот.";
 
 export const HELP_TEXT =
-  "Отправь ссылку — сохраню её в ленту.\n\n/digest — прислать выжимку за сутки.\n/scrape — запустить агента прямо сейчас.";
+  "Отправь ссылку — сохраню её в ленту.\n\n/digest — прислать выжимку за сутки.\n/scrape — запустить агента прямо сейчас.\n/publish — опубликовать следующую статью из очереди сейчас же.";
 
 export const SAVING_TEXT = "Сохраняю…";
 
@@ -22,6 +22,15 @@ export const ALREADY_SAVED_TEXT = "Уже сохранено";
 export const NO_DIGEST_ARTICLES_TEXT = "За последние сутки новых статей нет.";
 
 export const AGENT_STARTED_TEXT = "Запустил агента";
+
+export const PUBLISH_EMPTY_TEXT = "Нечего публиковать — очередь пуста.";
+
+export const PUBLISH_SUCCESS_TEXT = "Опубликовано.";
+
+export const PUBLISH_SKIPPED_TEXT =
+  "Следующая статья в очереди не прошла проверку достоверности — пропущена без публикации.";
+
+export const PUBLISH_FAILED_TEXT = "Не получилось опубликовать — попробуй ещё раз.";
 
 export function readySuccessText(
   titleRu: string,

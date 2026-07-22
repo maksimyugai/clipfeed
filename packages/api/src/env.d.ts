@@ -162,21 +162,44 @@ declare global {
     TELEGRAM_BOT_TOKEN?: string;
     TELEGRAM_WEBHOOK_SECRET?: string;
     TELEGRAM_OWNER_CHAT_ID?: string;
+    // Drip publishing (see telegram-publish.ts, README "Telegram bot"):
+    // replaces the old wall-of-text morning digest with one standalone
+    // post per hour. TELEGRAM_CHANNEL_ID (default "") — when set, posts go
+    // there instead of the owner's own chat (bot must be a channel admin);
+    // empty means posts land in TELEGRAM_OWNER_CHAT_ID, so the feature
+    // works before the owner creates a channel. PUBLISH_START_HOUR_UTC/
+    // PUBLISH_END_HOUR_UTC (defaults 4/18) bound the daily publish window;
+    // [vars] strings, parsed defensively (fall back to the default, unlike
+    // AGENT_HOUR_UTC/DIGEST_HOUR_UTC's empty-disables-the-job convention —
+    // PUBLISH_ENABLED is the actual on/off switch here). PUBLISH_ENABLED
+    // defaults to "true"; only the literal "false" turns the drip off.
+    TELEGRAM_CHANNEL_ID?: string;
+    PUBLISH_START_HOUR_UTC?: string;
+    PUBLISH_END_HOUR_UTC?: string;
+    PUBLISH_ENABLED?: string;
     // Public origin of the deployed instance (e.g. "https://example.com"),
-    // used only to build links in Telegram messages (the morning digest
-    // footer, the "saved" reply). [vars], default "" — when empty those
+    // used only to build links in Telegram messages (the drip post's card
+    // link, the "saved" reply). [vars], default "" — when empty those
     // links are simply omitted, never a broken/placeholder URL.
     PUBLIC_BASE_URL: string;
     // Daily scraping agent (see agent.ts, README "Daily scraping agent").
     // INTEREST_TOPICS steers the ranking call's taste — owner-editable
     // free text, no particular format required.
     INTEREST_TOPICS: string;
-    // Hour-dispatch scheduling for the agent/digest cron (see scheduled.ts):
-    // [vars] strings (not numbers) so a forker can disable either job by
-    // clearing it to "" — an empty or non-numeric/out-of-range value means
-    // that job never fires. Both are UTC hours (0-23).
+    // Hour-dispatch scheduling for the scraping agent cron (see
+    // scheduled.ts): [vars] string (not a number) so a forker can disable
+    // the job by clearing it to "" — an empty or non-numeric/out-of-range
+    // value means it never fires. UTC hour (0-23).
     AGENT_HOUR_UTC: string;
-    DIGEST_HOUR_UTC: string;
+    // Retired (Task 29): the old fixed-time morning digest cron is
+    // superseded by the drip publish window above (PUBLISH_START_HOUR_UTC/
+    // PUBLISH_END_HOUR_UTC) — one post per hour instead of a once-daily
+    // wall of text. No longer read anywhere; kept optional (rather than
+    // deleted outright) so an existing fork's wrangler.toml, or a test's
+    // env override, that still sets it doesn't need to change. The manual
+    // /digest command is unaffected — it still builds the same digest on
+    // demand, this var only ever controlled the automatic cron dispatch.
+    DIGEST_HOUR_UTC?: string;
     // How many candidates the agent saves per run — [vars] string, parsed
     // defensively by ranking.ts's parseAgentDailyPicks (1-20, else the
     // default 10 with a warning). Feeds both the ranking prompt's "pick N"

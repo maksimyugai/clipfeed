@@ -1,11 +1,11 @@
 import "./env.d.ts";
 import { runAgentJob } from "./agent.ts";
-import { sendMorningDigest } from "./telegram-webhook.ts";
 import { runHealingJob } from "./healing.ts";
+import { runPublishJob } from "./telegram-publish.ts";
 
-// [vars] strings, not numbers — an empty or invalid value disables that
-// job entirely, same "safe default = off" pattern as the rest of this
-// app's optional integrations (Access, Turnstile, Telegram).
+// [vars] string, not a number — an empty or invalid value disables the
+// agent job entirely, same "safe default = off" pattern as the rest of
+// this app's optional integrations (Access, Turnstile, Telegram).
 export function parseHour(raw: string): number | null {
   const trimmed = raw.trim();
   if (trimmed === "") return null;
@@ -15,11 +15,14 @@ export function parseHour(raw: string): number | null {
 }
 
 // Single hourly cron trigger (wrangler.toml [triggers] crons = ["0 * * * *"])
-// dispatched by UTC hour to whichever configured jobs match — replaces the
-// old fixed-time digest-only cron. AGENT_HOUR_UTC and DIGEST_HOUR_UTC are
-// independent; both can fire on the same tick if set to the same hour.
-// The healing sweep (see healing.ts) has no hour config at all — it runs
-// on every tick, after the two conditional jobs above.
+// dispatched by UTC hour to the scraping agent (AGENT_HOUR_UTC) — the old
+// fixed-time morning digest that used to dispatch here (DIGEST_HOUR_UTC)
+// was retired in favor of the Telegram drip publish job (see
+// telegram-publish.ts's runPublishJob), which runs on EVERY tick and gates
+// itself internally via its own start/end window + PUBLISH_ENABLED, rather
+// than a single dispatch hour — one post an hour across a window, not one
+// job at one hour. The healing sweep (see healing.ts) also has no hour
+// config — it runs on every tick too, last.
 export async function handleScheduled(
   env: Env,
   scheduledTimeMs: number,
@@ -30,8 +33,6 @@ export async function handleScheduled(
   if (parseHour(env.AGENT_HOUR_UTC) === currentHour) {
     await runAgentJob(env);
   }
-  if (parseHour(env.DIGEST_HOUR_UTC) === currentHour) {
-    await sendMorningDigest(env);
-  }
+  await runPublishJob(env, scheduledTimeMs);
   await runHealingJob(env, ctx);
 }

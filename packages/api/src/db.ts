@@ -41,6 +41,7 @@ interface ArticleRow {
   faithfulness_json: string | null;
   faithfulness_checked_at: string | null;
   embedded_at: string | null;
+  telegram_published_at: string | null;
 }
 
 type ArticleRowNoText = Omit<ArticleRow, "full_text">;
@@ -126,6 +127,7 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     faithfulness_json: parseFaithfulnessJsonColumn(row.faithfulness_json),
     faithfulness_checked_at: row.faithfulness_checked_at,
     embedded_at: row.embedded_at,
+    telegram_published_at: row.telegram_published_at,
   };
 }
 
@@ -815,4 +817,73 @@ export async function listRecentReadyArticles(
     }
   }
   return articles;
+}
+
+export interface PublishCandidate {
+  id: string;
+  url: string;
+  source: string | null;
+  faithfulness_verdict: FaithfulnessVerdict | null;
+  title_ru: string;
+  tldr_ru: string;
+  bullets_ru: string[];
+}
+
+// Oldest un-drip-published 'ready' article, non-archived, added within the
+// given window (see telegram-publish.ts's 48h lookback — keeps a
+// freshly-enabled drip from working through months of backlog). ORDER BY
+// added_at ASC with a small LIMIT rather than a bare LIMIT 1: a row with
+// unparseable summary_json (shouldn't happen, see listRecentReadyArticles)
+// is skipped in favor of the next-oldest instead of stalling the whole
+// drip queue behind one bad row.
+export async function getNextPublishCandidate(
+  db: D1Database,
+  sinceIso: string,
+): Promise<PublishCandidate | null> {
+  const result = await db.prepare(
+    `SELECT id, url, source, faithfulness_verdict, summary_json FROM articles
+     WHERE status = 'ready' AND archived = 0 AND telegram_published_at IS NULL AND added_at >= ?
+     ORDER BY added_at ASC
+     LIMIT 20`,
+  ).bind(sinceIso).all<
+    {
+      id: string;
+      url: string;
+      source: string | null;
+      faithfulness_verdict: string | null;
+      summary_json: string | null;
+    }
+  >();
+
+  for (const row of result.results ?? []) {
+    const summary = parseSummaryJsonColumn(row.summary_json);
+    if (!summary) continue;
+    return {
+      id: row.id,
+      url: row.url,
+      source: row.source,
+      faithfulness_verdict: row.faithfulness_verdict as FaithfulnessVerdict | null,
+      title_ru: summary.title_ru,
+      tldr_ru: summary.tldr_ru,
+      bullets_ru: summary.bullets_ru,
+    };
+  }
+  return null;
+}
+
+// Marks an article as handled by the drip queue — either a real publish, or
+// a faithfulness-'fail' skip (see telegram-publish.ts) that still needs to
+// advance the queue past it. Separate from markEmbedded's column for the
+// same reason `embedded_at` is separate from `status`: this is a
+// best-effort side effect on an already-'ready' article, not a status
+// transition.
+export async function markTelegramPublished(
+  db: D1Database,
+  id: string,
+  publishedAtIso: string,
+): Promise<void> {
+  await db.prepare("UPDATE articles SET telegram_published_at = ? WHERE id = ?").bind(
+    publishedAtIso,
+    id,
+  ).run();
 }
