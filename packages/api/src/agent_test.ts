@@ -331,7 +331,7 @@ Deno.test("runAgentJob: pool-stage title duplicates are counted and logged in th
       .find((entry) => entry.event === "agent_stage" && entry.stage === "pool");
     assertEquals(poolLog?.pool_size, 1);
     assertEquals(poolLog?.dedup_dropped, 1);
-    assertEquals(poolLog?.dedup_dropped_by_reason, { url: 0, title: 1, jaccard: 0 });
+    assertEquals(poolLog?.dedup_dropped_by_reason, { url: 0, title: 1, jaccard: 0, semantic: 0 });
   } finally {
     globalThis.fetch = originalFetch;
     console.log = originalLog;

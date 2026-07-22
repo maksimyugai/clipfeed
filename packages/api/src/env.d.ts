@@ -42,6 +42,44 @@ declare global {
     run(model: string, input: unknown): Promise<unknown>;
   }
 
+  // Minimal ambient Vectorize types — same "extend as we actually use it"
+  // convention as the rest of this file (no @cloudflare/workers-types
+  // dependency). Metadata values are the JSON-primitive subset Vectorize
+  // accepts; string arrays aren't needed here.
+  interface VectorizeVector {
+    id: string;
+    values: number[];
+    metadata?: Record<string, string | number | boolean>;
+  }
+
+  interface VectorizeMatch {
+    id: string;
+    score: number;
+    metadata?: Record<string, unknown>;
+  }
+
+  interface VectorizeMatches {
+    matches: VectorizeMatch[];
+    count: number;
+  }
+
+  // Filter values use Vectorize's operator-object syntax (e.g.
+  // `{ added_at: { $gte: "2026-01-01T00:00:00.000Z" } }`) — string
+  // comparison works for our zero-padded ISO 8601 timestamps. Filtering on
+  // a property requires a metadata index for it (see scripts/setup.ts's
+  // ensureVectorizeMetadataIndex), created once at setup time.
+  interface VectorizeQueryOptions {
+    topK?: number;
+    returnMetadata?: boolean | "none" | "indexed" | "all";
+    filter?: Record<string, unknown>;
+  }
+
+  interface VectorizeIndex {
+    upsert(vectors: VectorizeVector[]): Promise<{ count: number; ids: string[] }>;
+    query(vector: number[], options?: VectorizeQueryOptions): Promise<VectorizeMatches>;
+    deleteByIds(ids: string[]): Promise<{ count: number; ids: string[] }>;
+  }
+
   // Producer side of a Cloudflare Queue binding (see wrangler.toml
   // [[queues.producers]]).
   interface Queue<Body = unknown> {
@@ -177,6 +215,37 @@ declare global {
     FAITHFULNESS_CHECK?: string;
     FAITHFULNESS_ENFORCE?: string;
     FAITHFULNESS_JUDGE_MODEL?: string;
+    // Embeddings (see embeddings.ts, README "Semantic dedup & search"):
+    // optional so a fork that hasn't run `deno task setup` yet (no
+    // Vectorize index provisioned, no [[vectorize]] binding in
+    // wrangler.toml) degrades gracefully — semantic dedup skips its layer
+    // and falls back to the existing string-based layers only, and search
+    // falls back to the pre-existing LIKE query. Every call site checks
+    // `env.VECTORS` before touching it; never a hard dependency.
+    VECTORS?: VectorizeIndex;
+    // Workers AI multilingual embedding model — @cf/baai/bge-m3 (1024
+    // dims, cosine metric, 100+ languages including ru/en — see README for
+    // why this one). [vars] string, optional/parsed defensively (like
+    // FAITHFULNESS_JUDGE_MODEL above — see embeddings.ts's
+    // resolveEmbeddingModel) so a fork can swap models without a redeploy
+    // of code, though doing so requires re-creating the Vectorize index at
+    // the new model's dimension count (see embeddings.ts's
+    // dimension-mismatch guard, which fails loudly rather than silently
+    // writing vectors of the wrong shape).
+    EMBEDDING_MODEL?: string;
+    // Semantic dedup (agent-pool.ts): caps how many surviving candidates
+    // get an embedding call per agent run (each is a Workers AI request),
+    // and the cosine-similarity floor above which two candidates are
+    // treated as the same story. [vars] strings, parsed defensively — see
+    // agent-pool.ts's parseSemanticDedupConfig. Defaults: 40 candidates,
+    // 0.82 threshold (empirically derived — see README).
+    SEMANTIC_DEDUP_MAX_CANDIDATES?: string;
+    SEMANTIC_DEDUP_THRESHOLD?: string;
+    // Semantic search (GET /api/search, /api/admin/search) is PUBLIC and
+    // costs one Workers AI embedding call per query — rate-limited by a
+    // per-minute KV counter (see search.ts), [vars] string, default 30,
+    // parsed defensively.
+    SEARCH_RATE_PER_MIN?: string;
   }
 }
 

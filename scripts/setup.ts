@@ -9,6 +9,19 @@ const D1_DB_NAME = "clipfeed";
 const KV_BINDING = "CACHE";
 const QUEUE_NAME = "clipfeed-jobs";
 const DLQ_NAME = "clipfeed-dlq";
+const VECTORIZE_INDEX_NAME = "clipfeed-embeddings";
+// Must match EMBEDDING_DIMENSIONS in packages/api/src/embeddings.ts — the
+// Workers AI model (@cf/baai/bge-m3) that produces the vectors this index
+// stores. If that model ever changes, this index has to be recreated at the
+// new dimension count (Vectorize can't resize an existing index) — see
+// embeddings.ts's assertEmbeddingDimensions, which fails loudly rather than
+// silently writing wrong-shaped vectors on a mismatch.
+const VECTORIZE_DIMENSIONS = 1024;
+const VECTORIZE_METRIC = "cosine";
+// Enables the `added_at` range filter semantic dedup/search rely on (see
+// embeddings.ts's queryRelatedEmbeddings) — without this metadata index,
+// Vectorize would reject a query that filters on it.
+const VECTORIZE_METADATA_PROPERTY = "added_at";
 
 interface WranglerResult {
   code: number;
@@ -96,6 +109,22 @@ export function queueExistsInList(listOutput: string, name: string): boolean {
     const cells = line.split("│").map((c) => c.trim()).filter((c) => c.length > 0);
     return cells.length >= 2 && cells[1] === name;
   });
+}
+
+// Same "not account-scoped, no id to patch" shape as queueExistsInList above
+// — a Vectorize index's name is the literal string already in wrangler.toml
+// ("clipfeed-embeddings"), so this is purely an existence check. Unlike
+// `wrangler queues list` (ASCII table only), `wrangler vectorize list
+// --json` returns real JSON, so this parses that directly instead of a
+// table — simpler, and matches findExistingD1Id/findExistingKvId's
+// JSON-list convention above.
+export function vectorizeIndexExistsInList(listOutput: string, name: string): boolean {
+  try {
+    const indexes = JSON.parse(listOutput) as { name: string }[];
+    return indexes.some((idx) => idx.name === name);
+  } catch {
+    return false;
+  }
 }
 
 // --- Orchestration ---
@@ -192,6 +221,58 @@ async function ensureQueue(name: string, created: string[], reused: string[]): P
   created.push(`Queue "${name}"`);
 }
 
+// Embeddings infrastructure (Task 27, README "Semantic dedup & search") —
+// optional in the sense that everything degrades gracefully without it (see
+// embeddings.ts), but this is the one-time provisioning step that turns
+// that degraded mode on. Two calls: the index itself, then a metadata
+// index on `added_at` so the 72h-window filter semantic dedup/search rely
+// on (queryRelatedEmbeddings) is actually queryable. The metadata-index
+// call is best-effort — a failure there (e.g. it already exists, under
+// wrangler CLI output this script hasn't been verified against for every
+// wrangler version) is logged but not fatal, since a missing metadata
+// index only degrades the window filter, not the index's basic usability.
+async function ensureVectorize(created: string[], reused: string[]): Promise<void> {
+  const list = await runWrangler(["vectorize", "list", "--json"]);
+  if (list.code === 0 && vectorizeIndexExistsInList(list.stdout, VECTORIZE_INDEX_NAME)) {
+    reused.push(`Vectorize index "${VECTORIZE_INDEX_NAME}" already exists`);
+  } else {
+    const create = await runWrangler([
+      "vectorize",
+      "create",
+      VECTORIZE_INDEX_NAME,
+      `--dimensions=${VECTORIZE_DIMENSIONS}`,
+      `--metric=${VECTORIZE_METRIC}`,
+    ]);
+    if (create.code !== 0) {
+      console.error(`Could not create Vectorize index "${VECTORIZE_INDEX_NAME}":\n`);
+      console.error(create.stdout || create.stderr);
+      Deno.exit(1);
+    }
+    created.push(
+      `Vectorize index "${VECTORIZE_INDEX_NAME}" (${VECTORIZE_DIMENSIONS} dims, ${VECTORIZE_METRIC})`,
+    );
+  }
+
+  const metaCreate = await runWrangler([
+    "vectorize",
+    "create-metadata-index",
+    VECTORIZE_INDEX_NAME,
+    `--property-name=${VECTORIZE_METADATA_PROPERTY}`,
+    "--type=string",
+  ]);
+  if (metaCreate.code === 0) {
+    created.push(`Vectorize metadata index on "${VECTORIZE_METADATA_PROPERTY}"`);
+  } else if (/already exists|duplicate/i.test(metaCreate.stdout + metaCreate.stderr)) {
+    reused.push(`Vectorize metadata index on "${VECTORIZE_METADATA_PROPERTY}" already exists`);
+  } else {
+    console.warn(
+      `Warning: could not confirm the Vectorize metadata index on "${VECTORIZE_METADATA_PROPERTY}" ` +
+        `(semantic dedup/search's time-window filter may not work until this is created manually):\n`,
+    );
+    console.warn(metaCreate.stdout || metaCreate.stderr);
+  }
+}
+
 async function applyMigrations(): Promise<void> {
   console.log("Applying D1 migrations to the remote database...\n");
   const result = await runWrangler(["d1", "migrations", "apply", "DB", "--remote"]);
@@ -255,6 +336,12 @@ function printChecklist(created: string[], reused: string[]): void {
     "  - If using AI Gateway: create it in the dashboard and store/load provider credentials.",
   );
   console.log("  - Set the secret(s) printed above for your chosen LLM mode.");
+  console.log(
+    "  - Embeddings (semantic dedup & search): EMBEDDING_MODEL/SEMANTIC_DEDUP_*/SEARCH_RATE_PER_MIN",
+  );
+  console.log(
+    "    already have working [vars] defaults in wrangler.toml — nothing else to configure.",
+  );
   console.log("  - Set up Cloudflare Access in front of the Worker (a later task automates this).");
   console.log("  - Deploy: deno task deploy");
   console.log("──────────────────────────────────────────");
@@ -281,6 +368,7 @@ async function main(): Promise<void> {
   // just needs to exist before deploy or `wrangler deploy` fails outright
   // (Cloudflare validates dead_letter_queue references at deploy time).
   await ensureQueue(DLQ_NAME, created, reused);
+  await ensureVectorize(created, reused);
   await applyMigrations();
   console.log();
   await reportSecrets();

@@ -40,6 +40,7 @@ interface ArticleRow {
   faithfulness_verdict: string | null;
   faithfulness_json: string | null;
   faithfulness_checked_at: string | null;
+  embedded_at: string | null;
 }
 
 type ArticleRowNoText = Omit<ArticleRow, "full_text">;
@@ -124,6 +125,7 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     faithfulness_verdict: row.faithfulness_verdict as FaithfulnessVerdict | null,
     faithfulness_json: parseFaithfulnessJsonColumn(row.faithfulness_json),
     faithfulness_checked_at: row.faithfulness_checked_at,
+    embedded_at: row.embedded_at,
   };
 }
 
@@ -308,6 +310,78 @@ export async function updateFaithfulnessOnly(
     result.checkedAt,
     id,
   ).run();
+}
+
+// Written after the embed stage successfully upserts into Vectorize (see
+// pipeline.ts, embeddings.ts) — a separate write from markArticleReady's
+// because embedding runs as a best-effort step AFTER the article is
+// already 'ready', never blocking or retrying the pipeline itself.
+export async function markEmbedded(db: D1Database, id: string, embeddedAt: string): Promise<void> {
+  await db.prepare("UPDATE articles SET embedded_at = ? WHERE id = ?").bind(embeddedAt, id).run();
+}
+
+export interface UnembeddedArticle {
+  id: string;
+  title_en: string | null;
+  tldr_en: string | null;
+  bullets_en: string[] | null;
+  source: string | null;
+  added_via: string;
+  lang_original: string | null;
+  added_at: string;
+}
+
+// Backfill source (POST /api/admin/embeddings/backfill): every 'ready',
+// non-archived row with no embedding yet — catches a fresh article whose
+// embed stage hasn't run, one whose embed call failed (never fails the
+// article itself, see pipeline.ts), and any row saved before this feature
+// existed. Archived rows are skipped (same reasoning as the healing sweep:
+// an archived article is considered dealt with). `limit` bounds one
+// backfill call's batch size; the caller (the endpoint) repeats until
+// nothing's left — see buildEmbeddingText in embeddings.ts for how the
+// summary fields below become one canonical embedding text.
+export async function listUnembeddedArticles(
+  db: D1Database,
+  limit: number,
+): Promise<UnembeddedArticle[]> {
+  const result = await db.prepare(
+    `SELECT id, summary_json, source, added_via, lang_original, added_at FROM articles
+     WHERE status = 'ready' AND archived = 0 AND embedded_at IS NULL
+     ORDER BY added_at ASC
+     LIMIT ?`,
+  ).bind(limit).all<
+    {
+      id: string;
+      summary_json: string | null;
+      source: string | null;
+      added_via: string;
+      lang_original: string | null;
+      added_at: string;
+    }
+  >();
+  return (result.results ?? []).map((row) => {
+    const summary = parseSummaryJsonColumn(row.summary_json);
+    return {
+      id: row.id,
+      title_en: summary?.title_en ?? null,
+      tldr_en: summary?.tldr_en ?? null,
+      bullets_en: summary?.bullets_en ?? null,
+      source: row.source,
+      added_via: row.added_via,
+      lang_original: row.lang_original,
+      added_at: row.added_at,
+    };
+  });
+}
+
+// Total remaining count for the backfill endpoint's {processed, remaining}
+// response — same WHERE clause as listUnembeddedArticles, just COUNT(*)
+// instead of a page, so the caller knows whether to call again.
+export async function countUnembeddedArticles(db: D1Database): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) as count FROM articles WHERE status = 'ready' AND archived = 0 AND embedded_at IS NULL`,
+  ).first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 export interface FaithfulnessStats {
@@ -579,6 +653,23 @@ export async function markArticlePending(db: D1Database, id: string): Promise<vo
 export async function getArticleById(db: D1Database, id: string): Promise<Article | null> {
   const row = await db.prepare("SELECT * FROM articles WHERE id = ?").bind(id).first<ArticleRow>();
   return row ? rowToArticle(row) : null;
+}
+
+// Hydrates a Vectorize search result (a list of article ids, already
+// ordered by score) from D1 — see search.ts's searchArticles, which zips
+// the returned rows back up with their scores by id. Unordered here on
+// purpose (a `WHERE id IN (...)` result has no guaranteed row order); the
+// caller reorders. An id with no matching row (the article was deleted
+// after being embedded, before the vector was cleaned up, or a race with
+// the delete-then-Vectorize-cleanup sequence) is simply absent from the
+// result — never an error.
+export async function getArticlesByIds(db: D1Database, ids: string[]): Promise<Article[]> {
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  const result = await db.prepare(`SELECT * FROM articles WHERE id IN (${placeholders})`).bind(
+    ...ids,
+  ).all<ArticleRow>();
+  return (result.results ?? []).map(rowToArticle);
 }
 
 export interface ListArticlesParams {

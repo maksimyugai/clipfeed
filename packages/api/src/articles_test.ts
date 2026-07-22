@@ -763,6 +763,80 @@ Deno.test("DELETE /api/admin/articles/:id: 204 then 404 on subsequent admin get"
   }
 });
 
+Deno.test("DELETE /api/admin/articles/:id: also removes the Vectorize embedding (no orphan vectors)", async () => {
+  const restoreFetch = stubFetch();
+  let deletedIds: string[] | undefined;
+  const vectors: VectorizeIndex = {
+    upsert: () => Promise.reject(new Error("not used")),
+    query: () => Promise.reject(new Error("not used")),
+    deleteByIds(ids) {
+      deletedIds = ids;
+      return Promise.resolve({ count: ids.length, ids });
+    },
+  };
+  const { env, authHeaders } = await makeOwnerContext({ VECTORS: vectors });
+  const { ctx, settle } = makeExecutionContext();
+
+  try {
+    const created = await (
+      await app.request(
+        "/api/admin/articles",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders },
+          body: JSON.stringify({ url: "https://example.com/deleteme-vector" }),
+        },
+        env,
+        ctx,
+      )
+    ).json();
+    await settle();
+
+    const deleteRes = await app.request(
+      `/api/admin/articles/${created.id}`,
+      { method: "DELETE", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(deleteRes.status, 204);
+    assertEquals(deletedIds, [created.id]);
+  } finally {
+    restoreFetch();
+  }
+});
+
+Deno.test("DELETE /api/admin/articles/:id: never crashes when VECTORS isn't configured (graceful degradation)", async () => {
+  const restoreFetch = stubFetch();
+  const { env, authHeaders } = await makeOwnerContext({ VECTORS: undefined });
+  const { ctx, settle } = makeExecutionContext();
+
+  try {
+    const created = await (
+      await app.request(
+        "/api/admin/articles",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders },
+          body: JSON.stringify({ url: "https://example.com/deleteme-no-vectors" }),
+        },
+        env,
+        ctx,
+      )
+    ).json();
+    await settle();
+
+    const deleteRes = await app.request(
+      `/api/admin/articles/${created.id}`,
+      { method: "DELETE", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(deleteRes.status, 204);
+  } finally {
+    restoreFetch();
+  }
+});
+
 Deno.test("POST /api/admin/articles/:id/retry: re-runs the pipeline for a failed article", async () => {
   const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();

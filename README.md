@@ -348,10 +348,12 @@ is tied to a specific account, domain, or Access team.
 
 1. Fork the repo.
 2. `deno run -A npm:wrangler login`, then `deno task setup` — creates (or reuses) your D1 database,
-   KV namespace, and the `clipfeed-jobs`/`clipfeed-dlq` queues (see "Queue-based pipeline execution"
-   below), patches `wrangler.toml` with your real D1/KV ids, and applies migrations to the remote
-   database. It never commits that patch for you; review and commit it yourself. It also prints
-   which of the secrets below are already set, without ever reading or printing their values.
+   KV namespace, the `clipfeed-jobs`/`clipfeed-dlq` queues (see "Queue-based pipeline execution"
+   below), and the `clipfeed-embeddings` Vectorize index + its `added_at` metadata index (see
+   "Semantic dedup & search" below), patches `wrangler.toml` with your real D1/KV ids, and applies
+   migrations to the remote database. It never commits that patch for you; review and commit it
+   yourself. It also prints which of the secrets below are already set, without ever reading or
+   printing their values.
 3. (Optional) Upgrade the LLM mode — ClipFeed already works out of the box on the free Workers AI
    default (see "LLM modes" above). To use a real Claude model instead, set one of:
    - **AI Gateway (recommended)** — gives you usage/cost visibility and lets you rotate or swap the
@@ -687,15 +689,17 @@ URL, is dropped before it ever reaches the ranking call. Every drop logs
 by reason are folded into the agent run's own `pool` stage log
 (`dedup_dropped`/`dedup_dropped_by_reason`).
 
-Honest limitation: this is cheap string-only matching, not semantic — two differently-worded
+Honest limitation: layers 1-3 are cheap string-only matching, not semantic — two differently-worded
 headlines covering the same event that don't share enough tokens can still both pass through as
-distinct candidates (e.g. "Company X Ships Feature Y" vs. "A New Way To Do Y Arrives"). A future
-embedding-based similarity layer could catch that; it is deliberately **not** part of this
-pre-scrape stage today. The Jaccard threshold here (`0.6`) is intentionally stricter than the
-post-pick story-dedup's `0.5` below — this stage runs against the whole pool (100+ candidates),
-where a looser bar risks dropping genuinely distinct stories that merely share a topic's common
-vocabulary; the post-pick stage runs on a small, already-curated set of picks where being a bit more
-aggressive is safer.
+distinct candidates (e.g. "Company X Ships Feature Y" vs. "A New Way To Do Y Arrives"). A 4th,
+embedding-based layer now runs last, after these three, when Vectorize is configured — see "Semantic
+dedup & search" below for the model, the live-measured threshold, and its own honest best-effort
+caveat; it's still not a substitute for these cheap layers running first, since it's the only one
+that costs a Workers AI call per candidate. The Jaccard threshold here (`0.6`) is intentionally
+stricter than the post-pick story-dedup's `0.5` below — this stage runs against the whole pool (100+
+candidates), where a looser bar risks dropping genuinely distinct stories that merely share a
+topic's common vocabulary; the post-pick stage runs on a small, already-curated set of picks where
+being a bit more aggressive is safer.
 
 ### Ranking: diversity-aware, not just "newest/most relevant"
 
@@ -864,6 +868,107 @@ Both the skeleton and the indicator share one shimmer CSS component, fully disab
 `prefers-reduced-motion` blocks in `styles.css`). A card that finishes while visible (agent or
 owner) gets a brief slide+fade-in on top of the existing "just became ready" highlight, also skipped
 under reduced motion.
+
+## Semantic dedup & search
+
+One piece of infrastructure — a Cloudflare Vectorize index — backs two separate features: catching
+paraphrased duplicate stories the string-only dedup layers above miss, and "ask your feed" semantic
+search over everything you've saved.
+
+**Model choice.** `@cf/baai/bge-m3` via Workers AI (free tier) — 1024 output dimensions, cosine
+metric, and multilingual (100+ languages, explicitly including Russian and English). It's the model
+this task's spec named directly, and it turned out to be available, so no fallback model was needed.
+One embedding per article, built from **English only** —
+`title_en + "\n" + tldr_en + "\n" + bullets_en` (see `buildEmbeddingText` in `embeddings.ts`) — for
+the same reason `faithfulness.ts`'s claim check is EN-only: RU/EN are independently-written parallel
+translations of the same facts (see the summarization prompt), so embedding one language captures
+equivalent meaning at half the Workers AI calls, and — more importantly here — keeps every article
+in one shared vector space regardless of `lang_original`, instead of a RU write-up and an EN
+write-up of the identical story landing in different regions of the space purely from language
+rather than content. Truncated to a conservative 1800 characters before embedding: Cloudflare's own
+docs disagree with each other on bge-m3's practical input limit (one table says ~512 tokens, the
+model's own page says a 60,000-token context window), and there's no tokenizer available at the edge
+to count exactly, so this errs toward truncating a little early rather than risking the API's own
+behavior on an oversized request.
+
+**Live-measured threshold.** The task that added this asked for a live sanity check against a real
+same-story pair already in production: two independently-written articles about the Kimi K3/Qwen 3.8
+model launches — the same pair that motivated the post-pick story-dedup in "Daily scraping agent"
+above — one framed as "this threatens Anthropic's business model," the other as "this is a US vs.
+China AI story," sharing almost no vocabulary. Embedding both (via `env.AI` directly, bypassing
+Vectorize — see the note on local dev below) and computing cosine similarity gave **0.835**. The
+task's own starting default (`0.86`) would have missed this exact pair entirely — its own launch
+announcement. `SEMANTIC_DEDUP_THRESHOLD` now defaults to **`0.82`**, a small margin below the
+measured score so this specific pair is actually caught, while staying well above where genuinely
+unrelated stories are expected to sit. This is one real calibration point, not a statistically
+validated threshold — see the honest caveat at the end of this section.
+
+**Embedding stage.** After a summary is stored (`status = 'ready'`), the pipeline computes and
+upserts one embedding per article, tagged with metadata
+`{added_at, source, added_via,
+lang_original}` (see `runEmbedStage` in `pipeline.ts`). A
+`embedded_at` marker column (migration `0005`) makes this idempotent and drives the backfill below.
+Embed failures **never** fail the article — they're logged and left for a later backfill, same as
+this task's spec required. Deleting an article also deletes its vector
+(`DELETE /api/admin/articles/:id`) — no orphans.
+
+**Semantic dedup layer (`agent-pool.ts`).** Runs **last**, after the three cheap string layers in
+"Daily scraping agent" above, and only on the candidates that survived them — embedding every
+candidate costs a Workers AI call, so this is capped at `SEMANTIC_DEDUP_MAX_CANDIDATES` (default
+`40`) per agent run, newest-first. For each: query Vectorize (`topK=3`, filtered to `added_at`
+within the last 72 hours) for a same-story match against already-saved articles, **and** compare
+pairwise against every other candidate's freshly-computed embedding still in this same batch
+(catches two picks about the same story in one run, before either is even saved). Either match
+`>=
+SEMANTIC_DEDUP_THRESHOLD` drops the candidate, logging
+`pool_dedup_dropped {reason: 'semantic',
+score, matchedId?}`. An embed or Vectorize-query failure
+for one candidate fails **open** (the candidate is kept, not dropped) — a transient infrastructure
+hiccup is not evidence of duplication.
+
+**Search — `GET /api/search?q=...&limit=20`** (public, same as the rest of the feed) embeds the
+query, queries Vectorize, and hydrates matching rows from D1 in score order. `GET
+/api/admin/search`
+is the owner-mode equivalent (real `error` field included, same as `/api/admin/articles` vs.
+`/api/articles`). Both fall back to the pre-existing title/summary `LIKE` search — same rows,
+`score: 0` — whenever Vectorize isn't configured or a call to it fails; a caller never sees a 500
+just because semantic search couldn't run. The public endpoint is rate-limited
+(`SEARCH_RATE_PER_MIN`, default `30`, a KV counter shared across all callers) since each query costs
+a Workers AI call — over the limit returns `429 {error: "rate_limited"}` with the SPA showing
+localized copy for it. In the SPA, once the search box has a query, a small toggle appears — **по
+словам** (keyword, the default, today's `LIKE` behavior) / **по смыслу** (semantic) — and the choice
+persists in `localStorage`. Deliberately no visible relevance score anywhere; ordering alone carries
+the ranking. An empty result set shows the existing empty-feed layout with a hint to try the other
+mode.
+
+**Backfill — `POST /api/admin/embeddings/backfill`** (Access-protected): embeds every `'ready'`,
+non-archived article with `embedded_at IS NULL`, 20 per call, returns `{processed, remaining}`. Same
+synchronous-paginated pattern as this repo's other one-shot admin jobs (e.g. tag normalization) —
+the caller repeats the call until `remaining` is `0`. Idempotent; safe to run anytime, including
+repeatedly. **Existing rows saved before this feature shipped have no embedding until this is run at
+least once** — the owner needs to call this after deploying, the same way the tag-normalize backfill
+needed a manual run after its own fix shipped.
+
+**Graceful degradation.** Everything above degrades to "acts like Vectorize doesn't exist" rather
+than crashing: a fork that hasn't run `deno task setup` yet has no `VECTORS` binding at all
+(`undefined`), and dedup/search both fall back to their string-only/`LIKE` equivalents
+automatically. Less obviously: **`wrangler dev` has no local Vectorize emulation whatsoever** —
+`env.VECTORS` there is a _present but non-functional_ proxy that throws `"needs to be run remotely"`
+on every single method call, a materially different failure mode from a genuinely missing binding,
+and one this task had to specifically account for (`embeddings.ts`'s
+`upsertArticleEmbedding`/`deleteArticleEmbedding` swallow this; `queryRelatedEmbeddings`
+deliberately does not, so its callers — `search.ts`, `agent-pool.ts` — can fall back properly
+instead of silently returning zero results). `env.AI`, by contrast, always works locally too
+(Workers AI bindings proxy to the real remote API even in local dev) — which is how the live
+threshold measurement above was taken without ever touching Vectorize.
+
+**Honest limitation.** This is best-effort, same as every other dedup/matching layer in this repo: a
+cosine-similarity threshold necessarily trades false positives (two distinct stories dropped as
+"duplicates") against misses (a real duplicate scoring just under the bar). The 0.82 default is
+calibrated against exactly one real pair — there was no negative example (a genuinely unrelated
+article pair) measured alongside it, so there's no confirmed floor below which false positives start
+appearing. If your own feed's dedup behavior looks off in either direction,
+`SEMANTIC_DEDUP_THRESHOLD` is a `[vars]` override, no code change needed.
 
 ## Chrome extension
 

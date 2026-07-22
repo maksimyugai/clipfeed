@@ -55,6 +55,14 @@ export function Feed(props: FeedProps) {
   } = props;
 
   if (articles.length === 0) {
+    if (isSearching) {
+      return (
+        <div class="empty-state">
+          <p class="empty-state-title">{dict.emptySearchTitle}</p>
+          <p class="empty-state-hint">{dict.emptySearchHint}</p>
+        </div>
+      );
+    }
     return (
       <div class="empty-state">
         <p class="empty-state-title">

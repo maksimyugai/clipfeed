@@ -1,9 +1,15 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
-import { buildCandidatePool } from "./agent-pool.ts";
+import {
+  buildCandidatePool,
+  parseSemanticDedupMaxCandidates,
+  parseSemanticDedupThreshold,
+  type SemanticDedupConfig,
+} from "./agent-pool.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { FakeKv } from "./testing/fake_kv.ts";
 import type { Candidate } from "./agent-types.ts";
+import { EMBEDDING_DIMENSIONS } from "./embeddings.ts";
 
 const NOW = new Date("2026-01-02T12:00:00.000Z");
 
@@ -440,7 +446,271 @@ Deno.test("buildCandidatePool: drop counts by reason are all present in dedupDro
     NOW,
   );
   assertEquals(pool.map((c) => c.id), ["keeper"]);
-  const reasonCounts = { url: 0, title: 0, jaccard: 0 };
+  const reasonCounts = { url: 0, title: 0, jaccard: 0, semantic: 0 };
   for (const drop of dedupDrops) reasonCounts[drop.reason] += 1;
-  assertEquals(reasonCounts, { url: 1, title: 1, jaccard: 1 });
+  assertEquals(reasonCounts, { url: 1, title: 1, jaccard: 1, semantic: 0 });
+});
+
+// --- Task 27: semantic dedup layer (last, most expensive, only runs when
+// `semantic.vectors` is provided) ---
+
+// A unit vector whose cosine similarity to the fixed BASIS vector below is
+// exactly `cosine` — lets a test assert a precise score rather than an
+// approximate one. Only dimensions 0/1 are non-zero; the rest pad out to
+// EMBEDDING_DIMENSIONS, since embedText's dimension guard requires the
+// stubbed Ai to "return" a full-length vector.
+function unitVectorWithCosine(cosine: number): number[] {
+  const v = new Array(EMBEDDING_DIMENSIONS).fill(0);
+  v[0] = cosine;
+  v[1] = Math.sqrt(Math.max(0, 1 - cosine * cosine));
+  return v;
+}
+const BASIS = (() => {
+  const v = new Array(EMBEDDING_DIMENSIONS).fill(0);
+  v[0] = 1;
+  return v;
+})();
+
+// Maps a candidate's embedding text (title-only here, since every test
+// candidate below uses an empty snippet) to a fixed vector — a stand-in for
+// the real Workers AI call.
+function makeStubAi(vectorsByText: Record<string, number[]>): Ai {
+  return {
+    run(_model: string, input: unknown) {
+      const text = (input as { text: string }).text;
+      const vector = vectorsByText[text];
+      if (!vector) throw new Error(`makeStubAi: no vector stubbed for text "${text}"`);
+      return Promise.resolve({ shape: [1, vector.length], data: [vector] });
+    },
+  };
+}
+
+function makeThrowingAi(): Ai {
+  return { run: () => Promise.reject(new Error("workers ai down")) };
+}
+
+// Simulates `wrangler dev`'s reality: env.VECTORS is present but every
+// method throws ("needs to be run remotely" — Vectorize has no local
+// emulation) — distinct from `vectors: undefined` above.
+function makeThrowingVectors(): VectorizeIndex {
+  const fail = () => Promise.reject(new Error("Binding VECTORS needs to be run remotely"));
+  return { upsert: fail, deleteByIds: fail, query: fail };
+}
+
+function makeStubVectors(
+  matches: VectorizeMatch[],
+  onQuery?: (vector: number[], options: VectorizeQueryOptions) => void,
+): VectorizeIndex {
+  return {
+    upsert: () => Promise.reject(new Error("not used")),
+    deleteByIds: () => Promise.reject(new Error("not used")),
+    query(vector, options) {
+      onQuery?.(vector, options ?? {});
+      return Promise.resolve({ matches, count: matches.length });
+    },
+  };
+}
+
+function makeSemanticConfig(overrides: Partial<SemanticDedupConfig>): SemanticDedupConfig {
+  return {
+    ai: makeStubAi({}),
+    vectors: undefined,
+    model: "@cf/baai/bge-m3",
+    maxCandidates: 40,
+    threshold: 0.82,
+    ...overrides,
+  };
+}
+
+Deno.test("buildCandidatePool: semantic layer is skipped entirely when semantic config is omitted", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const candidate = makeCandidate({ id: "solo", title: "Some Unique Headline About Widgets" });
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [candidate], NOW);
+  assertEquals(pool.map((c) => c.id), ["solo"]);
+  assertEquals(dedupDrops, []);
+});
+
+Deno.test("buildCandidatePool: semantic layer is skipped when vectors is undefined (no Vectorize provisioned)", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const candidate = makeCandidate({ id: "solo", title: "Some Unique Headline About Widgets" });
+  const semantic = makeSemanticConfig({ vectors: undefined });
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [candidate], NOW, semantic);
+  assertEquals(pool.map((c) => c.id), ["solo"]);
+  assertEquals(dedupDrops, []);
+});
+
+Deno.test("buildCandidatePool: drops a candidate whose Vectorize match scores >= threshold, logs score + matchedId", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const candidate = makeCandidate({ id: "dup", title: "Paraphrased Headline" });
+  const ai = makeStubAi({ "Paraphrased Headline": unitVectorWithCosine(0.95) });
+  const vectors = makeStubVectors([{ id: "existing-article-id", score: 0.95 }]);
+  const semantic = makeSemanticConfig({ ai, vectors, threshold: 0.82 });
+
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [candidate], NOW, semantic);
+  assertEquals(pool, []);
+  assertEquals(dedupDrops, [{
+    candidateTitle: "Paraphrased Headline",
+    reason: "semantic",
+    matchedId: "existing-article-id",
+    score: 0.95,
+  }]);
+});
+
+Deno.test("buildCandidatePool: keeps a candidate whose best Vectorize match scores below threshold", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const candidate = makeCandidate({ id: "distinct", title: "Distinct Headline" });
+  const ai = makeStubAi({ "Distinct Headline": unitVectorWithCosine(0.5) });
+  const vectors = makeStubVectors([{ id: "unrelated-id", score: 0.5 }]);
+  const semantic = makeSemanticConfig({ ai, vectors, threshold: 0.82 });
+
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [candidate], NOW, semantic);
+  assertEquals(pool.map((c) => c.id), ["distinct"]);
+  assertEquals(dedupDrops, []);
+});
+
+Deno.test("buildCandidatePool: queries Vectorize with topK=3 and an added_at filter 72h before `now`", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const candidate = makeCandidate({ id: "c1", title: "Headline One" });
+  const ai = makeStubAi({ "Headline One": BASIS });
+  let capturedOptions: VectorizeQueryOptions | undefined;
+  const vectors = makeStubVectors([], (_vector, options) => {
+    capturedOptions = options;
+  });
+  const semantic = makeSemanticConfig({ ai, vectors });
+
+  await buildCandidatePool(db, kv, [candidate], NOW, semantic);
+  assertEquals(capturedOptions?.topK, 3);
+  assertEquals(capturedOptions?.filter, {
+    added_at: { $gte: new Date(NOW.getTime() - 72 * 60 * 60 * 1000).toISOString() },
+  });
+});
+
+Deno.test("buildCandidatePool: within-batch pairwise semantic dedup — keeps the first (newest), drops the later one, no matchedId", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  // Deliberately no shared words (Jaccard would otherwise catch these two
+  // first, before the semantic layer ever runs) — that's the whole point
+  // this test exists to demonstrate: differently-worded headlines about the
+  // same story that the string layers miss.
+  const first = makeCandidate({
+    id: "first",
+    title: "Kernel Maintainers Debate Scheduler Rewrite",
+    url: "https://elsewhere.example/first",
+    publishedAt: "2026-01-02T11:00:00.000Z",
+  });
+  const second = makeCandidate({
+    id: "second",
+    title: "Linux Task Scheduling Overhaul Sparks Argument",
+    url: "https://elsewhere.example/second",
+    publishedAt: "2026-01-02T10:00:00.000Z",
+  });
+  const ai = makeStubAi({
+    "Kernel Maintainers Debate Scheduler Rewrite": BASIS,
+    "Linux Task Scheduling Overhaul Sparks Argument": unitVectorWithCosine(0.9),
+  });
+  const vectors = makeStubVectors([]); // no DB matches — this is purely within-batch
+  const semantic = makeSemanticConfig({ ai, vectors, threshold: 0.82 });
+
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [first, second], NOW, semantic);
+  assertEquals(pool.map((c) => c.id), ["first"]);
+  assertEquals(dedupDrops, [{
+    candidateTitle: "Linux Task Scheduling Overhaul Sparks Argument",
+    reason: "semantic",
+    score: 0.9,
+  }]);
+});
+
+Deno.test("buildCandidatePool: candidates beyond maxCandidates are never embedded — left unchecked, not dropped", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const checked = makeCandidate({
+    id: "checked",
+    title: "Checked Headline",
+    url: "https://elsewhere.example/checked",
+    publishedAt: "2026-01-02T11:00:00.000Z",
+  });
+  const skipped = makeCandidate({
+    id: "skipped",
+    title: "Skipped Headline",
+    url: "https://elsewhere.example/skipped",
+    publishedAt: "2026-01-02T10:00:00.000Z",
+  });
+  // No vector stubbed for "Skipped Headline" — if it were embedded,
+  // makeStubAi would throw and fail the test (unhandled rejection funnels
+  // into the fail-open path, which would still keep it, masking the bug
+  // this test exists to catch — so the assertion below on dedupDrops/pool
+  // length is what actually proves it was never embedded).
+  const ai = makeStubAi({ "Checked Headline": BASIS });
+  const vectors = makeStubVectors([]);
+  const semantic = makeSemanticConfig({ ai, vectors, maxCandidates: 1 });
+
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [checked, skipped], NOW, semantic);
+  assertEquals(pool.map((c) => c.id), ["checked", "skipped"]);
+  assertEquals(dedupDrops, []);
+});
+
+Deno.test("buildCandidatePool: an embed failure fails OPEN — the candidate is kept, not dropped", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const candidate = makeCandidate({ id: "c1", title: "Headline One" });
+  const semantic = makeSemanticConfig({ ai: makeThrowingAi(), vectors: makeStubVectors([]) });
+
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [candidate], NOW, semantic);
+  assertEquals(pool.map((c) => c.id), ["c1"]);
+  assertEquals(dedupDrops, []);
+});
+
+Deno.test("buildCandidatePool: a Vectorize query failure (not merely 'no matches') also fails OPEN against the DB check, but the within-batch check still runs", async () => {
+  const db = new FakeD1();
+  const kv = new FakeKv();
+  const candidate = makeCandidate({ id: "c1", title: "Headline One" });
+  const ai = makeStubAi({ "Headline One": BASIS });
+  const semantic = makeSemanticConfig({ ai, vectors: makeThrowingVectors() });
+
+  const { pool, dedupDrops } = await buildCandidatePool(db, kv, [candidate], NOW, semantic);
+  assertEquals(pool.map((c) => c.id), ["c1"]);
+  assertEquals(dedupDrops, []);
+});
+
+// --- parseSemanticDedupMaxCandidates / parseSemanticDedupThreshold:
+// defensive [vars] parsing ---
+
+Deno.test("parseSemanticDedupMaxCandidates: undefined/empty falls back to the default (40)", () => {
+  assertEquals(parseSemanticDedupMaxCandidates(undefined), 40);
+  assertEquals(parseSemanticDedupMaxCandidates(""), 40);
+  assertEquals(parseSemanticDedupMaxCandidates("  "), 40);
+});
+
+Deno.test("parseSemanticDedupMaxCandidates: a valid override is used, rounded", () => {
+  assertEquals(parseSemanticDedupMaxCandidates("20"), 20);
+  assertEquals(parseSemanticDedupMaxCandidates("20.6"), 21);
+});
+
+Deno.test("parseSemanticDedupMaxCandidates: out-of-range/non-numeric falls back to the default", () => {
+  assertEquals(parseSemanticDedupMaxCandidates("0"), 40);
+  assertEquals(parseSemanticDedupMaxCandidates("161"), 40);
+  assertEquals(parseSemanticDedupMaxCandidates("not a number"), 40);
+});
+
+Deno.test("parseSemanticDedupThreshold: undefined/empty falls back to the default (0.82)", () => {
+  assertEquals(parseSemanticDedupThreshold(undefined), 0.82);
+  assertEquals(parseSemanticDedupThreshold(""), 0.82);
+  assertEquals(parseSemanticDedupThreshold("  "), 0.82);
+});
+
+Deno.test("parseSemanticDedupThreshold: a valid override in [0,1] is used as-is", () => {
+  assertEquals(parseSemanticDedupThreshold("0.9"), 0.9);
+  assertEquals(parseSemanticDedupThreshold("0"), 0);
+  assertEquals(parseSemanticDedupThreshold("1"), 1);
+});
+
+Deno.test("parseSemanticDedupThreshold: out-of-range/non-numeric falls back to the default", () => {
+  assertEquals(parseSemanticDedupThreshold("-0.1"), 0.82);
+  assertEquals(parseSemanticDedupThreshold("1.1"), 0.82);
+  assertEquals(parseSemanticDedupThreshold("not a number"), 0.82);
 });

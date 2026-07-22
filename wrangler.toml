@@ -49,8 +49,30 @@ FAITHFULNESS_CHECK = "true"
 FAITHFULNESS_ENFORCE = "false"
 FAITHFULNESS_JUDGE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
+# Embeddings — semantic dedup (agent-pool.ts) + semantic search
+# (GET /api/search, README "Semantic dedup & search"). bge-m3: Workers AI's
+# multilingual embedding model (100+ languages, including our ru/en
+# summaries), 1024 dimensions, cosine metric — matches the Vectorize index
+# below exactly (see embeddings.ts's dimension-mismatch guard). Threshold
+# and candidate cap were tuned against real production data — see README
+# for the derivation and the honest "best-effort" caveat.
+EMBEDDING_MODEL = "@cf/baai/bge-m3"
+SEMANTIC_DEDUP_MAX_CANDIDATES = "40"
+SEMANTIC_DEDUP_THRESHOLD = "0.82"
+SEARCH_RATE_PER_MIN = "30"
+
 [ai]
 binding = "AI"
+
+# Provisioned by `deno task setup` (or `wrangler vectorize create
+# clipfeed-embeddings --dimensions=1024 --metric=cosine`) — optional at
+# runtime: a fork that hasn't run setup yet simply has no VECTORS binding,
+# and every call site degrades gracefully (semantic dedup skips its layer,
+# search falls back to the existing LIKE query) rather than crashing. See
+# embeddings.ts.
+[[vectorize]]
+binding = "VECTORS"
+index_name = "clipfeed-embeddings"
 
 # Single hourly cron, dispatched by UTC hour to whichever of the two daily
 # jobs below is configured for it (see packages/api/src/scheduled.ts) — an

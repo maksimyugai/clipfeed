@@ -80,6 +80,14 @@ export interface Article {
   faithfulness_verdict: FaithfulnessVerdict | null;
   faithfulness_json: FaithfulnessJson | null;
   faithfulness_checked_at: string | null;
+  // Set once this article's Vectorize embedding has been written (see
+  // packages/api/src/embeddings.ts) — null means not embedded yet: a fresh
+  // 'ready' article whose embed stage hasn't run, one whose embed call
+  // failed (embed failures never fail the article itself — see
+  // pipeline.ts), or a row saved before this feature existed. The backfill
+  // endpoint (POST /api/admin/embeddings/backfill) and idempotent —
+  // catches all three by selecting WHERE embedded_at IS NULL.
+  embedded_at: string | null;
 }
 
 export type ArticleListItem = Omit<Article, "full_text">;
@@ -170,4 +178,38 @@ export interface QueueMessage {
   kind: "process" | "resummarize";
   articleId: string;
   notify?: QueueNotify;
+}
+
+// GET /api/search (public, semantic mode only — keyword search reuses the
+// existing `q` param on GET /api/articles) — each row carries its cosine
+// score so a caller COULD show it, though this repo's own SPA deliberately
+// doesn't (score-driven ordering only, no visible number — see README).
+// Score is a plain top-level field, not nested, so both the public and
+// admin search responses share this one shape (the row type is the only
+// difference — see AdminSearchResponse below).
+export interface SearchResultItem {
+  article: PublicArticle;
+  score: number;
+}
+
+export interface SearchResponse {
+  items: SearchResultItem[];
+}
+
+export interface AdminSearchResultItem {
+  article: ArticleListItem;
+  score: number;
+}
+
+export interface AdminSearchResponse {
+  items: AdminSearchResultItem[];
+}
+
+// POST /api/admin/embeddings/backfill's response — the caller (owner
+// tooling, or a future SPA button) repeats the call until `remaining` is 0,
+// same synchronous-paginated pattern as other one-shot admin jobs in this
+// repo (e.g. the tag-normalization backfill).
+export interface EmbeddingsBackfillResponse {
+  processed: number;
+  remaining: number;
 }
