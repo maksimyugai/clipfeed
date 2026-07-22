@@ -99,6 +99,11 @@ export interface Dictionary {
   searchModeSemanticAria: string;
   emptySearchTitle: string;
   emptySearchHint: string;
+  semanticMatchesPrefix: string;
+  semanticMatchesSuffix: string;
+  logoHomeAria: string;
+  footerLicenseLabel: string;
+  footerContentNotice: string;
 }
 
 const ru: Dictionary = {
@@ -198,6 +203,11 @@ const ru: Dictionary = {
   searchModeSemanticAria: "Искать по смыслу",
   emptySearchTitle: "Ничего не найдено",
   emptySearchHint: "Попробуйте другой режим поиска — «по словам» или «по смыслу»",
+  semanticMatchesPrefix: "Найдено",
+  semanticMatchesSuffix: "по смыслу",
+  logoHomeAria: "На главную",
+  footerLicenseLabel: "код под MIT",
+  footerContentNotice: "Выжимки созданы ИИ. Права на исходные статьи принадлежат их авторам.",
 };
 
 const en: Dictionary = {
@@ -298,6 +308,12 @@ const en: Dictionary = {
   searchModeSemanticAria: "Search by meaning",
   emptySearchTitle: "No results found",
   emptySearchHint: 'Try the other search mode — "by words" or "by meaning"',
+  semanticMatchesPrefix: "Found",
+  semanticMatchesSuffix: "semantic matches",
+  logoHomeAria: "Go to home feed",
+  footerLicenseLabel: "code under MIT",
+  footerContentNotice:
+    "Summaries are AI-generated. Rights to the source articles belong to their authors.",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };

@@ -4,6 +4,7 @@ import { DATE_SECTIONS, type DateSection, groupArticlesBySection } from "../lib/
 import { isSectionOpenTodayEmptyAware, type SectionOpenState } from "../lib/sectionState.ts";
 import { scrollElementIntoView } from "../lib/scroll.ts";
 import { computeAgentBatchIndicator, shouldShowEmptyCountdown } from "../lib/agentBatch.ts";
+import { isFlatSemanticView, type SearchMode } from "../lib/searchMode.ts";
 import { ArticleCard } from "./ArticleCard.tsx";
 import { TodayEmptyState } from "./TodayEmptyState.tsx";
 import { AgentBatchIndicator } from "./AgentBatchIndicator.tsx";
@@ -36,6 +37,7 @@ export interface FeedProps {
   // would invert the user's intent on their very first click.
   onToggleSection: (section: DateSection, currentlyOpen: boolean) => void;
   isSearching: boolean;
+  searchMode: SearchMode;
   agentHourUtc: number | null;
 }
 
@@ -51,6 +53,7 @@ export function Feed(props: FeedProps) {
     sectionOpen,
     onToggleSection,
     isSearching,
+    searchMode,
     agentHourUtc,
   } = props;
 
@@ -71,6 +74,44 @@ export function Feed(props: FeedProps) {
         {!archivedView && (
           <p class="empty-state-hint">{isOwner ? dict.emptyFeedHint : dict.visitorFeedHint}</p>
         )}
+      </div>
+    );
+  }
+
+  // Relevance beats chronology when searching by meaning — see
+  // isFlatSemanticView's doc comment in lib/searchMode.ts. Results already
+  // arrive ordered by score DESC from GET /api/search, so this is a straight
+  // render, no re-sorting here.
+  if (isFlatSemanticView(isSearching, searchMode)) {
+    const countText =
+      `${dict.semanticMatchesPrefix} ${articles.length} ${dict.semanticMatchesSuffix}`;
+
+    return (
+      <div class="feed-sections">
+        <div class="feed-section">
+          <p class="semantic-matches-count">{countText}</p>
+          <div class="feed">
+            {articles.map((article) => (
+              <ArticleCard
+                key={article.id}
+                dict={props.dict}
+                lang={props.lang}
+                article={article}
+                isPickOfDay={props.pickOfDayId === article.id}
+                expanded={props.expandedId === article.id}
+                onToggleExpand={props.onToggleExpand}
+                onTagClick={props.onTagClick}
+                onSourceClick={props.onSourceClick}
+                onArchiveToggle={props.onArchiveToggle}
+                onDelete={props.onDelete}
+                onRetry={props.onRetry}
+                onResummarize={props.onResummarize}
+                onArticleUpdate={props.onArticleUpdate}
+                isOwner={isOwner}
+              />
+            ))}
+          </div>
+        </div>
       </div>
     );
   }

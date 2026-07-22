@@ -153,6 +153,9 @@ ul {
 
 /* --- Top strip --- */
 
+/* Static (not sticky) by design: it scrolls away with the rest of the page,
+   leaving the sticky header below as the sole persistent chrome instead of
+   stacking two sticky elements. */
 .top-strip {
   height: 3px;
   width: 100%;
@@ -162,6 +165,10 @@ ul {
 /* --- Header --- */
 
 .app-header {
+  position: sticky;
+  top: 0;
+  /* Above feed cards (unset/0 z-index), below .modal-overlay (100). */
+  z-index: 50;
   border-bottom: 1px solid var(--line);
   background: var(--card);
 }
@@ -186,6 +193,20 @@ ul {
   background-clip: text;
   color: transparent;
   white-space: nowrap;
+}
+
+.logo-button {
+  border: none;
+  padding: 0;
+  background-color: transparent;
+  cursor: pointer;
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+
+.logo-button:hover,
+.logo-button:focus-visible {
+  opacity: 0.8;
 }
 
 .ua-flag {
@@ -213,6 +234,21 @@ ul {
 
 .search-input::placeholder {
   color: var(--mut);
+}
+
+/* Suppress the browser-native clear ("x") button that Chrome/Edge/Safari
+   render inside type="search" inputs — our own localized/themed
+   .search-clear button already covers that job, and without this two "x"
+   controls stack up. Keeping type="search" (rather than switching to
+   type="text") is deliberate: it's what gives Escape-to-clear its native
+   behavior in Chromium, which is unrelated to this cosmetic button and
+   would otherwise be lost. Firefox never rendered its own cancel button
+   here, so this is a no-op there. */
+.search-input::-webkit-search-cancel-button,
+.search-input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
 }
 
 .search-clear {
@@ -351,6 +387,32 @@ ul {
 
 .filter-row-mobile {
   display: none;
+}
+
+.app-footer {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 20px 32px;
+}
+
+.app-footer-line {
+  margin: 0;
+  color: var(--mut);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.app-footer-line a {
+  color: var(--mut);
+  text-decoration: underline;
+}
+
+.app-footer-line a:hover {
+  color: var(--acc);
+}
+
+.app-footer-sep {
+  margin: 0 8px;
 }
 
 @media (max-width: 900px) {
@@ -557,6 +619,16 @@ ul {
 .feed-section-count {
   color: var(--mut);
   font-size: 0.8125rem;
+}
+
+.semantic-matches-count {
+  margin: 0;
+  padding: 4px 0;
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--mut);
 }
 
 .section-loading-row {

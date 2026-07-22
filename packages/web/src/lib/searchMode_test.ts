@@ -1,5 +1,10 @@
 import { assertEquals } from "@std/assert";
-import { isSearchMode, readStoredSearchMode, writeStoredSearchMode } from "./searchMode.ts";
+import {
+  isFlatSemanticView,
+  isSearchMode,
+  readStoredSearchMode,
+  writeStoredSearchMode,
+} from "./searchMode.ts";
 
 function makeFakeStorage(initial: Record<string, string> = {}) {
   const store = new Map(Object.entries(initial));
@@ -33,4 +38,17 @@ Deno.test("writeStoredSearchMode + readStoredSearchMode round-trip", () => {
   const storage = makeFakeStorage();
   writeStoredSearchMode(storage, "semantic");
   assertEquals(readStoredSearchMode(storage), "semantic");
+});
+
+Deno.test("isFlatSemanticView: true only when actively searching in semantic mode", () => {
+  assertEquals(isFlatSemanticView(true, "semantic"), true);
+});
+
+Deno.test("isFlatSemanticView: false in keyword mode, even while searching", () => {
+  assertEquals(isFlatSemanticView(true, "keyword"), false);
+});
+
+Deno.test("isFlatSemanticView: false when not searching, regardless of mode", () => {
+  assertEquals(isFlatSemanticView(false, "semantic"), false);
+  assertEquals(isFlatSemanticView(false, "keyword"), false);
 });

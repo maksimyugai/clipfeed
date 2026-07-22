@@ -22,3 +22,13 @@ export function writeStoredSearchMode(
 ): void {
   storage.setItem(SEARCH_MODE_STORAGE_KEY, mode);
 }
+
+// Relevance beats chronology when searching by meaning: Feed.tsx renders a
+// flat list ordered by score instead of the usual Today/Yesterday/Earlier
+// date sections whenever this is true. Keyword search (today's LIKE
+// behavior) keeps the sectioned view — it's still chronological under the
+// hood, so grouping by date still makes sense there. Not active search at
+// all (isSearching false) always keeps the normal sectioned feed too.
+export function isFlatSemanticView(isSearching: boolean, mode: SearchMode): boolean {
+  return isSearching && mode === "semantic";
+}

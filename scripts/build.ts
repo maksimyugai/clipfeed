@@ -3,6 +3,12 @@ import { renderIconImage } from "../packages/extension/src/icons/render.ts";
 import { encodePng } from "../packages/extension/src/icons/png.ts";
 
 const ICON_SIZES = [16, 32, 48, 128];
+// Favicon (32x32, the size browsers actually request) + apple-touch-icon
+// (192x192 — Apple's own guidance is 180x180, but that's not a multiple of
+// the icon generator's 16px grid; 192 scales down cleanly on every device
+// that matters and browsers resize apple-touch-icon links regardless).
+const FAVICON_SIZE = 32;
+const APPLE_TOUCH_ICON_SIZE = 192;
 
 async function buildApi(): Promise<void> {
   await Deno.mkdir("dist/api", { recursive: true });
@@ -40,6 +46,15 @@ async function buildWeb(): Promise<void> {
       await Deno.copyFile(`packages/web/fonts/${entry.name}`, `dist/web/fonts/${entry.name}`);
     }
   }
+
+  // Reuses the extension's procedural "cf" monogram generator (see
+  // packages/extension/src/icons/render.ts) instead of committing a binary
+  // asset — same gradient icon, just two more sizes for the web favicon /
+  // apple-touch-icon referenced from index.html.
+  const faviconPng = await encodePng(renderIconImage(FAVICON_SIZE));
+  await Deno.writeFile("dist/web/favicon-32.png", faviconPng);
+  const appleTouchIconPng = await encodePng(renderIconImage(APPLE_TOUCH_ICON_SIZE));
+  await Deno.writeFile("dist/web/apple-touch-icon.png", appleTouchIconPng);
 }
 
 // The extension is bundled as self-contained IIFEs (not ESM), since MV3
