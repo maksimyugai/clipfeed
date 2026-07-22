@@ -9,6 +9,7 @@ import {
   getArticlesByIds,
   getFaithfulnessStats,
   insertPendingArticle,
+  LIST_COLUMNS,
   listUnembeddedArticles,
   markArticleFailed,
   markArticleReady,
@@ -21,6 +22,46 @@ import {
 } from "./db.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import type { Article, ArticleListItem } from "@clipfeed/shared/types";
+
+// Task 34: guards against LIST_COLUMNS silently drifting behind ArticleListItem
+// (Article minus full_text) — a real D1 only returns columns actually
+// SELECTed, so a field missing here comes back as undefined for every list
+// row in production. FakeD1 can't catch this (it returns whole stored rows
+// regardless of the projected column list), which is exactly how
+// faithfulness_verdict/embedded_at/telegram_published_at went missing from
+// GET /api/articles unnoticed until Task 34's live verification caught it.
+Deno.test("LIST_COLUMNS: projects every ArticleListItem column (Article minus full_text)", () => {
+  const expected: (keyof Omit<Article, "full_text">)[] = [
+    "id",
+    "url",
+    "canonical_url",
+    "title",
+    "source",
+    "author",
+    "published_at",
+    "added_at",
+    "added_via",
+    "lang_original",
+    "summary_ru",
+    "summary_en",
+    "summary_json",
+    "tags",
+    "status",
+    "archived",
+    "error",
+    "fail_class",
+    "heal_attempts",
+    "faithfulness_verdict",
+    "faithfulness_json",
+    "faithfulness_checked_at",
+    "embedded_at",
+    "telegram_published_at",
+  ];
+  const columns = LIST_COLUMNS.split(",").map((c) => c.trim());
+  for (const field of expected) {
+    assertEquals(columns.includes(field), true, `LIST_COLUMNS is missing "${field}"`);
+  }
+});
 
 Deno.test("buildListQuery: no filters — base query, default limit + 1", () => {
   const { sql, binds } = buildListQuery({ limit: 20 });
