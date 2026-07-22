@@ -56,6 +56,14 @@ export function patchD1DatabaseId(toml: string, databaseId: string): string {
   return toml.replace(/database_id\s*=\s*"PLACEHOLDER"/, `database_id = "${databaseId}"`);
 }
 
+// Generic [vars] string reader — used for the deployment-vars reminder
+// below. Plain `KEY = "value"` lines only (not the [[kv_namespaces]]/[[d1]]
+// block-scoped ids above, which have their own dedicated readers because
+// they need to be scoped to a specific TOML table).
+export function readVarValue(toml: string, key: string): string {
+  return toml.match(new RegExp(`^${key}\\s*=\\s*"([^"]*)"`, "m"))?.[1] ?? "";
+}
+
 export function readKvNamespaceId(toml: string): string | null {
   return toml.match(/\[\[kv_namespaces\]\][\s\S]*?id\s*=\s*"([^"]*)"/)?.[1] ?? null;
 }
@@ -316,6 +324,35 @@ async function reportSecrets(): Promise<void> {
   );
 }
 
+// Task 31: neither var is provisioned by this script (nothing to create or
+// detect a live value for), so — same spirit as reportSecrets() above,
+// checked by presence only — just flag when either is still the empty
+// [vars] default and explain what staying unset means, without prompting or
+// auto-filling either one.
+function printDeploymentVarsReminder(toml: string): void {
+  const repoUrl = readVarValue(toml, "REPO_URL");
+  const publicBaseUrl = readVarValue(toml, "PUBLIC_BASE_URL");
+  if (repoUrl && publicBaseUrl) return;
+
+  console.log("Deployment vars still unset in wrangler.toml [vars]:");
+  if (!repoUrl) {
+    console.log('  REPO_URL (e.g. "https://github.com/you/clipfeed")');
+    console.log("    Shows a GitHub icon link in the header and the footer's license link.");
+    console.log("    Both stay hidden while this is empty.");
+  }
+  if (!publicBaseUrl) {
+    console.log('  PUBLIC_BASE_URL (e.g. "https://your-domain.com")');
+    console.log(
+      '    Must match the custom domain your Worker is attached to (see "Deploy your own"',
+    );
+    console.log(
+      "    below) — Telegram post links (the drip post's card link, the digest footer) depend",
+    );
+    console.log("    on it. Left empty, those links are simply omitted, not broken.");
+  }
+  console.log();
+}
+
 function printChecklist(created: string[], reused: string[]): void {
   console.log("\n──────────────────────────────────────────");
   console.log("Setup summary");
@@ -372,6 +409,8 @@ async function main(): Promise<void> {
   await applyMigrations();
   console.log();
   await reportSecrets();
+  console.log();
+  printDeploymentVarsReminder(toml);
   printChecklist(created, reused);
 }
 
