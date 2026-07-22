@@ -207,9 +207,16 @@ export function App() {
     }
   };
 
-  const handleToggleSection = (section: DateSection) => {
+  // `currentlyOpen` is the section's *effective* open value at click time
+  // (Feed.tsx computes it via isSectionOpenTodayEmptyAware, which may be
+  // showing a computed default rather than a persisted choice — e.g.
+  // Yesterday auto-opened because Today is empty). Flipping from that
+  // effective value, not from the raw (possibly-undefined) stored one, is
+  // what makes a user's very first click on such a section actually close
+  // it instead of writing `true` right back (see Task 26 Part 0).
+  const handleToggleSection = (section: DateSection, currentlyOpen: boolean) => {
     setSectionOpen((current) => {
-      const next = { ...current, [section]: !current[section] };
+      const next = { ...current, [section]: !currentlyOpen };
       writeStoredSectionState(localStorage, next);
       return next;
     });
@@ -220,7 +227,7 @@ export function App() {
     // handed us some "earlier" items, there's nothing to fetch yet — the
     // user just sees those until they hit "show more".
     if (
-      section === "earlier" && !sectionOpen.earlier &&
+      section === "earlier" && !currentlyOpen &&
       shouldFetchOnEarlierExpand(groupArticlesBySection(articles).earlier.length, nextCursor)
     ) {
       handleShowMore();

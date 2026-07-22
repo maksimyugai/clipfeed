@@ -28,7 +28,13 @@ export interface FeedProps {
   pickOfDayId: string | null;
   isOwner: boolean;
   sectionOpen: SectionOpenState;
-  onToggleSection: (section: DateSection) => void;
+  // Carries the section's currently-*effective* open value (as computed by
+  // isSectionOpenTodayEmptyAware below), not the raw stored value — see
+  // App.tsx's handleToggleSection for why: the raw stored value can be
+  // undefined (no explicit choice yet) while the section is still showing
+  // open via the Today-empty default, and toggling from the wrong baseline
+  // would invert the user's intent on their very first click.
+  onToggleSection: (section: DateSection, currentlyOpen: boolean) => void;
   isSearching: boolean;
   agentHourUtc: number | null;
 }
@@ -113,7 +119,7 @@ export function Feed(props: FeedProps) {
               type="button"
               class="feed-section-header"
               aria-expanded={open}
-              onClick={() => onToggleSection(section)}
+              onClick={() => onToggleSection(section, open)}
             >
               <span class="feed-section-chevron" aria-hidden="true">{open ? "▾" : "▸"}</span>
               <span class="feed-section-label">{sectionLabel[section]}</span>

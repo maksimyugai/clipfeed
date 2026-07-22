@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
-  DEFAULT_SECTION_STATE,
+  defaultSectionOpen,
   isSectionOpen,
   isSectionOpenTodayEmptyAware,
   readStoredSectionState,
@@ -17,30 +17,58 @@ function fakeStorage(initial: Record<string, string> = {}): Storage {
   } as Storage;
 }
 
-Deno.test("readStoredSectionState - defaults when nothing stored", () => {
-  assertEquals(readStoredSectionState(fakeStorage()), DEFAULT_SECTION_STATE);
+Deno.test("readStoredSectionState - empty (no explicit choices) when nothing stored", () => {
+  assertEquals(readStoredSectionState(fakeStorage()), {});
 });
 
-Deno.test("readStoredSectionState - defaults on malformed JSON", () => {
+Deno.test("readStoredSectionState - empty on malformed JSON", () => {
   assertEquals(
     readStoredSectionState(fakeStorage({ "clipfeed-sections": "{not json" })),
-    DEFAULT_SECTION_STATE,
+    {},
   );
 });
 
-Deno.test("readStoredSectionState - defaults on wrong shape", () => {
+Deno.test("readStoredSectionState - empty on wrong shape", () => {
   assertEquals(
     readStoredSectionState(fakeStorage({ "clipfeed-sections": JSON.stringify({ today: "yes" }) })),
-    DEFAULT_SECTION_STATE,
+    {},
+  );
+});
+
+Deno.test("readStoredSectionState - accepts a partial object (only some sections explicitly set)", () => {
+  assertEquals(
+    readStoredSectionState(
+      fakeStorage({ "clipfeed-sections": JSON.stringify({ yesterday: false }) }),
+    ),
+    { yesterday: false },
   );
 });
 
 Deno.test("readStoredSectionState - round-trips a written state", () => {
   const storage = fakeStorage();
-  const custom = { today: false, yesterday: true, earlier: true };
+  const custom = { today: false, yesterday: true };
   writeStoredSectionState(storage, custom);
   assertEquals(readStoredSectionState(storage), custom);
 });
+
+// --- defaultSectionOpen ---
+
+Deno.test("defaultSectionOpen - today always defaults open", () => {
+  assertEquals(defaultSectionOpen("today", false), true);
+  assertEquals(defaultSectionOpen("today", true), true);
+});
+
+Deno.test("defaultSectionOpen - earlier always defaults closed", () => {
+  assertEquals(defaultSectionOpen("earlier", false), false);
+  assertEquals(defaultSectionOpen("earlier", true), false);
+});
+
+Deno.test("defaultSectionOpen - yesterday's default tracks todayIsEmpty", () => {
+  assertEquals(defaultSectionOpen("yesterday", false), false);
+  assertEquals(defaultSectionOpen("yesterday", true), true);
+});
+
+// --- isSectionOpen ---
 
 Deno.test("isSectionOpen - search active force-opens every section", () => {
   const state = { today: true, yesterday: false, earlier: false };
@@ -48,42 +76,64 @@ Deno.test("isSectionOpen - search active force-opens every section", () => {
   assertEquals(isSectionOpen("earlier", state, true), true);
 });
 
-Deno.test("isSectionOpen - not searching falls back to persisted state", () => {
-  const state = { today: true, yesterday: false, earlier: false };
-  assertEquals(isSectionOpen("today", state, false), true);
-  assertEquals(isSectionOpen("yesterday", state, false), false);
+Deno.test("isSectionOpen - not searching, no explicit choice: falls back to the plain default", () => {
+  assertEquals(isSectionOpen("today", {}, false), true);
+  assertEquals(isSectionOpen("yesterday", {}, false), false);
+  assertEquals(isSectionOpen("earlier", {}, false), false);
 });
 
-// --- Task 24 Part D: force-open Yesterday when Today has zero articles ---
+Deno.test("isSectionOpen - not searching, explicit choice present: honors it over the default", () => {
+  const state = { today: false, yesterday: true };
+  assertEquals(isSectionOpen("today", state, false), false);
+  assertEquals(isSectionOpen("yesterday", state, false), true);
+});
 
-Deno.test("isSectionOpenTodayEmptyAware - Today empty forces Yesterday open even when persisted closed", () => {
-  const state = { today: true, yesterday: false, earlier: false };
+// --- Task 24 Part D + Task 26 Part 0: force-open Yesterday as a ONE-TIME default ---
+
+Deno.test("isSectionOpenTodayEmptyAware - Today empty, no explicit choice yet: Yesterday defaults open", () => {
+  assertEquals(isSectionOpenTodayEmptyAware("yesterday", {}, false, true), true);
+});
+
+Deno.test("isSectionOpenTodayEmptyAware - Today non-empty, no explicit choice: Yesterday defaults closed", () => {
+  assertEquals(isSectionOpenTodayEmptyAware("yesterday", {}, false, false), false);
+});
+
+Deno.test("isSectionOpenTodayEmptyAware - only 'yesterday' has a context-dependent default; 'today'/'earlier' match isSectionOpen", () => {
+  assertEquals(
+    isSectionOpenTodayEmptyAware("today", {}, false, true),
+    isSectionOpen("today", {}, false),
+  );
+  assertEquals(
+    isSectionOpenTodayEmptyAware("earlier", {}, false, true),
+    isSectionOpen("earlier", {}, false),
+  );
+});
+
+Deno.test("isSectionOpenTodayEmptyAware - search-active still force-opens everything, regardless of todayIsEmpty", () => {
+  assertEquals(isSectionOpenTodayEmptyAware("earlier", {}, true, false), true);
+});
+
+Deno.test("isSectionOpenTodayEmptyAware - Yesterday already explicitly open stays open when Today is empty", () => {
+  const state = { yesterday: true };
   assertEquals(isSectionOpenTodayEmptyAware("yesterday", state, false, true), true);
 });
 
-Deno.test("isSectionOpenTodayEmptyAware - Today non-empty leaves Yesterday at its normal (persisted) state", () => {
-  const state = { today: true, yesterday: false, earlier: false };
-  assertEquals(isSectionOpenTodayEmptyAware("yesterday", state, false, false), false);
+// The actual regression (Task 26 Part 0): once the user has explicitly
+// collapsed Yesterday, Today staying empty must NOT re-force it open again —
+// on any number of subsequent renders/reloads (a fresh state read from
+// storage, re-checked here, is the reload case).
+Deno.test("isSectionOpenTodayEmptyAware - user explicitly closed Yesterday: stays closed while Today is (still) empty", () => {
+  const state = { yesterday: false };
+  assertEquals(isSectionOpenTodayEmptyAware("yesterday", state, false, true), false);
+  // Simulate re-renders/reloads: re-reading the same persisted state must
+  // keep producing the same (closed) result, not flip back to the default.
+  for (let i = 0; i < 5; i++) {
+    assertEquals(isSectionOpenTodayEmptyAware("yesterday", state, false, true), false);
+  }
 });
 
-Deno.test("isSectionOpenTodayEmptyAware - only 'yesterday' is affected; 'today' and 'earlier' behave exactly as isSectionOpen", () => {
-  const state = { today: false, yesterday: false, earlier: false };
-  assertEquals(
-    isSectionOpenTodayEmptyAware("today", state, false, true),
-    isSectionOpen("today", state, false),
-  );
-  assertEquals(
-    isSectionOpenTodayEmptyAware("earlier", state, false, true),
-    isSectionOpen("earlier", state, false),
-  );
-});
-
-Deno.test("isSectionOpenTodayEmptyAware - search-active still force-opens everything, same as isSectionOpen, regardless of todayIsEmpty", () => {
-  const state = { today: false, yesterday: false, earlier: false };
-  assertEquals(isSectionOpenTodayEmptyAware("earlier", state, true, false), true);
-});
-
-Deno.test("isSectionOpenTodayEmptyAware - Yesterday already persisted-open stays open when Today is empty (no behavior change needed)", () => {
-  const state = { today: true, yesterday: true, earlier: false };
+Deno.test("isSectionOpenTodayEmptyAware - user explicitly opened Yesterday while Today has content: stays open, and stays open if Today later becomes empty", () => {
+  const state = { yesterday: true };
+  assertEquals(isSectionOpenTodayEmptyAware("yesterday", state, false, false), true);
   assertEquals(isSectionOpenTodayEmptyAware("yesterday", state, false, true), true);
 });
