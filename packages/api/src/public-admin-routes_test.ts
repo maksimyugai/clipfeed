@@ -200,6 +200,7 @@ Deno.test("public reads: /api/health, /api/config, /api/articles, /api/articles/
   assertEquals((await app.request("/api/config", {}, env, ctx)).status, 200);
   assertEquals((await app.request("/api/articles", {}, env, ctx)).status, 200);
   assertEquals((await app.request("/api/articles/does-not-exist", {}, env, ctx)).status, 404); // reached the handler
+  assertEquals((await app.request("/api/search?q=widget", {}, env, ctx)).status, 200);
 });
 
 Deno.test("public reads: still 200 w/o auth even when Access IS configured", async () => {
@@ -262,6 +263,8 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
     ["GET", "/api/admin/health-report"],
     ["POST", "/api/admin/heal/revalidate-failed"],
     ["POST", "/api/admin/tags/normalize"],
+    ["GET", "/api/admin/search?q=widget"],
+    ["POST", "/api/admin/embeddings/backfill"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -288,6 +291,8 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     ["GET", "/api/admin/health-report"],
     ["POST", "/api/admin/heal/revalidate-failed"],
     ["POST", "/api/admin/tags/normalize"],
+    ["GET", "/api/admin/search?q=widget"],
+    ["POST", "/api/admin/embeddings/backfill"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);

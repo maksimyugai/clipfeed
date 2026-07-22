@@ -1,12 +1,17 @@
 import "./env.d.ts";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { DuplicateArticleResponse, QueueMessage } from "@clipfeed/shared/types";
+import type {
+  DuplicateArticleResponse,
+  EmbeddingsBackfillResponse,
+  QueueMessage,
+} from "@clipfeed/shared/types";
 import { accessAuth, type AppEnv } from "./access-middleware.ts";
 import { readTurnstileConfig } from "./turnstile-middleware.ts";
 import type { ListArticlesParams } from "./db.ts";
 import {
   backfillNormalizedTags,
+  countUnembeddedArticles,
   deleteArticle,
   findArticleIdByUrl,
   findRecentTitlesForDedup,
@@ -17,7 +22,9 @@ import {
   insertPendingArticle,
   listArticles,
   listSummaryValidationFailures,
+  listUnembeddedArticles,
   markArticlePending,
+  markEmbedded,
   patchArticle,
   RECENT_TITLES_DEDUP_WINDOW_MS,
   resetHealAttempts,
@@ -52,6 +59,14 @@ import {
   resolveFaithfulnessJudgeModel,
   runFaithfulnessCheck,
 } from "./faithfulness.ts";
+import {
+  buildEmbeddingText,
+  deleteArticleEmbedding,
+  embedText,
+  resolveEmbeddingModel,
+  upsertArticleEmbedding,
+} from "./embeddings.ts";
+import { parseSearchRatePerMin, searchArticles, tryConsumeSearchRateLimit } from "./search.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -156,6 +171,35 @@ app.get("/api/articles/:id", async (c) => {
   return c.json(toPublicArticle(article));
 });
 
+// Clamp shared by both search routes below — same bounds as
+// parseArticleListParams's limit, just a smaller default (semantic search
+// results are meant to be a short, high-confidence list, not a page).
+function parseSearchLimit(c: Context<AppEnv>): number {
+  const raw = Number(c.req.query("limit") ?? "20");
+  return Number.isFinite(raw) && raw > 0 && raw <= 100 ? Math.floor(raw) : 20;
+}
+
+// "Ask your feed" — semantic search over stored articles (Task 27), public
+// same as the rest of the feed. Falls back to the pre-existing title/summary
+// LIKE search when Vectorize isn't configured or the embed call fails (see
+// search.ts's searchArticles) — never a dead end, just less precise.
+// Rate-limited (not the LIKE-only GET /api/articles?q= above) because a hit
+// here costs a Workers AI call once Vectorize IS configured; an empty/missing
+// `q` short-circuits before that check even runs.
+app.get("/api/search", async (c) => {
+  const q = (c.req.query("q") ?? "").trim();
+  if (!q) return c.json({ items: [] });
+
+  const limitPerMin = parseSearchRatePerMin(c.env.SEARCH_RATE_PER_MIN);
+  const allowed = await tryConsumeSearchRateLimit(c.env.CACHE, limitPerMin);
+  if (!allowed) return c.json({ error: "rate_limited" }, 429);
+
+  const hits = await searchArticles(c.env, q, parseSearchLimit(c));
+  return c.json({
+    items: hits.map((hit) => ({ article: toPublicListItem(hit.article), score: hit.score })),
+  });
+});
+
 // Everything below requires a verified Cloudflare Access identity — see
 // access-middleware.ts. Unlike the old whole-app mounting, this FAILS
 // CLOSED (401 auth_not_configured) when Access isn't set up, rather than
@@ -164,6 +208,18 @@ app.use("/api/admin/*", accessAuth());
 
 app.get("/api/admin/me", (c) => {
   return c.json({ sub: c.get("accessSub"), email: c.get("accessEmail") ?? null });
+});
+
+// Owner-mode equivalent of GET /api/search — same underlying search (see
+// search.ts), but rows keep the real `error` field (ArticleListItem, not
+// PublicArticle) same as GET /api/admin/articles vs. GET /api/articles.
+// Already behind accessAuth() above, so no separate rate limit here — the
+// public route is the one an anonymous caller could hammer.
+app.get("/api/admin/search", async (c) => {
+  const q = (c.req.query("q") ?? "").trim();
+  if (!q) return c.json({ items: [] });
+  const hits = await searchArticles(c.env, q, parseSearchLimit(c));
+  return c.json({ items: hits.map((hit) => ({ article: hit.article, score: hit.score })) });
 });
 
 // Top-level navigation target for the SPA's "sign in" link. fetch() can't
@@ -281,8 +337,13 @@ app.patch("/api/admin/articles/:id", async (c) => {
 });
 
 app.delete("/api/admin/articles/:id", async (c) => {
-  const deleted = await deleteArticle(c.env.DB, c.req.param("id"));
+  const id = c.req.param("id");
+  const deleted = await deleteArticle(c.env.DB, id);
   if (!deleted) return c.json({ error: "not found" }, 404);
+  // No orphan vectors — a no-op when VECTORS isn't configured (see
+  // embeddings.ts's deleteArticleEmbedding), so this is safe to call
+  // unconditionally regardless of whether the row ever actually got embedded.
+  await deleteArticleEmbedding(c.env.VECTORS, id);
   return c.body(null, 204);
 });
 
@@ -439,6 +500,69 @@ app.post("/api/admin/heal/revalidate-failed", async (c) => {
 app.post("/api/admin/tags/normalize", async (c) => {
   const updated = await backfillNormalizedTags(c.env.DB);
   return c.json({ updated });
+});
+
+// Same batch size the task's own paginated-backfill convention uses
+// elsewhere in this repo (see /api/admin/tags/normalize's sibling
+// endpoints) — small enough to comfortably finish one Workers CPU-time
+// budget even with a Workers AI call per row.
+const EMBEDDINGS_BACKFILL_BATCH_SIZE = 20;
+
+// Idempotent, synchronous-paginated backfill (Task 27, README "Semantic
+// dedup & search") — embeds every 'ready' article with no embedding yet,
+// one batch of EMBEDDINGS_BACKFILL_BATCH_SIZE per call. The caller (owner
+// tooling, or a future SPA button) repeats this call until `remaining` is
+// 0; same pattern as the other one-shot admin backfills in this file, no
+// queue needed. A per-row embed failure is logged and left `embedded_at`
+// null (never fails the whole batch) — the next call picks it up again,
+// same "auxiliary, never blocks" contract as the pipeline's own embed
+// stage (see pipeline.ts's runEmbedStage).
+app.post("/api/admin/embeddings/backfill", async (c) => {
+  if (!c.env.VECTORS) {
+    const remaining = await countUnembeddedArticles(c.env.DB);
+    return c.json({ processed: 0, remaining } satisfies EmbeddingsBackfillResponse);
+  }
+
+  const model = resolveEmbeddingModel(c.env.EMBEDDING_MODEL);
+  const batch = await listUnembeddedArticles(c.env.DB, EMBEDDINGS_BACKFILL_BATCH_SIZE);
+
+  let processed = 0;
+  for (const article of batch) {
+    const text = buildEmbeddingText({
+      title_en: article.title_en,
+      tldr_en: article.tldr_en,
+      bullets_en: article.bullets_en,
+    });
+    if (!text) {
+      // Nothing embeddable on this row (e.g. a 'ready' row with no
+      // parseable summary_json) — mark it embedded anyway so it doesn't
+      // wedge every future backfill call on a row that will never have
+      // anything to embed.
+      await markEmbedded(c.env.DB, article.id, new Date().toISOString());
+      processed += 1;
+      continue;
+    }
+    try {
+      const vector = await embedText(c.env.AI, model, text);
+      await upsertArticleEmbedding(c.env.VECTORS, article.id, vector, {
+        added_at: article.added_at,
+        source: article.source,
+        added_via: article.added_via,
+        lang_original: article.lang_original,
+      });
+      await markEmbedded(c.env.DB, article.id, new Date().toISOString());
+      processed += 1;
+    } catch (err) {
+      console.warn(JSON.stringify({
+        event: "embeddings_backfill_failed",
+        id: article.id,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  }
+
+  const remaining = await countUnembeddedArticles(c.env.DB);
+  return c.json({ processed, remaining } satisfies EmbeddingsBackfillResponse);
 });
 
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
