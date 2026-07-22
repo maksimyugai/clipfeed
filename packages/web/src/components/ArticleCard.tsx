@@ -415,9 +415,12 @@ export function ArticleCard(props: ArticleCardProps) {
             </div>
           )}
           {fields.bullets.length > 0 && (
-            <ul class="bullet-list">
-              {fields.bullets.map((bullet, i) => <li key={i}>{bullet}</li>)}
-            </ul>
+            <div class="key-takeaways">
+              <p class="key-takeaways-heading">{dict.keyTakeawaysHeading}</p>
+              <ul class="bullet-list">
+                {fields.bullets.map((bullet, i) => <li key={i}>{bullet}</li>)}
+              </ul>
+            </div>
           )}
           <div class="expanded-tags-row">
             {article.tags.map((tag) => (
