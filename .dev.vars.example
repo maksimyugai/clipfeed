@@ -105,3 +105,24 @@
 # [vars] default "" (no scheme/domain baked in, per the forkability policy);
 # links are simply omitted from bot messages when this is empty.
 # PUBLIC_BASE_URL=
+
+# Embeddings — semantic dedup (agent-pool.ts) + semantic search
+# (GET /api/search, README "Semantic dedup & search"). Everything here is
+# OPTIONAL: without a Vectorize index provisioned (`deno task setup`, or
+# `wrangler vectorize create clipfeed-embeddings --dimensions=1024
+# --metric=cosine`) and a [[vectorize]] binding in wrangler.toml, both
+# features degrade gracefully (dedup falls back to string-only layers,
+# search falls back to the existing LIKE query) — nothing crashes.
+# EMBEDDING_MODEL is the Workers AI multilingual embedding model
+# (@cf/baai/bge-m3, 1024 dims, cosine — must match the Vectorize index's
+# dimensions, or the embed stage fails loudly rather than writing
+# wrong-shaped vectors). SEMANTIC_DEDUP_MAX_CANDIDATES caps how many
+# surviving agent-pool candidates get an embedding call per run;
+# SEMANTIC_DEDUP_THRESHOLD is the cosine-similarity floor above which two
+# candidates are treated as the same story (both empirically derived — see
+# README). SEARCH_RATE_PER_MIN rate-limits the public search endpoint
+# (each query costs one Workers AI call).
+# EMBEDDING_MODEL=@cf/baai/bge-m3
+# SEMANTIC_DEDUP_MAX_CANDIDATES=40
+# SEMANTIC_DEDUP_THRESHOLD=0.82
+# SEARCH_RATE_PER_MIN=30
