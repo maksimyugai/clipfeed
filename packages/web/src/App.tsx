@@ -40,6 +40,7 @@ import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./component
 import { Feed } from "./components/Feed.tsx";
 import { Toast } from "./components/Toast.tsx";
 import { Footer } from "./components/Footer.tsx";
+import { ScrollToTopButton } from "./components/ScrollToTopButton.tsx";
 import { DeepLinkedArticle } from "./components/DeepLinkedArticle.tsx";
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -715,6 +716,8 @@ export function App() {
       </div>
 
       <Footer dict={dict} repoUrl={repoUrl} />
+
+      <ScrollToTopButton dict={dict} />
 
       {modalOpen && isOwner && (
         <AddModal

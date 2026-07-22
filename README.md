@@ -385,7 +385,8 @@ is tied to a specific account, domain, or Access team.
      `https://your-domain.com`, no trailing slash). Used to build links back to the app in Telegram
      messages (see "Telegram bot" below): the drip post's card link and the digest command's footer.
      **Leaving this empty doesn't break anything** — those links are simply omitted from the message
-     text — but until it's set, a published Telegram post has no way back to the actual article card.
+     text — but until it's set, a published Telegram post has no way back to the actual article
+     card.
    - **`REPO_URL`** (e.g. `https://github.com/you/clipfeed`) — your fork's repo. Shows a GitHub icon
      link in the header and turns the footer's "MIT" text into a link to your `LICENSE` file. Both
      stay hidden until you set it.
