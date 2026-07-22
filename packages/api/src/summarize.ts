@@ -630,6 +630,52 @@ function logSoftOvershoot(field: string, got: number, softMax: number): void {
   console.log(JSON.stringify({ event: "validation_soft_overshoot", field, got, softMax }));
 }
 
+export interface BulletRepairResult {
+  bullets: string[];
+  droppedIndexes: number[];
+  repaired: boolean;
+}
+
+// Task 34 Part A: history — Task 24 strengthened the prompt (a contrast
+// rule + a BAD/GOOD example), Task 26.5 added the 'content' failure class
+// with an informed retry naming the exact duplicate bullet — and a bullet
+// that just restates the tldr STILL recurs in production. Conclusion:
+// prompt-level enforcement of a formatting nit isn't achievable with a
+// probabilistic model, and failing an otherwise-correct summary over it is
+// disproportionate. Deterministic repair instead: drop the offending
+// bullet(s) — keeping the first-occurrence order of the rest — and only
+// give up (return the ORIGINAL array unchanged, `repaired: false`) when
+// dropping would leave fewer than the profile's minimum; that one case
+// still needs the retry path below (validateBullets's duplicate check,
+// re-run against these same original bullets, still reports the violation
+// exactly as before this task — see BULLET_TLDR_DUPLICATE_RE in the
+// corrective-retry message, unchanged and still targeted correctly since
+// this returns the untouched original array/indexes in that case).
+export function repairDuplicateBullets(
+  bullets: string[],
+  tldr: string,
+  minBullets: number,
+): BulletRepairResult {
+  const droppedIndexes: number[] = [];
+  const kept: string[] = [];
+  bullets.forEach((bullet, i) => {
+    if (textDuplicatesTldr(bullet, tldr)) {
+      droppedIndexes.push(i);
+    } else {
+      kept.push(bullet);
+    }
+  });
+
+  if (droppedIndexes.length === 0 || kept.length < minBullets) {
+    return { bullets, droppedIndexes: [], repaired: false };
+  }
+  return { bullets: kept, droppedIndexes, repaired: true };
+}
+
+function logSummaryRepaired(field: string, droppedIndexes: number[], remaining: number): void {
+  console.log(JSON.stringify({ event: "summary_repaired", field, droppedIndexes, remaining }));
+}
+
 function validateBullets(
   field: string,
   bullets: string[],
@@ -709,24 +755,73 @@ export function validateSummary(
     return { ok: false, violations: ["response did not match the required JSON schema"] };
   }
 
+  // Repair BEFORE validation sees the bullets — each language independently
+  // (counts may legitimately differ afterward; nothing downstream indexes
+  // bullets_ru/bullets_en against each other, see renderSummaryMarkdown and
+  // the SPA's summaryFields.ts, both language-scoped already). A successful
+  // repair silently trims the summary that ends up persisted; a failed one
+  // (would underflow the minimum) leaves the original bullets in place for
+  // validateBullets below to catch, same as before this task.
+  const bulletsRuRepair = repairDuplicateBullets(
+    summary.bullets_ru,
+    summary.tldr_ru,
+    spec.minBullets,
+  );
+  const bulletsEnRepair = repairDuplicateBullets(
+    summary.bullets_en,
+    summary.tldr_en,
+    spec.minBullets,
+  );
+  if (bulletsRuRepair.repaired) {
+    logSummaryRepaired(
+      "bullets_ru",
+      bulletsRuRepair.droppedIndexes,
+      bulletsRuRepair.bullets.length,
+    );
+  }
+  if (bulletsEnRepair.repaired) {
+    logSummaryRepaired(
+      "bullets_en",
+      bulletsEnRepair.droppedIndexes,
+      bulletsEnRepair.bullets.length,
+    );
+  }
+  const repairedSummary: SummaryJson = {
+    ...summary,
+    bullets_ru: bulletsRuRepair.bullets,
+    bullets_en: bulletsEnRepair.bullets,
+  };
+
   const violations: string[] = [];
 
-  validateTitle("title_ru", summary.title_ru, violations);
-  validateTitle("title_en", summary.title_en, violations);
-  validateTldr("tldr_ru", summary.tldr_ru, spec.minTldrChars, violations);
-  validateTldr("tldr_en", summary.tldr_en, spec.minTldrChars, violations);
-  validateBody("body_ru", summary.body_ru, summary.tldr_ru, spec, violations);
-  validateBody("body_en", summary.body_en, summary.tldr_en, spec, violations);
-  validateBullets("bullets_ru", summary.bullets_ru, summary.tldr_ru, spec, violations);
-  validateBullets("bullets_en", summary.bullets_en, summary.tldr_en, spec, violations);
-  if (summary.tags.length < MIN_TAGS || summary.tags.length > MAX_TAGS) {
+  validateTitle("title_ru", repairedSummary.title_ru, violations);
+  validateTitle("title_en", repairedSummary.title_en, violations);
+  validateTldr("tldr_ru", repairedSummary.tldr_ru, spec.minTldrChars, violations);
+  validateTldr("tldr_en", repairedSummary.tldr_en, spec.minTldrChars, violations);
+  validateBody("body_ru", repairedSummary.body_ru, repairedSummary.tldr_ru, spec, violations);
+  validateBody("body_en", repairedSummary.body_en, repairedSummary.tldr_en, spec, violations);
+  validateBullets(
+    "bullets_ru",
+    repairedSummary.bullets_ru,
+    repairedSummary.tldr_ru,
+    spec,
+    violations,
+  );
+  validateBullets(
+    "bullets_en",
+    repairedSummary.bullets_en,
+    repairedSummary.tldr_en,
+    spec,
+    violations,
+  );
+  if (repairedSummary.tags.length < MIN_TAGS || repairedSummary.tags.length > MAX_TAGS) {
     violations.push(
-      `tags must have between ${MIN_TAGS} and ${MAX_TAGS} items (got ${summary.tags.length})`,
+      `tags must have between ${MIN_TAGS} and ${MAX_TAGS} items (got ${repairedSummary.tags.length})`,
     );
   }
 
   if (violations.length > 0) return { ok: false, violations };
-  return { ok: true, value: summary };
+  return { ok: true, value: repairedSummary };
 }
 
 export function renderSummaryMarkdown(tldr: string, bullets: string[]): string {

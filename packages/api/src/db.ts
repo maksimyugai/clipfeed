@@ -501,6 +501,38 @@ export async function incrementHealAttempts(db: D1Database, id: string): Promise
     .run();
 }
 
+// Task 34 Part A §3: a 'content'-classified failure (a validateSummary()
+// miss — see classify-failure.ts) that has exhausted its heal cap
+// (heal_attempts >= HEAL_CAPS.content, see healing.ts) and is STILL
+// 'failed' means the model kept producing an invalid summary across every
+// informed retry (each one told the exact violation, via
+// pipeline.ts's priorViolations) — unlikely to self-resolve without a
+// prompt/threshold change, not just another attempt. Owner request: "don't
+// show such articles." Scoped to added_via = 'agent' only — the system
+// picked this article, so burying its own dead end is safe, same posture
+// as the existing permanent+agent-picked rule (markArticleFailed above);
+// an owner-added article (manual/extension/telegram) is never auto-archived
+// here — the owner chose to save it, so it stays visible as failed for
+// them to delete or leave as-is. This supersedes Task 26.5's "do NOT
+// auto-archive on 'content'" rule for agent rows specifically; owner rows
+// keep that original behavior unchanged.
+export async function listExhaustedContentFailures(
+  db: D1Database,
+  contentCap: number,
+): Promise<{ id: string }[]> {
+  const result = await db.prepare(
+    `SELECT id FROM articles
+     WHERE status = 'failed' AND archived = 0 AND added_via = 'agent'
+       AND fail_class = 'content' AND heal_attempts >= ?`,
+  ).bind(contentCap).all<{ id: string }>();
+  return result.results ?? [];
+}
+
+export async function archiveContentFailure(db: D1Database, id: string): Promise<void> {
+  await db.prepare("UPDATE articles SET archived = ? WHERE id = ?").bind(1, id).run();
+  console.log(JSON.stringify({ event: "content_failure_archived", articleId: id }));
+}
+
 export interface UnclassifiedFailure {
   id: string;
   url: string;
@@ -719,8 +751,15 @@ export interface ListArticlesResult {
   next_cursor: string | null;
 }
 
-const LIST_COLUMNS =
-  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts";
+// Exported (Task 34) so db_test.ts can assert it stays a superset of every
+// ArticleRow column (bar full_text) — this exact list once silently drifted
+// out of sync with rowToListItem below, meaning GET /api/articles never
+// returned faithfulness_verdict, embedded_at, or telegram_published_at
+// against a real D1 despite rowToListItem happily mapping them (undefined
+// in production, invisible to FakeD1's tests since it returns whole stored
+// rows regardless of the projected column list).
+export const LIST_COLUMNS =
+  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at";
 
 export interface ListQuery {
   sql: string;

@@ -199,7 +199,12 @@ Deno.test("runHealingJob: a 'content' failure gets 3 attempts (higher cap than '
   assertEquals(jobs.sent.length, 3);
 });
 
-Deno.test("runHealingJob: a 'content' failure that exhausts its cap stays 'failed', not archived (owner may want to resummarize manually)", async () => {
+// Task 34 Part A §3: an agent-picked 'content' failure that exhausts its
+// heal cap now auto-archives — supersedes the pre-Task-34 behavior (this
+// same test used to assert `archived === 0` for this exact scenario; see
+// the owner-row test right below, which keeps that original guarantee for
+// added_via != 'agent').
+Deno.test("runHealingJob: an agent-picked 'content' failure that exhausts its cap auto-archives (Task 34)", async () => {
   const jobs = new FakeQueue();
   const env = makeEnv({ JOBS: jobs, DAILY_SUMMARY_LIMIT: 50 });
   const error = "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr";
@@ -207,12 +212,41 @@ Deno.test("runHealingJob: a 'content' failure that exhausts its cap stays 'faile
   const row = rowsOf(env).find((r) => r.id === "c3")!;
   row.heal_attempts = 3; // already at cap
 
-  await runHealingJob(env);
+  const original = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => logs.push(args);
+  try {
+    await runHealingJob(env);
+  } finally {
+    console.log = original;
+  }
 
   const after = rowsOf(env).find((r) => r.id === "c3")!;
   assertEquals(jobs.sent, []); // not retried again
-  assertEquals(after.status, "failed"); // stays failed, visible to the owner
-  assertEquals(after.archived, 0); // 'content' never auto-archives, unlike 'permanent'
+  assertEquals(after.status, "failed"); // status itself is untouched, just archived
+  assertEquals(after.archived, 1);
+  const parsed = logs.map((args) => JSON.parse(String(args[0])));
+  const archivedLog = parsed.find((l) => l.event === "content_failure_archived");
+  assertEquals(archivedLog?.articleId, "c3");
+});
+
+// The owner explicitly chose to save this article — it stays visible as
+// failed regardless of how many heal attempts it's burned through, exactly
+// like the pre-existing permanent+owner-added rule.
+Deno.test("runHealingJob: an OWNER-added 'content' failure that exhausts its cap is NEVER auto-archived", async () => {
+  const jobs = new FakeQueue();
+  const env = makeEnv({ JOBS: jobs, DAILY_SUMMARY_LIMIT: 50 });
+  const error = "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr";
+  await insertFailed(env, "c3-owner", { addedVia: "manual", error });
+  const row = rowsOf(env).find((r) => r.id === "c3-owner")!;
+  row.heal_attempts = 3; // already at cap
+
+  await runHealingJob(env);
+
+  const after = rowsOf(env).find((r) => r.id === "c3-owner")!;
+  assertEquals(jobs.sent, []);
+  assertEquals(after.status, "failed");
+  assertEquals(after.archived, 0);
 });
 
 Deno.test("runHealingJob: a permanent failure is never retried (cap is 0)", async () => {

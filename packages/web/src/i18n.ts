@@ -46,6 +46,9 @@ export interface Dictionary {
   dailyLimitFailureLabel: string;
   faithfulnessBadgeWeak: string;
   faithfulnessBadgeFail: string;
+  faithfulnessTooltipWeak: string;
+  faithfulnessTooltipFail: string;
+  faithfulnessTooltipTrailer: string;
   faithfulnessDetailLabel: string;
   faithfulnessUnsupportedLabel: string;
   faithfulnessContradictedLabel: string;
@@ -154,6 +157,11 @@ const ru: Dictionary = {
   dailyLimitFailureLabel: "Дневной лимит выжимок исчерпан — обработается автоматически завтра",
   faithfulnessBadgeWeak: "требует проверки",
   faithfulnessBadgeFail: "возможны неточности",
+  faithfulnessTooltipWeak:
+    "Часть утверждений выжимки не удалось подтвердить по тексту оригинала. Проверьте по ссылке на источник.",
+  faithfulnessTooltipFail:
+    "Выжимка может содержать неточности: значительная часть утверждений не подтверждается оригиналом или противоречит ему.",
+  faithfulnessTooltipTrailer: "Проверку делает отдельная ИИ-модель.",
   faithfulnessDetailLabel: "Проверка достоверности",
   faithfulnessUnsupportedLabel: "не подтверждено",
   faithfulnessContradictedLabel: "противоречит",
@@ -262,6 +270,11 @@ const en: Dictionary = {
   dailyLimitFailureLabel: "Daily summary limit reached — this will process automatically tomorrow",
   faithfulnessBadgeWeak: "needs review",
   faithfulnessBadgeFail: "possibly inaccurate",
+  faithfulnessTooltipWeak:
+    "Some claims in the summary could not be confirmed against the original text. Check the source link.",
+  faithfulnessTooltipFail:
+    "The summary may contain inaccuracies: a significant portion of its claims aren't supported by the original or contradict it.",
+  faithfulnessTooltipTrailer: "Checked by a separate AI model.",
   faithfulnessDetailLabel: "Faithfulness check",
   faithfulnessUnsupportedLabel: "unsupported",
   faithfulnessContradictedLabel: "contradicted",

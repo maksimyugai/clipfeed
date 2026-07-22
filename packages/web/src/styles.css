@@ -844,6 +844,65 @@ ul {
   color: var(--warn);
 }
 
+/* --- Tooltip (Task 34 Part B) — a small, dependency-free popover. The
+   trigger (badge) itself keeps its own class/styling; these rules only
+   add the wrapper's positioning context and the popover's own look. --- */
+
+.tooltip-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.tooltip-trigger {
+  cursor: pointer;
+}
+
+.tooltip-trigger:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+}
+
+.tooltip-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  z-index: 20;
+  max-width: 280px;
+  width: max-content;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  color: var(--txt);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.tooltip-popover--animated {
+  animation: tooltip-fade-in 0.12s ease;
+}
+
+@keyframes tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip-popover--animated {
+    animation: none;
+  }
+}
+
 .card-date {
   font-size: 0.78rem;
   color: var(--mut);

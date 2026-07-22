@@ -251,8 +251,11 @@ alongside a pass/weak/fail/null breakdown across every article.
 **In the SPA:** a `'weak'`/`'fail'` verdict shows a small amber, non-alarming badge ("needs
 review"/"possibly inaccurate") on the card — visible to owner **and visitor** alike, since the whole
 point is transparency, not a private owner tool. `'pass'` and `null` (disabled/never checked) show
-nothing at all. The owner-only expanded-card footnote additionally shows the unsupported/
-contradicted claim counts from the judge's full response.
+nothing at all. The badge is a tooltip trigger (`Tooltip.tsx`/`lib/tooltip.ts`, no external library)
+explaining in plain language what the badge means and that a separate AI model did the checking —
+hover or keyboard-focus on desktop, tap on touch (dismissed by an outside tap or Escape). The
+owner-only expanded-card footnote additionally shows the unsupported/contradicted claim counts from
+the judge's full response.
 
 **Spot-checking the judge:** `POST /api/admin/articles/:id/reverify` (owner-only, `202`) re-runs
 only the faithfulness stage against an already-summarized article's stored text and summary — no
@@ -962,7 +965,7 @@ is taste, not a signal: nothing in this feature ever auto-modifies `curation.jso
 
 ### Self-healing failures
 
-Every 'failed' article is classified into one of three healing strategies the moment it fails (see
+Every 'failed' article is classified into one of four healing strategies the moment it fails (see
 `classify-failure.ts`, shared between the API and SPA) — the classification is a small, explicit
 vocabulary over this codebase's own error strings, not a generic parser:
 
@@ -972,18 +975,56 @@ vocabulary over this codebase's own error strings, not a generic parser:
 - **permanent** (insufficient extracted text, a 404/410 source, an SSRF-blocked url) — retrying
   can't help; the article is surfaced honestly with no Retry button (see the SPA's `ArticleCard`)
   instead of pretending a retry might work.
-- **unknown** (anything else, mainly content-shaped `summary validation` failures) — might pass on
-  retry, might not; gets one lower-confidence attempt rather than the full transient budget.
+- **content** (a `validateSummary()` miss — see "Bullet repair" below) — the retry is _informed_:
+  the exact violation is fed back into the next attempt's prompt (`pipeline.ts`'s
+  `priorViolations`), so it gets a higher cap than `unknown` below.
+- **unknown** (anything else) — might pass on retry, might not; gets one lower-confidence attempt
+  rather than the full transient/content budget.
 
 An hourly job (part of the existing cron tick, no separate schedule to configure — see `healing.ts`)
-retries transient/unknown failures automatically, capped at 2 and 1 attempts respectively and never
-more than 5 retries in a single tick, and classifies any older 'failed' rows that predate this
-feature. A **permanent** failure on an agent-picked article auto-archives itself (the system chose
-it, so burying its own mistake is safe); the same failure on an article you added yourself is never
-auto-archived — it stays in your feed, clearly marked, for you to delete or leave as-is. Archived
-articles are never touched by healing, and healing never bypasses the daily summarization budget — a
-retried article goes through the exact same queue path (and the same budget check) as any other
-pipeline run.
+retries transient/content/unknown failures automatically (capped at 2/3/1 attempts respectively and
+never more than 5 retries in a single tick), and classifies any older 'failed' rows that predate
+this feature. A **permanent** failure on an agent-picked article auto-archives itself (the system
+chose it, so burying its own mistake is safe); the same failure on an article you added yourself is
+never auto-archived — it stays in your feed, clearly marked, for you to delete or leave as-is.
+
+**Task 34 change:** a **content** failure that exhausts its heal cap (3 informed retries) and is
+still failed now auto-archives too, but **only for agent-picked articles** — after three attempts,
+each told exactly what was wrong, the model still isn't producing a valid summary, which is unlikely
+to self-resolve without a prompt/threshold change; hiding the agent's own dead end is the same
+judgment call as the pre-existing permanent+agent-picked rule above. This **supersedes** the earlier
+"never auto-archive on `content`" rule, but only for `added_via: 'agent'` — an owner-added article
+that exhausts the same cap is still never auto-archived; it stays visible as failed, for you to
+delete or leave as-is, same as any other owner-added failure. Logged as `content_failure_archived`.
+
+Archived articles are never touched by healing, and healing never bypasses the daily summarization
+budget — a retried article goes through the exact same queue path (and the same budget check) as any
+other pipeline run.
+
+### Bullet repair (never fail a summary over a formatting nit)
+
+History: earlier tasks tried to fix a recurring nit — a bullet that just restates the tldr instead
+of adding a new fact — at the prompt level (a contrast rule + a BAD/GOOD example, then an informed
+retry naming the exact bullet). It still recurs in production. Prompt-level enforcement of a
+formatting nit isn't achievable with a probabilistic model, and failing an otherwise-correct summary
+over it is disproportionate to the actual problem.
+
+`validateSummary()` (`summarize.ts`) now repairs this deterministically, **before** validation ever
+sees the bullets, with no extra LLM call: `repairDuplicateBullets` detects any bullet whose overlap
+with the tldr crosses the existing heuristic threshold (`TLDR_OVERLAP_THRESHOLD = 0.8` — ≥80% of a
+bullet's own non-trivial words literally present in the tldr text; unchanged from the pre-existing
+duplicate-detection heuristic, just applied earlier in the pipeline) and drops it, keeping the
+first-occurrence order of what's left. If the repaired count still meets the profile's `minBullets`,
+the summary **passes** with the trimmed bullet list — logged as
+`summary_repaired {field,
+droppedIndexes, remaining}` — and that trimmed list is what actually gets
+persisted/rendered. If dropping would leave fewer bullets than the minimum, repair gives up and
+leaves the original bullets untouched; `validateBullets`'s existing duplicate-tldr check then
+reports the violation exactly as before this task, still feeding the informed-retry path (which
+still names the specific bullet and asks for a replacement fact). `bullets_ru` and `bullets_en` are
+repaired **independently** — their counts may legitimately differ afterward (nothing downstream
+indexes one language's bullets against the other's; `renderSummaryMarkdown` and the SPA's
+`summaryFields.ts` are both already scoped to a single language at a time).
 
 **`DAILY_SUMMARY_LIMIT`** ([vars] in `wrangler.toml`, default `80`) caps how many pipeline runs
 consume a summarization slot per UTC day (see `cost-guard.ts`) — a best-effort KV counter, not a
