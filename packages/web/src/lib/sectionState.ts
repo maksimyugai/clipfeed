@@ -1,32 +1,34 @@
 import type { DateSection } from "./dateGrouping.ts";
 
-// Per-section collapse state, persisted so it survives reloads — same
-// read/write-pair convention as readStoredLang/writeStoredLang in i18n.ts.
-export type SectionOpenState = Record<DateSection, boolean>;
-
-export const DEFAULT_SECTION_STATE: Readonly<SectionOpenState> = {
-  today: true,
-  yesterday: false,
-  earlier: false,
-};
+// Only sections the user has EXPLICITLY toggled are present here — a
+// missing key means "no explicit choice yet", not "closed". This
+// distinction is what lets a context-dependent default (Task 24 Part D's
+// Today-empty auto-open for Yesterday) apply exactly once and then get out
+// of the way permanently once the user makes their own choice, instead of
+// silently re-overriding it on every subsequent render (see Task 26 Part 0
+// — that re-override was the bug: Yesterday couldn't stay closed while
+// Today stayed empty). Same localStorage key as Task 21; the stored shape
+// is still a plain object, just with optional rather than required keys.
+export type SectionOpenState = Partial<Record<DateSection, boolean>>;
 
 const SECTIONS_STORAGE_KEY = "clipfeed-sections";
+
+const SECTION_KEYS = ["today", "yesterday", "earlier"] as const;
 
 function isSectionOpenState(value: unknown): value is SectionOpenState {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
-  return typeof v.today === "boolean" && typeof v.yesterday === "boolean" &&
-    typeof v.earlier === "boolean";
+  return SECTION_KEYS.every((k) => v[k] === undefined || typeof v[k] === "boolean");
 }
 
 export function readStoredSectionState(storage: Pick<Storage, "getItem">): SectionOpenState {
   const raw = storage.getItem(SECTIONS_STORAGE_KEY);
-  if (!raw) return { ...DEFAULT_SECTION_STATE };
+  if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
-    return isSectionOpenState(parsed) ? parsed : { ...DEFAULT_SECTION_STATE };
+    return isSectionOpenState(parsed) ? parsed : {};
   } catch {
-    return { ...DEFAULT_SECTION_STATE };
+    return {};
   }
 }
 
@@ -37,34 +39,51 @@ export function writeStoredSectionState(
   storage.setItem(SECTIONS_STORAGE_KEY, JSON.stringify(state));
 }
 
+// The non-user-set default for a section. Only "yesterday" is
+// context-dependent (Task 24 Part D): while Today has zero articles,
+// Yesterday defaults open so a visitor doesn't land on an empty Today with
+// everything else collapsed too. This is ONLY the default, applied when the
+// user hasn't made an explicit choice for the section — see
+// isSectionOpenTodayEmptyAware for how that choice, once made, overrides it.
+export function defaultSectionOpen(section: DateSection, todayIsEmpty: boolean): boolean {
+  if (section === "today") return true;
+  if (section === "yesterday") return todayIsEmpty;
+  return false;
+}
+
 // Effective open/closed state for a section that's already known to be
 // worth rendering (whether or not to render it at all — e.g. hiding a
 // truly-empty section — is Feed.tsx's call, decoupled from this). While a
 // search query is active the user is hunting, not browsing, so every
-// visible section auto-expands regardless of its persisted/manually-toggled
-// state.
+// visible section auto-expands regardless of its persisted/default state.
 export function isSectionOpen(
   section: DateSection,
   state: SectionOpenState,
   isSearching: boolean,
 ): boolean {
-  return isSearching || state[section];
+  if (isSearching) return true;
+  const userSet = state[section];
+  return userSet !== undefined ? userSet : defaultSectionOpen(section, false);
 }
 
-// Task 24 Part D: when Today has zero articles, Yesterday is force-opened
-// for this render regardless of its persisted/manually-toggled state — a
-// visitor landing on a wall of collapsed section headers with nothing in
-// Today shouldn't also have to click to see Yesterday. Only "yesterday" is
-// affected; every other section (including "today" itself, and "earlier")
-// keeps its normal isSectionOpen behavior unchanged. The override does NOT
-// persist — closing Yesterday again once Today gets an article reverts to
-// whatever was actually stored.
+// Task 24 Part D + Task 26 Part 0 fix: a section's effective state is the
+// user's explicit choice if one exists, else the (possibly Today-empty-
+// aware) computed default. Once the user toggles a section — in EITHER
+// direction — `state[section]` becomes defined and this stops recomputing
+// the default for it, permanently, even across many later renders/reloads
+// while Today stays empty. Previously the override applied unconditionally
+// whenever Today was empty, which silently re-opened Yesterday right after
+// the user had just clicked to collapse it — see App.tsx's
+// handleToggleSection for the matching fix on the write side (the toggle
+// must flip the same effective value this function computes, not the raw
+// stored value, or the user's very first click inverts their intent).
 export function isSectionOpenTodayEmptyAware(
   section: DateSection,
   state: SectionOpenState,
   isSearching: boolean,
   todayIsEmpty: boolean,
 ): boolean {
-  if (section === "yesterday" && todayIsEmpty) return true;
-  return isSectionOpen(section, state, isSearching);
+  if (isSearching) return true;
+  const userSet = state[section];
+  return userSet !== undefined ? userSet : defaultSectionOpen(section, todayIsEmpty);
 }
