@@ -392,6 +392,9 @@ Deno.test("runArticlePipeline: fetch stage throws -> row ends 'failed' with 'int
       id: "p-fetch",
       url: "https://example.com/article",
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-fetch");
     assertEquals(row?.status, "failed");
@@ -419,6 +422,9 @@ Deno.test("runArticlePipeline: budget stage throws -> row ends 'failed' with 'in
     url: "https://example.com/article",
     html: ARTICLE_HTML,
     requestTags: [],
+    addedVia: "manual",
+    source: null,
+    addedAt: "2026-01-01T00:00:00.000Z",
   });
 
   const row = db.rows.get("p-budget");
@@ -439,6 +445,9 @@ Deno.test("runArticlePipeline: summarize stage throws -> row ends 'failed' with 
       url: "https://example.com/article",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-summarize");
     assertEquals(row?.status, "failed");
@@ -459,6 +468,9 @@ Deno.test("runArticlePipeline: persist stage throws -> row ends 'failed' with 'i
       url: "https://example.com/article",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-persist");
     assertEquals(row?.status, "failed");
@@ -479,6 +491,9 @@ Deno.test("runArticlePipeline: 'internal:' error is capped at 200 chars total", 
       id: "p-cap",
       url: "https://example.com/article",
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-cap");
     assert((row?.error as string).length <= 200);
@@ -495,6 +510,9 @@ Deno.test("runArticlePipeline: daily-limit early return is NOT wrapped with 'int
     url: "https://example.com/article",
     html: ARTICLE_HTML,
     requestTags: [],
+    addedVia: "manual",
+    source: null,
+    addedAt: "2026-01-01T00:00:00.000Z",
   });
   const row = db.rows.get("p-limit");
   assertEquals(row?.error, "daily-limit");
@@ -522,6 +540,9 @@ Deno.test("runArticlePipeline: an exhausted daily budget logs a pipeline_stage l
       url: "https://example.com/article",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
   } finally {
     console.log = originalLog;
@@ -561,6 +582,9 @@ Deno.test("runArticlePipeline: extraction under 300 chars -> 'failed' with a cle
     url: "https://xcancel.com/someuser/status/123",
     html: thinHtml,
     requestTags: [],
+    addedVia: "manual",
+    source: null,
+    addedAt: "2026-01-01T00:00:00.000Z",
   });
 
   const row = db.rows.get("p-thin");
@@ -593,6 +617,9 @@ Deno.test("runArticlePipeline: extraction under 300 chars also records a thin-ho
     url: "https://mirror.example/someuser/status/123",
     html: thinHtml,
     requestTags: [],
+    addedVia: "manual",
+    source: null,
+    addedAt: "2026-01-01T00:00:00.000Z",
   });
 
   assertEquals(await cache.get("thinhost:mirror.example"), "1");
@@ -619,6 +646,9 @@ Deno.test("runArticlePipeline: extraction exactly at 300 chars passes the guard 
     url: "https://example.com/x",
     html,
     requestTags: [],
+    addedVia: "manual",
+    source: null,
+    addedAt: "2026-01-01T00:00:00.000Z",
   });
   assertEquals(db.rows.get("p-300")?.status, "ready");
 });
@@ -647,6 +677,9 @@ Deno.test("runArticlePipeline: workers-ai mode caps summarization input at 24k c
     url: "https://example.com/x",
     html,
     requestTags: [],
+    addedVia: "manual",
+    source: null,
+    addedAt: "2026-01-01T00:00:00.000Z",
   });
 
   assert(capturedContent.includes("A".repeat(24_000)));
@@ -677,6 +710,9 @@ Deno.test("runArticlePipeline: gateway/direct mode does NOT apply the 24k worker
       url: "https://example.com/x",
       html,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     assert(capturedBody.includes("B".repeat(20_000)));
   } finally {
@@ -713,6 +749,9 @@ Deno.test("runArticlePipeline: FAITHFULNESS_CHECK=false -> no judge call, no fai
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     assertEquals(aiCalled, false);
     assertEquals(db.rows.get("p-faith-off")?.status, "ready");
@@ -736,6 +775,9 @@ Deno.test("runArticlePipeline: FAITHFULNESS_CHECK enabled (default), judge says 
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-faith-pass")!;
     assertEquals(row.status, "ready");
@@ -760,6 +802,9 @@ Deno.test("runArticlePipeline: judge says 'fail', FAITHFULNESS_ENFORCE=false (de
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-faith-fail-soft")!;
     assertEquals(row.status, "ready");
@@ -794,6 +839,9 @@ Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, first judge fails, ret
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-faith-enforce-pass")!;
     assertEquals(row.status, "ready");
@@ -820,6 +868,9 @@ Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, retry still fails -> p
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const row = db.rows.get("p-faith-enforce-discard")!;
     assertEquals(row.status, "failed");
@@ -843,6 +894,9 @@ Deno.test("runArticlePipeline: the judge call does NOT increment the summary cos
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const today = new Date().toISOString().slice(0, 10);
     assertEquals(await env.CACHE.get(`llm_calls:${today}`), "1"); // only the summarize call
@@ -887,6 +941,9 @@ Deno.test("runArticlePipeline: input.priorViolations reaches the summarize call'
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
       priorViolations: "bullets_ru[0] duplicates the tldr instead of adding new detail",
     });
     assertEquals(db.rows.get("p-informed-retry")?.status, "ready");
@@ -916,6 +973,9 @@ Deno.test("runArticlePipeline: no priorViolations on the input -> no corrective 
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
     });
     const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
     assertEquals(firstMessage.includes("A previous attempt failed validation"), false);
@@ -941,6 +1001,9 @@ Deno.test("runResummarization: input.priorViolations reaches the summarize call'
       fullText:
         "Hello world, this is enough article text to clear the minimum length guard used elsewhere in these tests.",
       requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
       priorViolations: "tldr_ru must be at least 150 characters (got 40)",
     });
     assertEquals(db.rows.get("p-resummarize-informed")?.status, "ready");

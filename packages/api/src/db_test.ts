@@ -2,12 +2,16 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import {
   backfillNormalizedTags,
   buildListQuery,
+  countUnembeddedArticles,
   findRecentTitles,
   findRecentTitlesForDedup,
+  getArticlesByIds,
   getFaithfulnessStats,
   insertPendingArticle,
+  listUnembeddedArticles,
   markArticleFailed,
   markArticleReady,
+  markEmbedded,
   sweepStalePending,
   toPublicArticle,
   toPublicListItem,
@@ -515,6 +519,185 @@ Deno.test("getFaithfulnessStats: counts pass/weak/fail/null across all rows", as
   assertEquals(stats, { pass: 2, weak: 1, fail: 1, null: 1 });
 });
 
+// --- Embeddings marker column + backfill queries (Task 27) ---
+
+Deno.test("markEmbedded: writes embedded_at, leaves everything else untouched", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "e1",
+    url: "https://example.com/e1",
+    title: "e1",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleReady(db, "e1", {
+    full_text: "full text",
+    title: "e1",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+  });
+
+  await markEmbedded(db, "e1", "2026-01-02T00:00:00.000Z");
+
+  const row = db.rows.find((r) => r.id === "e1")!;
+  assertEquals(row.embedded_at, "2026-01-02T00:00:00.000Z");
+  assertEquals(row.status, "ready");
+});
+
+Deno.test("listUnembeddedArticles/countUnembeddedArticles: only 'ready', non-archived, embedded_at-null rows, oldest first", async () => {
+  const db = new FakeD1();
+
+  await insertPendingArticle(db, {
+    id: "ready-unembedded-old",
+    url: "https://example.com/1",
+    title: "one",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleReady(db, "ready-unembedded-old", {
+    full_text: "full text",
+    title: "one",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+  });
+
+  await insertPendingArticle(db, {
+    id: "ready-unembedded-new",
+    url: "https://example.com/2",
+    title: "two",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-02T00:00:00.000Z",
+  });
+  await markArticleReady(db, "ready-unembedded-new", {
+    full_text: "full text",
+    title: "two",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+  });
+
+  await insertPendingArticle(db, {
+    id: "ready-already-embedded",
+    url: "https://example.com/3",
+    title: "three",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T12:00:00.000Z",
+  });
+  await markArticleReady(db, "ready-already-embedded", {
+    full_text: "full text",
+    title: "three",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+  });
+  await markEmbedded(db, "ready-already-embedded", "2026-01-03T00:00:00.000Z");
+
+  await insertPendingArticle(db, {
+    id: "still-pending",
+    url: "https://example.com/4",
+    title: "four",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T06:00:00.000Z",
+  }); // status stays 'pending' -> must be excluded
+
+  assertEquals(await countUnembeddedArticles(db), 2);
+
+  const page = await listUnembeddedArticles(db, 10);
+  assertEquals(page.map((a) => a.id), ["ready-unembedded-old", "ready-unembedded-new"]);
+  assertEquals(page[0].title_en, "t");
+  assertEquals(page[0].tldr_en, "t");
+  assertEquals(page[0].bullets_en, []);
+  assertEquals(page[0].added_via, "manual");
+  assertEquals(page[0].lang_original, "en");
+
+  const firstPage = await listUnembeddedArticles(db, 1);
+  assertEquals(firstPage.map((a) => a.id), ["ready-unembedded-old"]);
+});
+
+// --- getArticlesByIds: hydrates a Vectorize search result (search.ts) ---
+
+Deno.test("getArticlesByIds: returns full rows (including full_text) for every matching id", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "g1",
+    url: "https://example.com/g1",
+    title: "one",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await markArticleReady(db, "g1", {
+    full_text: "the full text",
+    title: "one",
+    author: null,
+    lang_original: "en",
+    summary_ru: "s",
+    summary_en: "s",
+    summary_json: MINIMAL_SUMMARY_JSON,
+    tags: [],
+  });
+  await insertPendingArticle(db, {
+    id: "g2",
+    url: "https://example.com/g2",
+    title: "two",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-02T00:00:00.000Z",
+  });
+
+  const rows = await getArticlesByIds(db, ["g1", "g2"]);
+  assertEquals(rows.map((r) => r.id).sort(), ["g1", "g2"]);
+  const g1 = rows.find((r) => r.id === "g1")!;
+  assertEquals(g1.full_text, "the full text");
+});
+
+Deno.test("getArticlesByIds: an id with no matching row is simply absent, not an error", async () => {
+  const db = new FakeD1();
+  await insertPendingArticle(db, {
+    id: "g3",
+    url: "https://example.com/g3",
+    title: "three",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+
+  const rows = await getArticlesByIds(db, ["g3", "does-not-exist"]);
+  assertEquals(rows.map((r) => r.id), ["g3"]);
+});
+
+Deno.test("getArticlesByIds: an empty id list returns an empty array without querying D1", async () => {
+  const db = new FakeD1();
+  assertEquals(await getArticlesByIds(db, []), []);
+});
+
 // --- Public-shape redaction (toPublicArticle/toPublicListItem) ---
 
 Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verdict", () => {
@@ -542,6 +725,7 @@ Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verd
     faithfulness_verdict: "weak",
     faithfulness_json: { claims: [{ i: 1, verdict: "unsupported", evidence: "x" }], notes: "n" },
     faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
+    embedded_at: null,
   };
   const pub = toPublicArticle(article);
   assertEquals("faithfulness_json" in pub, false);
@@ -575,6 +759,7 @@ Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_ver
     faithfulness_verdict: "fail",
     faithfulness_json: { error: "judge unparseable" },
     faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
+    embedded_at: null,
   };
   const pub = toPublicListItem(item);
   assertEquals("faithfulness_json" in pub, false);

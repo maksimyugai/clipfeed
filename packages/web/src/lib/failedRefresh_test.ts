@@ -25,6 +25,7 @@ function article(overrides: Partial<ArticleListItem> & { id: string }): ArticleL
     faithfulness_verdict: null,
     faithfulness_json: null,
     faithfulness_checked_at: null,
+    embedded_at: null,
     ...overrides,
   };
 }

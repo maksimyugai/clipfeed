@@ -9,7 +9,7 @@ import {
   summarizeArticleWithWorkersAi,
 } from "./summarize.ts";
 import { tryConsumeSummaryBudget } from "./cost-guard.ts";
-import { markArticleFailed, markArticleReady } from "./db.ts";
+import { markArticleFailed, markArticleReady, markEmbedded } from "./db.ts";
 import { recordThinHostFailure } from "./thin-host-learning.ts";
 import {
   incrementFaithfulnessCallCounter,
@@ -18,6 +18,7 @@ import {
   resolveFaithfulnessJudgeModel,
   runFaithfulnessCheck,
 } from "./faithfulness.ts";
+import { buildEmbeddingText, embedText, resolveEmbeddingModel, upsertArticleEmbedding } from "./embeddings.ts";
 
 export interface PipelineInput {
   id: string;
@@ -32,6 +33,12 @@ export interface PipelineInput {
   // informed retry rather than a blind repeat (see queue.ts's
   // processQueueMessage, which reads the row and populates this).
   priorViolations?: string;
+  // Carried straight from the already-fetched D1 row (see queue.ts) rather
+  // than re-read here — used only by the post-persist embed stage's
+  // Vectorize metadata (see runEmbedStage below).
+  addedVia: string;
+  source: string | null;
+  addedAt: string;
 }
 
 export function mergeTags(requestTags: string[], modelTags: string[]): string[] {
@@ -273,6 +280,64 @@ async function runFaithfulnessStage(
   };
 }
 
+interface PipelineArticleMeta {
+  addedVia: string;
+  source: string | null;
+  addedAt: string;
+}
+
+// Runs AFTER the article is already 'ready' (markArticleReady has already
+// committed) — semantic dedup/search's raw material, computed from the
+// just-persisted summary (see embeddings.ts's buildEmbeddingText: EN
+// fields only). Deliberately its own try/catch that NEVER rethrows: embed
+// is auxiliary (Task 27's own requirement), so any failure here — a
+// Workers AI error, a Vectorize error, a dimension mismatch — must never
+// turn an already-successful article back into a failure. embedded_at
+// simply stays null on failure, and the backfill endpoint
+// (POST /api/admin/embeddings/backfill) picks it up later automatically
+// (see db.ts's listUnembeddedArticles). Also a clean no-op — no Workers AI
+// call spent for nothing — when env.VECTORS isn't bound at all (a fork
+// that hasn't run `deno task setup`, or local dev, where Vectorize has no
+// local emulation): there would be nowhere to store the vector anyway, and
+// writing embedded_at without an actual stored vector would make a real
+// future backfill (once Vectorize IS configured) permanently skip this row.
+async function runEmbedStage(
+  env: Env,
+  id: string,
+  summary: SummaryJson,
+  meta: PipelineArticleMeta,
+): Promise<void> {
+  const embedStart = performance.now();
+  try {
+    if (!env.VECTORS) {
+      logStage(id, "embed", embedStart, { outcome: "skipped_no_vectors_binding" });
+      return;
+    }
+    const text = buildEmbeddingText({
+      title_en: summary.title_en,
+      tldr_en: summary.tldr_en,
+      bullets_en: summary.bullets_en,
+    });
+    if (text.length === 0) {
+      logStage(id, "embed", embedStart, { outcome: "skipped_empty_text" });
+      return;
+    }
+    const model = resolveEmbeddingModel(env.EMBEDDING_MODEL);
+    const values = await embedText(env.AI, model, text);
+    await upsertArticleEmbedding(env.VECTORS, id, values, {
+      added_at: meta.addedAt,
+      source: meta.source,
+      added_via: meta.addedVia,
+      lang_original: summary.lang_original,
+    });
+    await markEmbedded(env.DB, id, new Date().toISOString());
+    logStage(id, "embed", embedStart, { dims: values.length });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(JSON.stringify({ event: "embed_stage_failed", id, error: message }));
+  }
+}
+
 // Runs the full fetch -> extract -> summarize -> persist pipeline for one
 // article. Called from ctx.executionCtx.waitUntil() — the top-level
 // try/catch below guarantees a terminal 'ready'/'failed' status for any
@@ -376,6 +441,12 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
         : undefined,
     });
     logStage(input.id, stage, persistStart);
+
+    await runEmbedStage(env, input.id, faithfulness.summary, {
+      addedVia: input.addedVia,
+      source: input.source,
+      addedAt: input.addedAt,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const reason = `internal: ${stage}: ${message}`.slice(0, 200);
@@ -394,6 +465,12 @@ export interface ResummarizeInput {
   // either the 'process' or 'resummarize' queue message kind depending on
   // whether full_text was already stored (see queue.ts).
   priorViolations?: string;
+  // See PipelineInput.addedVia/source/addedAt — a resummarize re-embeds
+  // too, since the summary content (and therefore the embedding text)
+  // just changed.
+  addedVia: string;
+  source: string | null;
+  addedAt: string;
 }
 
 // Re-runs ONLY the summarize -> persist stages against already-stored
@@ -479,6 +556,12 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
         : undefined,
     });
     logStage(input.id, stage, persistStart);
+
+    await runEmbedStage(env, input.id, faithfulness.summary, {
+      addedVia: input.addedVia,
+      source: input.source,
+      addedAt: input.addedAt,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const reason = `internal: ${stage}: ${message}`.slice(0, 200);

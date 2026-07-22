@@ -87,6 +87,9 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
       requestTitle: article.title,
       requestTags: article.tags,
       priorViolations,
+      addedVia: article.added_via,
+      source: article.source,
+      addedAt: article.added_at,
     });
   } else {
     const hasFullText = article.full_text !== null && article.full_text.trim().length > 0;
@@ -98,6 +101,9 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
         fullText: article.full_text as string,
         requestTags: article.tags,
         priorViolations,
+        addedVia: article.added_via,
+        source: article.source,
+        addedAt: article.added_at,
       });
     } else {
       await runArticlePipeline(env, {
@@ -106,6 +112,9 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
         requestTitle: article.title,
         requestTags: article.tags,
         priorViolations,
+        addedVia: article.added_via,
+        source: article.source,
+        addedAt: article.added_at,
       });
     }
   }

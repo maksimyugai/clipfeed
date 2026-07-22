@@ -64,6 +64,7 @@ export class FakeD1 implements D1Database {
         faithfulness_verdict: null,
         faithfulness_json: null,
         faithfulness_checked_at: null,
+        embedded_at: null,
       };
       let vi = 0;
       for (const col of cols) {
@@ -162,6 +163,11 @@ export class FakeD1 implements D1Database {
     if (sql === "SELECT * FROM articles WHERE id = ?") {
       const row = this.rows.find((r) => r.id === values[0]);
       return row ? [row] : [];
+    }
+
+    if (sql.startsWith("SELECT * FROM articles WHERE id IN")) {
+      const idSet = new Set(values as string[]);
+      return this.rows.filter((r) => idSet.has(r.id as string));
     }
 
     if (sql === "SELECT id FROM articles WHERE id = ?") {
@@ -292,6 +298,33 @@ export class FakeD1 implements D1Database {
         .filter((r) => r.status === "ready" && (r.added_at as string) >= since)
         .sort((a, b) => (b.added_at as string).localeCompare(a.added_at as string))
         .map((r) => ({ summary_json: r.summary_json }));
+    }
+
+    if (sql.startsWith("SELECT id, summary_json, source, added_via, lang_original, added_at")) {
+      const limit = values[0] as number;
+      return this.rows
+        .filter((r) => r.status === "ready" && r.archived === 0 && r.embedded_at === null)
+        .sort((a, b) => (a.added_at as string).localeCompare(b.added_at as string))
+        .slice(0, limit)
+        .map((r) => ({
+          id: r.id,
+          summary_json: r.summary_json,
+          source: r.source,
+          added_via: r.added_via,
+          lang_original: r.lang_original,
+          added_at: r.added_at,
+        }));
+    }
+
+    if (
+      sql ===
+        "SELECT COUNT(*) as count FROM articles WHERE status = 'ready' AND archived = 0 AND embedded_at IS NULL"
+    ) {
+      const count = this.rows.filter((r) =>
+        r.status === "ready" && r.archived === 0 && r.embedded_at === null
+      )
+        .length;
+      return [{ count }];
     }
 
     throw new Error(`FakeD1: unsupported query: ${sql}`);
