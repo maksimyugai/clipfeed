@@ -25,6 +25,13 @@ export interface PipelineInput {
   html?: string;
   requestTitle?: string;
   requestTags: string[];
+  // Set only when this run is retrying an article whose PREVIOUS attempt
+  // failed with fail_class 'content' (see classify-failure.ts) — the prior
+  // run's stored error text, naming the exact validation rule(s) it broke,
+  // handed to the FIRST summarization attempt of this run so it's an
+  // informed retry rather than a blind repeat (see queue.ts's
+  // processQueueMessage, which reads the row and populates this).
+  priorViolations?: string;
 }
 
 export function mergeTags(requestTags: string[], modelTags: string[]): string[] {
@@ -32,6 +39,21 @@ export function mergeTags(requestTags: string[], modelTags: string[]): string[] 
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean);
   return Array.from(new Set(merged));
+}
+
+// Pure, directly testable: only a 'content'-classified failure (see
+// classify-failure.ts) carries real signal worth handing back to the model
+// — see PipelineInput.priorViolations. Called by queue.ts's
+// processQueueMessage against the freshly re-read article row, whose
+// `error` still holds the previous attempt's message even while the row is
+// 'pending' (markArticlePending no longer clears it — see db.ts).
+export function resolvePriorViolations(
+  failClass: string | null,
+  error: string | null,
+): string | undefined {
+  if (failClass !== "content" || !error) return undefined;
+  const trimmed = error.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export type ProviderMode = "gateway" | "direct" | "workers-ai";
@@ -71,6 +93,7 @@ async function runSummarizationForMode(
   env: Env,
   title: string,
   text: string,
+  priorViolations?: string,
 ): Promise<SummaryJson> {
   const targetTotalChars = parseSummaryBodyTargetChars(env.SUMMARY_BODY_TARGET_CHARS);
   if (mode === "gateway") {
@@ -84,6 +107,7 @@ async function runSummarizationForMode(
       title,
       text,
       targetTotalChars,
+      priorViolations,
     );
   }
   if (mode === "direct") {
@@ -92,6 +116,7 @@ async function runSummarizationForMode(
       title,
       text,
       targetTotalChars,
+      priorViolations,
     );
   }
   return await summarizeArticleWithWorkersAi(
@@ -100,6 +125,7 @@ async function runSummarizationForMode(
     title,
     text,
     targetTotalChars,
+    priorViolations,
   );
 }
 
@@ -313,8 +339,12 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
 
     stage = "summarize";
     const summarizeStart = performance.now();
-    const summary = await runSummarizationForMode(mode, env, title, text);
-    logStage(input.id, stage, summarizeStart, { mode, text_chars: text.length });
+    const summary = await runSummarizationForMode(mode, env, title, text, input.priorViolations);
+    logStage(input.id, stage, summarizeStart, {
+      mode,
+      text_chars: text.length,
+      informed_retry: Boolean(input.priorViolations),
+    });
 
     stage = "faithfulness";
     const faithfulness = await runFaithfulnessStage(env, input.id, mode, title, text, summary);
@@ -359,6 +389,11 @@ export interface ResummarizeInput {
   author: string | null;
   fullText: string;
   requestTags: string[];
+  // See PipelineInput.priorViolations — same informed-retry plumbing,
+  // applies here too since a 'content'-classified failure can be healed via
+  // either the 'process' or 'resummarize' queue message kind depending on
+  // whether full_text was already stored (see queue.ts).
+  priorViolations?: string;
 }
 
 // Re-runs ONLY the summarize -> persist stages against already-stored
@@ -394,8 +429,18 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
 
     stage = "summarize";
     const summarizeStart = performance.now();
-    const summary = await runSummarizationForMode(mode, env, input.title, text);
-    logStage(input.id, stage, summarizeStart, { mode, text_chars: text.length });
+    const summary = await runSummarizationForMode(
+      mode,
+      env,
+      input.title,
+      text,
+      input.priorViolations,
+    );
+    logStage(input.id, stage, summarizeStart, {
+      mode,
+      text_chars: text.length,
+      informed_retry: Boolean(input.priorViolations),
+    });
 
     stage = "faithfulness";
     const faithfulness = await runFaithfulnessStage(

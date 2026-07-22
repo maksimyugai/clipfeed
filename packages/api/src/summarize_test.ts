@@ -243,6 +243,119 @@ Deno.test("summarizeArticle: succeeds on the first response", async () => {
   }
 });
 
+// --- priorViolations: informed retry across separate pipeline runs (Task 26.5) ---
+
+Deno.test("summarizeArticle: priorViolations reaches the FIRST attempt's user message", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedFirstBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    capturedFirstBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const result = await summarizeArticle(
+      { apiKey: "test-key", model: "test-model" },
+      "Title",
+      "Body text",
+      DEFAULT_SUMMARY_BODY_TARGET_CHARS,
+      "bullets_ru[0] duplicates the tldr instead of adding new detail",
+    );
+    assertEquals(result, VALID_SUMMARY);
+    const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation with:"), true);
+    assertEquals(
+      firstMessage.includes("bullets_ru[0] duplicates the tldr instead of adding new detail"),
+      true,
+    );
+    assertEquals(
+      firstMessage.includes("replace it with a DIFFERENT concrete fact from the article"),
+      true,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: no priorViolations passed -> no corrective note on the first attempt", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedFirstBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    capturedFirstBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    await summarizeArticle({ apiKey: "test-key", model: "test-model" }, "Title", "Body text");
+    const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: priorViolations longer than 300 chars is truncated before reaching the prompt", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedFirstBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    capturedFirstBody = JSON.parse(String(init?.body));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  const longViolation = "x".repeat(500);
+  try {
+    await summarizeArticle(
+      { apiKey: "test-key", model: "test-model" },
+      "Title",
+      "Body text",
+      DEFAULT_SUMMARY_BODY_TARGET_CHARS,
+      longViolation,
+    );
+    const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("x".repeat(300)), true);
+    assertEquals(firstMessage.includes("x".repeat(301)), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticleWithWorkersAi: priorViolations reaches the FIRST attempt's user message", async () => {
+  const ai = makeStubAi((_model, input) => {
+    const userMessage = (input.messages as { role: string; content: string }[]).find(
+      (m) => m.role === "user",
+    )?.content ?? "";
+    if (!userMessage.includes("A previous attempt failed validation with:")) {
+      throw new Error("expected priorViolations note on the first attempt");
+    }
+    return { response: VALID_SUMMARY };
+  });
+
+  const result = await summarizeArticleWithWorkersAi(
+    ai,
+    "test-model",
+    "Title",
+    "Body text",
+    DEFAULT_SUMMARY_BODY_TARGET_CHARS,
+    "tldr_ru must be at least 150 characters (got 12)",
+  );
+  assertEquals(result, VALID_SUMMARY);
+});
+
 Deno.test("summarizeArticle: retries once on broken output, then succeeds", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

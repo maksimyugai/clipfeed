@@ -10,11 +10,17 @@ import { enqueueArticleJob } from "./queue.ts";
 import { recordThinHostFailure } from "./thin-host-learning.ts";
 
 // Retry budget per class — PERMANENT is excluded entirely (never retried;
-// see listHealableFailedArticles, which only selects transient/unknown).
-// UNKNOWN gets a single, lower-confidence attempt: a content-shaped
-// failure (e.g. 'summary validation') MIGHT pass on retry, but there's no
-// strong signal either way, unlike a transient infra failure.
-const HEAL_CAPS = { transient: 2, unknown: 1 };
+// see listHealableFailedArticles, which only selects
+// transient/unknown/content). UNKNOWN gets a single, lower-confidence
+// attempt: no real signal either way about why it failed. CONTENT (a
+// validateSummary() failure — see classify-failure.ts) gets a higher cap
+// than UNKNOWN specifically because there IS a strong signal: the exact
+// violations are known and get handed back to the model verbatim on the
+// next attempt (see pipeline.ts's priorViolations plumbing), so each retry
+// is an informed one, not a blind repeat — worth spending more budget on.
+// See this task's report for the DAILY_SUMMARY_LIMIT arithmetic this cap
+// was chosen against.
+const HEAL_CAPS = { transient: 2, unknown: 1, content: 3 };
 
 // Budget safety: bounds how much queue/LLM work one hourly tick can
 // create, independent of how many failed articles are eligible — a burst

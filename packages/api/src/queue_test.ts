@@ -8,7 +8,12 @@ import {
   processQueueMessage,
   stashPendingHtml,
 } from "./queue.ts";
-import { insertPendingArticle, markArticleFailed, markArticleReady } from "./db.ts";
+import {
+  insertPendingArticle,
+  markArticleFailed,
+  markArticlePending,
+  markArticleReady,
+} from "./db.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { FakeMessage, FakeQueue, makeBatch } from "./testing/fake_queue.ts";
 import worker from "./index.ts";
@@ -236,6 +241,95 @@ Deno.test("processQueueMessage: 'resummarize' kind with no stored full_text fall
 Deno.test("processQueueMessage: unknown article id is a no-op, never throws", async () => {
   const env = makeEnv();
   await processQueueMessage(env, { kind: "process", articleId: "does-not-exist" });
+});
+
+// --- priorViolations: a 'content'-classified retry is informed, others aren't (Task 26.5) ---
+
+Deno.test("processQueueMessage: 'process' kind retrying a previous 'content' failure carries priorViolations into the summarize call", async () => {
+  const env = makeEnv();
+  const originalFetch = globalThis.fetch;
+  let capturedAnthropicBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = input.toString();
+    if (new URL(url).hostname === "api.anthropic.com") {
+      capturedAnthropicBody = JSON.parse(String(init?.body));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }),
+    );
+  }) as typeof fetch;
+
+  try {
+    await insertPending(env, "a-content-retry", "https://example.com/content-retry");
+    // Simulate a previous run that failed content validation, then the
+    // healing sweep (or a manual retry) re-queuing it — markArticlePending
+    // deliberately leaves error/fail_class in place (see db.ts) so this is
+    // exactly what processQueueMessage would see on the real retry path.
+    await markArticleFailed(
+      env.DB,
+      "a-content-retry",
+      "internal: summarize: summary validation: bullets_ru[0] duplicates the tldr instead of adding new detail",
+    );
+    await markArticlePending(env.DB, "a-content-retry");
+
+    await processQueueMessage(env, { kind: "process", articleId: "a-content-retry" });
+
+    const db = env.DB as unknown as FakeD1;
+    const row = db.rows.find((r) => r.id === "a-content-retry")!;
+    assertEquals(row.status, "ready");
+    const firstMessage = capturedAnthropicBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation with:"), true);
+    assertEquals(
+      firstMessage.includes("bullets_ru[0] duplicates the tldr instead of adding new detail"),
+      true,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("processQueueMessage: 'process' kind retrying a 'transient' failure does NOT pass priorViolations", async () => {
+  const env = makeEnv();
+  const originalFetch = globalThis.fetch;
+  let capturedAnthropicBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = input.toString();
+    if (new URL(url).hostname === "api.anthropic.com") {
+      capturedAnthropicBody = JSON.parse(String(init?.body));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } }),
+    );
+  }) as typeof fetch;
+
+  try {
+    await insertPending(env, "a-transient-retry", "https://example.com/transient-retry");
+    await markArticleFailed(
+      env.DB,
+      "a-transient-retry",
+      "internal: summarize: anthropic api error (503): overloaded",
+    );
+    await markArticlePending(env.DB, "a-transient-retry");
+
+    await processQueueMessage(env, { kind: "process", articleId: "a-transient-retry" });
+
+    const firstMessage = capturedAnthropicBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 Deno.test("processQueueMessage: notify present -> sends a Telegram edit reflecting the ready result", async () => {

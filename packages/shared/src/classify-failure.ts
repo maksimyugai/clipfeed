@@ -63,6 +63,19 @@ const TRANSIENT_RULES: { substring: string; reason: string }[] = [
   { substring: "daily-limit", reason: "daily summary budget exhausted" },
 ];
 
+// Errors from validateSummary() (see summarize.ts) — the model produced a
+// parseable, schema-valid response, but its CONTENT missed the bar (a
+// bullet duplicating the tldr, a paragraph out of range, etc.), and the
+// corrective retry built into summarizeArticle/summarizeArticleWithWorkersAi
+// already failed too. Distinct from 'unknown' because there IS a real
+// signal here — the exact violations are known and can be handed back to
+// the model as a targeted instruction (see pipeline.ts's priorViolations
+// plumbing) — so this gets a higher healing cap than a genuinely
+// unclassified failure (see healing.ts's HEAL_CAPS).
+const CONTENT_RULES: { substring: string; reason: string }[] = [
+  { substring: "summary validation", reason: "summary failed content validation" },
+];
+
 const PERMANENT_RULES: { substring: string; reason: string; key: PermanentReasonKey }[] = [
   // The dominant real-world signal for a thin/mirror/paywalled page —
   // there's no more text to extract next time either.
@@ -115,9 +128,10 @@ export function classifyFailure(error: string): FailureClassification {
       return { class: "permanent", reason: rule.reason, permanentReasonKey: rule.key };
     }
   }
-  // Includes 'summary validation' failures — content-shaped, not
-  // infra-shaped, so a retry MIGHT produce a passing summary, but there's
-  // no strong signal either way — see the reduced heal_attempts cap for
-  // 'unknown' in the healing job.
+  for (const rule of CONTENT_RULES) {
+    if (normalized.includes(rule.substring)) {
+      return { class: "content", reason: rule.reason, permanentReasonKey: null };
+    }
+  }
   return { class: "unknown", reason: "no known pattern matched", permanentReasonKey: null };
 }

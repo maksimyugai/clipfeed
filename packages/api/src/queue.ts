@@ -1,7 +1,7 @@
 import "./env.d.ts";
 import type { QueueMessage, QueueNotify } from "@clipfeed/shared/types";
 import { getArticleById, markArticleFailed } from "./db.ts";
-import { runArticlePipeline, runResummarization } from "./pipeline.ts";
+import { resolvePriorViolations, runArticlePipeline, runResummarization } from "./pipeline.ts";
 import { editMessageText, readTelegramConfig } from "./telegram-client.ts";
 import { failedText, readySuccessText } from "./telegram-strings.ts";
 
@@ -73,6 +73,11 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
     return;
   }
 
+  // Only meaningful when this row is being retried after a previous
+  // 'content'-classified failure (see resolvePriorViolations) — undefined
+  // otherwise, so a brand-new article's summarization call is unaffected.
+  const priorViolations = resolvePriorViolations(article.fail_class, article.error);
+
   if (message.kind === "process") {
     const html = await takePendingHtml(env.CACHE, message.articleId);
     await runArticlePipeline(env, {
@@ -81,6 +86,7 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
       html,
       requestTitle: article.title,
       requestTags: article.tags,
+      priorViolations,
     });
   } else {
     const hasFullText = article.full_text !== null && article.full_text.trim().length > 0;
@@ -91,6 +97,7 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
         author: article.author,
         fullText: article.full_text as string,
         requestTags: article.tags,
+        priorViolations,
       });
     } else {
       await runArticlePipeline(env, {
@@ -98,6 +105,7 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
         url: article.url,
         requestTitle: article.title,
         requestTags: article.tags,
+        priorViolations,
       });
     }
   }

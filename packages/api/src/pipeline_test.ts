@@ -1,6 +1,12 @@
 import "./env.d.ts";
 import { assert, assertEquals } from "@std/assert";
-import { runArticlePipeline, runSummarization, selectProviderMode } from "./pipeline.ts";
+import {
+  resolvePriorViolations,
+  runArticlePipeline,
+  runResummarization,
+  runSummarization,
+  selectProviderMode,
+} from "./pipeline.ts";
 
 // Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
 // 20-220 chars and not duplicating the tldr, 1-6 tags) — see summarize.ts.
@@ -841,6 +847,109 @@ Deno.test("runArticlePipeline: the judge call does NOT increment the summary cos
     const today = new Date().toISOString().slice(0, 10);
     assertEquals(await env.CACHE.get(`llm_calls:${today}`), "1"); // only the summarize call
     assertEquals(await env.CACHE.get(`faithfulness_calls:${today}`), "1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// --- priorViolations: informed retry for a 'content'-classified failure (Task 26.5) ---
+
+Deno.test("resolvePriorViolations: only fires for fail_class 'content' with a non-empty error", () => {
+  assertEquals(
+    resolvePriorViolations("content", "bullets_ru[0] duplicates the tldr"),
+    "bullets_ru[0] duplicates the tldr",
+  );
+  assertEquals(resolvePriorViolations("content", "  spaced  "), "spaced");
+});
+
+Deno.test("resolvePriorViolations: undefined for every other class, and for a missing/empty error", () => {
+  assertEquals(resolvePriorViolations("transient", "timed out"), undefined);
+  assertEquals(resolvePriorViolations("unknown", "no known pattern matched"), undefined);
+  assertEquals(resolvePriorViolations("permanent", "not found"), undefined);
+  assertEquals(resolvePriorViolations(null, "irrelevant"), undefined);
+  assertEquals(resolvePriorViolations("content", null), undefined);
+  assertEquals(resolvePriorViolations("content", ""), undefined);
+  assertEquals(resolvePriorViolations("content", "   "), undefined);
+});
+
+Deno.test("runArticlePipeline: input.priorViolations reaches the summarize call's first attempt", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedFirstBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    capturedFirstBody ??= JSON.parse(String(init?.body));
+    return Promise.resolve(anthropicSuccessResponse());
+  }) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({ DB: db as unknown as D1Database, FAITHFULNESS_CHECK: "false" });
+    await runArticlePipeline(env, {
+      id: "p-informed-retry",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+      priorViolations: "bullets_ru[0] duplicates the tldr instead of adding new detail",
+    });
+    assertEquals(db.rows.get("p-informed-retry")?.status, "ready");
+    const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation with:"), true);
+    assertEquals(
+      firstMessage.includes("bullets_ru[0] duplicates the tldr instead of adding new detail"),
+      true,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: no priorViolations on the input -> no corrective note in the prompt", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedFirstBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    capturedFirstBody ??= JSON.parse(String(init?.body));
+    return Promise.resolve(anthropicSuccessResponse());
+  }) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({ DB: db as unknown as D1Database, FAITHFULNESS_CHECK: "false" });
+    await runArticlePipeline(env, {
+      id: "p-no-informed-retry",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+    });
+    const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runResummarization: input.priorViolations reaches the summarize call's first attempt", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedFirstBody: { messages: { content: string }[] } | undefined;
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    capturedFirstBody ??= JSON.parse(String(init?.body));
+    return Promise.resolve(anthropicSuccessResponse());
+  }) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({ DB: db as unknown as D1Database, FAITHFULNESS_CHECK: "false" });
+    await runResummarization(env, {
+      id: "p-resummarize-informed",
+      title: "Example",
+      author: null,
+      fullText:
+        "Hello world, this is enough article text to clear the minimum length guard used elsewhere in these tests.",
+      requestTags: [],
+      priorViolations: "tldr_ru must be at least 150 characters (got 40)",
+    });
+    assertEquals(db.rows.get("p-resummarize-informed")?.status, "ready");
+    const firstMessage = capturedFirstBody?.messages[0]?.content ?? "";
+    assertEquals(firstMessage.includes("A previous attempt failed validation with:"), true);
+    assertEquals(
+      firstMessage.includes("tldr_ru must be at least 150 characters (got 40)"),
+      true,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
