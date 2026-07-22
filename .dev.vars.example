@@ -56,9 +56,21 @@
 # disables the job. AGENT_DAILY_PICKS is how many candidates the agent
 # saves per run — valid range 1-20, anything missing/invalid falls back to
 # 10.
-# INTEREST_TOPICS=AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news
+# INTEREST_TOPICS=AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security — vulnerabilities, breaches, exploits, threat research; notable science/tech news
 # AGENT_HOUR_UTC=5
 # AGENT_DAILY_PICKS=10
+
+# Curated variety (see README "Curated variety"): topic quotas, priority
+# sources and the manual domain blocklist all live in committed,
+# fork-editable JSON files (packages/api/curation.json,
+# packages/api/blocklist.json), not env vars. These two vars only tune the
+# KV-based AUTO-LEARNED block mechanism (a domain that keeps failing
+# extraction or returning a paywall gets blocked automatically after
+# AUTOBLOCK_THRESHOLD signals, for AUTOBLOCK_TTL_DAYS, then rehabilitates on
+# its own). Both parsed defensively — missing/invalid falls back to the
+# defaults below.
+# AUTOBLOCK_THRESHOLD=3
+# AUTOBLOCK_TTL_DAYS=60
 
 # Cloudflare Access protection (see README "Protecting your instance").
 # Optional — auth middleware only activates once BOTH are set. Without them

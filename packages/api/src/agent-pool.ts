@@ -15,6 +15,8 @@ import {
   queryRelatedEmbeddings,
   type RelatedMatch,
 } from "./embeddings.ts";
+import { resolveDomainPrecedence } from "./domain-block.ts";
+import { hostname } from "./url-host.ts";
 
 const POOL_CAP = 160;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -121,14 +123,6 @@ function isPaywalledTitle(title: string): boolean {
   return PAYWALL_TITLE_MARKERS.some((marker) => title.startsWith(marker));
 }
 
-function hostname(url: string): string | null {
-  try {
-    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
-  } catch {
-    return null;
-  }
-}
-
 async function isThinHost(cache: KVNamespace, url: string): Promise<boolean> {
   const host = hostname(url);
   if (host === null) return false;
@@ -188,6 +182,20 @@ export interface SemanticDedupConfig {
 export interface BuildCandidatePoolResult {
   pool: Candidate[];
   dedupDrops: PoolDedupDrop[];
+  blockedDropped: number;
+}
+
+// Task 33 §2/§5 — absolute domain block, checked BEFORE ranking (zero LLM
+// spend) so a blocked candidate never even reaches the model. Combines the
+// manual, git-committed blocklist.json with KV auto-learned blocks via the
+// same precedence resolver the admin endpoints and manual-add warning use
+// (see domain-block.ts) — `autoBlockedDomains` is fetched ONCE per agent
+// run (see autoblock.ts's listAutoBlocks) rather than one KV get per
+// candidate. Omitted entirely (or both fields empty) disables the layer —
+// same graceful-degradation convention as the rest of this file.
+export interface BlockConfig {
+  blockedDomains: string[];
+  autoBlockedDomains: ReadonlySet<string>;
 }
 
 function logPoolDedupDrop(drop: PoolDedupDrop): void {
@@ -316,10 +324,14 @@ async function applySemanticDedup(
   return [...survivors, ...rest];
 }
 
-// 24h filter -> newest-first sort -> pool-internal dedupe by canonicalized
-// URL -> drop candidates already saved (exact url match against D1) ->
-// normalized-title exact match -> title Jaccard similarity -> semantic
-// (optional, Task 27) -> cap. Layers 2 and 3 (title/Jaccard) are checked
+// 24h filter -> domain block (Task 33 §2/§5: blocklist.json + KV
+// auto-learned blocks, zero LLM spend — a distinct policy layer from the
+// thin-host filter below, which exists for extraction-quality reasons, not
+// curation taste) -> paywall-title-marker filter -> thin-host filter ->
+// newest-first sort -> pool-internal dedupe by canonicalized URL -> drop
+// candidates already saved (exact url match against D1) -> normalized-title
+// exact match -> title Jaccard similarity -> semantic (optional, Task 27)
+// -> cap. Layers 2 and 3 (title/Jaccard) are checked
 // against BOTH the 72h DB window and every pool candidate already kept in
 // this same pass — the DB check runs first per candidate (a match there
 // always means "drop the newer candidate", since the existing row was
@@ -343,10 +355,26 @@ export async function buildCandidatePool(
   candidates: Candidate[],
   now: Date = new Date(),
   semantic?: SemanticDedupConfig,
+  block?: BlockConfig,
 ): Promise<BuildCandidatePoolResult> {
   const fresh = candidates.filter((c) => isWithinWindow(c, now));
 
-  const unpaywalled = fresh.filter((c) => {
+  const blockedDomains = block?.blockedDomains ?? [];
+  const autoBlockedDomains = block?.autoBlockedDomains ?? new Set<string>();
+  let blockedDropped = 0;
+  const unblocked = fresh.filter((c) => {
+    const host = hostname(c.url);
+    if (!host) return true;
+    const result = resolveDomainPrecedence(host, blockedDomains, autoBlockedDomains, []);
+    if (result.blocked) {
+      blockedDropped += 1;
+      console.log(JSON.stringify({ event: "pool_dropped_blocked", host, layer: result.layer }));
+      return false;
+    }
+    return true;
+  });
+
+  const unpaywalled = unblocked.filter((c) => {
     if (isPaywalledTitle(c.title)) {
       console.log(JSON.stringify({ event: "pool_dropped_paywalled", url: c.url }));
       return false;
@@ -441,5 +469,5 @@ export async function buildCandidatePool(
 
   const semanticFiltered = await applySemanticDedup(titleFiltered, semantic, now, drops);
 
-  return { pool: semanticFiltered.slice(0, POOL_CAP), dedupDrops: drops };
+  return { pool: semanticFiltered.slice(0, POOL_CAP), dedupDrops: drops, blockedDropped };
 }

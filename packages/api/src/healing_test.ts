@@ -281,7 +281,10 @@ Deno.test("runHealingJob: classifies a pre-existing permanent failure on an owne
   assertEquals(updated.archived, 0); // owner's article — surfaced honestly, not buried
 });
 
-Deno.test("runHealingJob: classifying a pre-existing insufficient-text failure also teaches the thin-host learned list", async () => {
+Deno.test("runHealingJob: classifying a pre-existing insufficient-text failure also feeds Task 33's auto-block signal", async () => {
+  // Task 33 §7.2: the healing backfill's signal now goes to autostat:/
+  // autoblock: (autoblock.ts), superseding the old thinhost: counter this
+  // test used to check (see ranking.ts/pipeline.ts/healing.ts's migration).
   const env = makeEnv();
   await insertPendingArticle(env.DB, {
     id: "legacy-thin",
@@ -297,11 +300,11 @@ Deno.test("runHealingJob: classifying a pre-existing insufficient-text failure a
   row.error = "extraction: insufficient text (1 chars)";
   row.fail_class = null;
   // Already had one prior (fresh, already-classified) failure on this host.
-  await env.CACHE.put("thinhost:mirror.example", "1");
+  await env.CACHE.put("autostat:mirror.example", "1");
 
   await runHealingJob(env);
 
-  assertEquals(await env.CACHE.get("thinhost:mirror.example"), "2");
+  assertEquals(await env.CACHE.get("autostat:mirror.example"), "2");
 });
 
 // --- budget / safety limits ---

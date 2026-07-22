@@ -16,8 +16,11 @@ function stubFetch(handler: (url: string) => Response): () => void {
   };
 }
 
-Deno.test("SOURCES: loaded from sources.json, matches the documented ten entries", () => {
-  assertEquals(SOURCES.length, 10);
+Deno.test("SOURCES: loaded from sources.json, matches the documented eleven entries", () => {
+  // Task 33 §3: thehackernews (thehackernews.com) added, distinct from the
+  // pre-existing "hn" (news.ycombinator.com) — see also curation_test.ts
+  // and domain-block_test.ts for its use as a priority/preferred source.
+  assertEquals(SOURCES.length, 11);
   assertEquals(SOURCES.map((s) => s.id), [
     "hn",
     "arstechnica",
@@ -29,9 +32,12 @@ Deno.test("SOURCES: loaded from sources.json, matches the documented ten entries
     "phoronix",
     "lwn",
     "servethehome",
+    "thehackernews",
   ]);
   assertEquals(SOURCES[0].type, "hackernews");
   assertEquals(SOURCES[1].type, "rss");
+  assertEquals(SOURCES[10].id, "thehackernews");
+  assertEquals(SOURCES[10].type, "rss");
 });
 
 Deno.test("fetchAllCandidates: aggregates candidates across rss + hackernews sources", async () => {

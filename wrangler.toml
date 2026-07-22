@@ -25,8 +25,16 @@ PUBLIC_BASE_URL = "https://clipfeed.maksimyugai.com"
 # simply hidden until you set this to your own fork's repo URL.
 REPO_URL = "https://github.com/maksimyugai/clipfeed"
 PENDING_TIMEOUT_MIN = 10
-INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news"
+INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security — vulnerabilities, breaches, exploits, threat research; notable science/tech news"
 AGENT_HOUR_UTC = "5"
+# Curated variety (Task 33, README "Curated variety"): topic quotas,
+# priority sources and the manual blocklist live in committed JSON files
+# (packages/api/curation.json, packages/api/blocklist.json) — no vars
+# needed for those. These two tune ONLY the KV-based auto-learned block
+# mechanism (autoblock.ts), which supersedes the older thin-host-learning.ts
+# counter. Strings, parsed defensively — see autoblock.ts.
+AUTOBLOCK_THRESHOLD = "3"
+AUTOBLOCK_TTL_DAYS = "60"
 # Telegram drip publishing (see README "Telegram bot" — replaces the old
 # once-daily digest with one standalone post per hour). TELEGRAM_CHANNEL_ID
 # empty means posts go to the owner's own DM (TELEGRAM_OWNER_CHAT_ID)

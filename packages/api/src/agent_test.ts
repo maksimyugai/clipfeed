@@ -77,6 +77,13 @@ class FakeKV {
     this.store.set(key, value);
     return Promise.resolve();
   }
+  // Task 33: runAgentJob lists autoblock:* entries once per run (see
+  // autoblock.ts's listAutoBlocks) — no test in this file seeds any, so an
+  // always-empty result is correct (an empty auto-blocklist disables that
+  // layer, same convention as the rest of this feature).
+  list(): Promise<{ keys: { name: string }[]; list_complete: boolean }> {
+    return Promise.resolve({ keys: [], list_complete: true });
+  }
 }
 
 function anthropicText(text: string): Response {

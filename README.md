@@ -398,9 +398,11 @@ See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUD
 the forkability policy new changes must follow.
 
 Note the daily scraping agent (see "Daily scraping agent" below) runs **on by default** once
-deployed — it uses the committed `packages/api/sources.json` list and `INTEREST_TOPICS` default, and
-fires daily via the hourly cron (`AGENT_HOUR_UTC`, default `5`). Clear `AGENT_HOUR_UTC` to `""` if
-you'd rather opt in later once Access/LLM mode are set up the way you want.
+deployed — it uses the committed `packages/api/sources.json` list, `INTEREST_TOPICS` default, and
+the curated-variety config (`packages/api/curation.json`/`blocklist.json`, all fork-editable, no
+`[vars]` needed for any of it — see "Curated variety" below), and fires daily via the hourly cron
+(`AGENT_HOUR_UTC`, default `5`). Clear `AGENT_HOUR_UTC` to `""` if you'd rather opt in later once
+Access/LLM mode are set up the way you want.
 
 Two more optional pieces, once the above is working: "Protecting your instance" below (required
 before real use — reads are public by design, but writes need this) and "Telegram bot" further down
@@ -687,10 +689,12 @@ failures" below for the `DAILY_SUMMARY_LIMIT` budget arithmetic this feeds into.
 ### Sources (`packages/api/sources.json`)
 
 Fork-editable, not a `[vars]` setting — it's a small JSON array committed to the repo, since a list
-of feed URLs isn't really a secret or a per-deployment credential. Ten sources ship by default:
+of feed URLs isn't really a secret or a per-deployment credential. Eleven sources ship by default:
 general tech (Hacker News, Ars Technica, The Verge, MIT Technology Review), AI/dev-focused (Simon
-Willison, Cloudflare's blog), and hardware/Linux (Tom's Hardware, Phoronix, LWN.net, ServeTheHome) —
-chosen for being established, reputable outlets, not aggregators or SEO farms:
+Willison, Cloudflare's blog), hardware/Linux (Tom's Hardware, Phoronix, LWN.net, ServeTheHome), and
+security (The Hacker News, `thehackernews.com` — a distinct site and source `id` from the
+pre-existing `"hn"`, which is Hacker News / `news.ycombinator.com`) — chosen for being established,
+reputable outlets, not aggregators or SEO farms:
 
 ```json
 [
@@ -725,7 +729,11 @@ text'` failures within a rolling 30-day window is filtered automatically,
 no code change needed. This is populated both by fresh pipeline failures and by the hourly
 self-healing sweep re-classifying older rows (see "Self-healing failures" below) — it only ever
 filters _agent_ candidates, never a manually/extension/Telegram-added article, so a link you
-deliberately save is never silently blocked by what the agent has learned to avoid.
+deliberately save is never silently blocked by what the agent has learned to avoid. As of "Curated
+variety" below, NEW learning signals go to a separate, superseding KV mechanism (`autoblock.ts`)
+instead — this older counter stays read-only (still consulted, still respected) during the
+transition, and its entries age out naturally via their existing 30-day TTL; nothing writes a fresh
+`thinhost:` key anymore.
 
 A candidate whose **title** starts with a known paywall marker is dropped the same way, before any
 fetch is attempted — LWN prefixes subscriber-only article titles with `"[$]"` in its own RSS feed,
@@ -803,6 +811,155 @@ yesterday's story just because a different outlet covered it today. This applies
 the LLM call succeeded or fell all the way back to `fallbackPicks` — a same-story duplicate can't
 slip through either path.
 
+### Curated variety (topic quotas, priority sources, blocklist, auto-learned blocks)
+
+The prompt rules above only _encourage_ variety — on an AI-heavy news day, Linux/hardware/security
+can still vanish from the picks entirely, and Hacker News (the one aggregator source) can drag in
+arbitrary domains: mirrors, paywalls, junk. Three fork-editable JSON files, all sibling to
+`sources.json`, add guaranteed variety and an absolute domain policy on top of the ranking call —
+none of this costs an extra LLM call.
+
+**`packages/api/curation.json`** — taste, not policy:
+
+```json
+{
+  "topicVocabulary": [
+    "ai",
+    "hardware",
+    "linux",
+    "security",
+    "programming",
+    "science",
+    "business",
+    "other"
+  ],
+  "topicQuotas": { "linux": 1, "hardware": 1, "security": 1 },
+  "prioritySources": ["phoronix", "lwn", "thehackernews"],
+  "preferredDomains": ["phoronix.com", "lwn.net", "thehackernews.com"]
+}
+```
+
+- **`topicQuotas`** — minimum picks per topic, filled from the model's own topic labels (see below).
+  The sum must never exceed 50% of `AGENT_DAILY_PICKS`, so quotas can never crowd out general
+  ranking entirely — validated at load (`validateTopicQuotas` in `curation.ts`): an over-budget sum
+  logs a `curation_quota_sum_exceeded` warning and truncates by dropping the **last-listed** quotas
+  until it fits (so `{linux:1, hardware:1, security:1}` — sum 3 — comfortably fits within 50% of the
+  default `AGENT_DAILY_PICKS` of 10). A quota topic with fewer matching candidates than requested
+  just takes what exists and logs `rank_quota_unfilled {topic, wanted, got}` — it never blocks the
+  run or forces in an off-topic pick.
+- **`prioritySources`** — source ids (from `sources.json`) that each get **at most one** guaranteed
+  slot, but only if the model's own ranked list includes at least one candidate from that source at
+  all (see below) — an id the model rejected outright is never forced in. An id not present in
+  `sources.json` is dropped and logged (`curation_priority_source_unknown`) rather than silently
+  never matching anything.
+- **`preferredDomains`** — **advisory only**; see the precedence rules below. Never unblocks a
+  blocked domain, and its only effect on an otherwise-unblocked domain is a small tie-break bonus in
+  general fill.
+- Empty values (`{}`/`[]`) reduce every rule above to a no-op — today's (pre-this-feature) ranking
+  behavior exactly.
+
+**`packages/api/blocklist.json`** — absolute, manual, in git:
+
+```json
+{
+  "blockedDomains": ["wsj.com", "ft.com", "bloomberg.com", "nytimes.com", "medium.com"],
+  "note": "Hard paywalls and open-publishing platforms — extraction yields nothing usable."
+}
+```
+
+Matching is case-insensitive suffix-on-hostname-labels (`domainMatchesAny`/`hostMatchesDomain` in
+`domain-block.ts`): `"example.com"` blocks `example.com`, `www.example.com`, and `blog.example.com`,
+but never `notexample.com` (no label boundary) or `example.com.evil.net` (the blocked domain isn't a
+suffix of that host's own labels, just a substring). Applied inside `buildCandidatePool`, **before**
+ranking — a blocked candidate never reaches the LLM, so it costs nothing. An empty `blockedDomains`
+array disables the layer entirely. Manual/extension/Telegram adds are **never** blocked (owner
+intent always overrides) — `POST /api/admin/articles` still saves the article, but the `202`
+response body carries `{warning: "blocked_domain"}` so you know it's likely to fail extraction
+anyway.
+
+**Precedence (blocks are absolute, the whitelist is advisory) — `resolveDomainPrecedence` in
+`domain-block.ts`, a pure function, unit-tested against the full matrix:**
+
+1. `blocklist.json` match → **blocked** (`layer: "config"`)
+2. KV auto-learned block (see below) → **blocked** (`layer: "auto"`)
+3. otherwise → allowed
+
+`preferredDomains` is checked independently and **never overrides a block** — a domain that's both
+preferred and blocked stays blocked, reported with `conflict: true` so you can see it and decide
+deliberately (surfaced in `GET /api/admin/health-report`'s `curation.blocked.conflicts` and in
+`GET /api/admin/curation/blocked`, below) rather than the whitelist silently winning. Its only real
+effect is in general fill: a bounded tie-break that lets a preferred candidate move up **at most one
+position** past an immediately-preceding non-preferred candidate — a genuine tie-break, not a
+re-sort, so it can never jump a large rank gap.
+
+**Ranking returns a labeled, over-length list — selection happens in code, never trusted to the
+model.** The one ranking LLM call now asks for up to `min(2 × AGENT_DAILY_PICKS, 24)` items, best
+first, each shaped `{"i": "<candidate id>", "topic": "<one of topicVocabulary>"}` — more than will
+actually be picked, so the selection step below has real alternatives to draw from without a second
+LLM call. Parsed defensively as before (fence-strip, shape validation, invalid/duplicate ids
+dropped, an unrecognized topic label falls back to `"other"`); a parse failure keeps the existing
+fallback (newest, one per distinct source) and **skips quotas/priority sources entirely** for that
+run — with no labeled data to work from, guessing topics would be worse than just falling back.
+
+From that labeled list, `selectPicks` in `ranking.ts` picks exactly `AGENT_DAILY_PICKS`, **in this
+order** (documented in the function itself, matching the spec this feature shipped against):
+
+1. **Priority sources** — each configured id's highest-ranked candidate, if the model ranked one at
+   all.
+2. **Topic quotas** — best-first from candidates labeled that topic, skipping anything already
+   selected.
+3. **General fill** — whatever's left of the ranked list, in order, with the bounded
+   preferred-domain tie-break above.
+
+The existing hard constraints apply **throughout**, not as a separate pass afterward: the max-2-per-
+source cap and the 48h story-dedup window (same `titleSimilarity` check as the post-pick dedup
+described above) are enforced inline at every step via one shared "try to add this candidate" check
+— a quota or priority pick that would bust the cap or duplicate an already-selected story is skipped
+in favor of the next matching candidate, exactly like the pre-existing `enforceRankingDiversity`/
+`dedupStories` backfill behavior. Every run logs the full composition —
+`rank_selection {picks, byTopic, bySource, quotaFilled, priorityFilled}` — plus
+`rank_priority_unfilled {sourceId}` / `rank_quota_unfilled {topic, wanted, got}` whenever either
+degrades silently rather than forcing a bad pick.
+
+**Auto-learned blocks — KV only, structurally separate from the manual/git-committed policy above
+(`autoblock.ts`).** Automation writes _only_ `autostat:<domain>`/`autoblock:<domain>` KV keys;
+manual policy lives _only_ in the two JSON files above — disjoint key spaces and disjoint storage,
+so neither can ever overwrite the other by construction (enforced as a standing regression test, see
+`curation_isolation_test.ts`).
+
+- Each pipeline failure classified by the existing `classifyFailure` (see "Self-healing failures"
+  below) scores its host: `insufficient_text` or `paywalled` (403/402) → **+1**; **transient**
+  (5xx/timeouts) → **+0**, deliberately — an outage is evidence the upstream had a bad moment, not
+  that the domain itself is unusable, and scoring it would eventually auto-block any
+  flaky-but-otherwise-fine source given enough traffic.
+- Score reaching **`AUTOBLOCK_THRESHOLD`** ([vars], default `3`) writes/refreshes
+  `autoblock:<domain>` = `{firstSeen, score, lastReason}`, TTL **`AUTOBLOCK_TTL_DAYS`** ([vars],
+  default `60`, refreshed on every new signal) — expiry is automatic rehabilitation, no manual
+  cleanup needed for a domain that's since improved.
+- **Supersedes** the older `thinhost:` learning mechanism (see the note in "Sources" above) — writes
+  moved entirely to this new mechanism; the old counter's read side stays active (dual-read) so
+  already-learned hosts keep being respected until their own TTL naturally expires, rather than a
+  sudden mass "rehabilitation" the day this shipped.
+- **Admin endpoints** (Access-protected, minimal — manual policy is a file edit now, no endpoint
+  needed for it):
+  - `GET /api/admin/curation/blocked` →
+    `{config: [...], auto: [{domain, score, reason, firstSeen,
+    expiresAt}], conflicts: [{domain, layer}]}`
+    — same shape as `health-report`'s `curation.blocked`.
+  - `DELETE /api/admin/curation/autoblock` `{domain}` → clears one false-positive immediately, no
+    deploy needed; normalizes free-form input (lowercase, strips scheme/path/`www.`, rejects an
+    invalid hostname with `400`). Clears **both** the `autoblock:` entry and its underlying
+    `autostat:` counter — clearing only the block would let a single new signal instantly re-trigger
+    it, defeating the point of manual relief.
+
+`GET /api/admin/health-report`'s `curation` section folds all of this together: the same
+`config`/`auto`/`conflicts` blocklist snapshot, plus per-source
+`{picks, successes, failures,
+autoblockScore}` (derived from agent-added rows' status and each
+source's own domain) — one call for the whole curation picture, no separate lookups needed. Curation
+is taste, not a signal: nothing in this feature ever auto-modifies `curation.json`/`blocklist.json`
+— only the owner, editing the files in their fork, changes manual policy.
+
 ### Self-healing failures
 
 Every 'failed' article is classified into one of three healing strategies the moment it fails (see
@@ -874,8 +1031,9 @@ at this volume, per above) if you're consistently near the cap.
 
 `GET /api/admin/health-report` (owner-only) returns a JSON snapshot of all this — failure counts by
 class, total heal attempts by class, the current learned thin-host list, today's `llm_calls`
-used/limit, and a cheap proxy for "when did the agent last do anything" — meant for curl/owner
-tooling, not a dedicated SPA page (yet).
+used/limit, a cheap proxy for "when did the agent last do anything", and (see "Curated variety"
+above) a `curation` section with the blocklist/auto-block/conflict snapshot and per-source stats —
+meant for curl/owner tooling, not a dedicated SPA page (yet).
 
 ### Interests (`INTEREST_TOPICS`)
 
@@ -883,7 +1041,7 @@ One `[vars]` string — free text describing what you want surfaced, sent straig
 prompt:
 
 ```
-INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news"
+INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security — vulnerabilities, breaches, exploits, threat research; notable science/tech news"
 ```
 
 Edit it in `wrangler.toml` (or override locally via `.dev.vars`) to match your own taste — there's

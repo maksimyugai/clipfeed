@@ -574,6 +574,37 @@ export async function getLastAgentActivity(db: D1Database): Promise<string | nul
   return row?.last_added_at ?? null;
 }
 
+export interface SourceStats {
+  sourceId: string;
+  picks: number;
+  successes: number;
+  failures: number;
+}
+
+// Task 33 §8: per-source picks/successes/failures for the health-report's
+// curation section. Agent picks are tagged with their source id as the
+// first (and only) tag (see agent.ts's insertPendingArticle call), so this
+// re-derives per-source counts from `tags` rather than needing a dedicated
+// source column — a full scan of agent-added rows, acceptable for an
+// occasional admin call, not a hot path.
+export async function getSourceStats(db: D1Database): Promise<SourceStats[]> {
+  const result = await db.prepare(
+    `SELECT tags, status FROM articles WHERE added_via = 'agent'`,
+  ).all<{ tags: string | null; status: string }>();
+
+  const bySource = new Map<string, SourceStats>();
+  for (const row of result.results ?? []) {
+    const sourceId = parseTags(row.tags)[0];
+    if (!sourceId) continue;
+    const entry = bySource.get(sourceId) ?? { sourceId, picks: 0, successes: 0, failures: 0 };
+    entry.picks += 1;
+    if (row.status === "ready") entry.successes += 1;
+    if (row.status === "failed") entry.failures += 1;
+    bySource.set(sourceId, entry);
+  }
+  return [...bySource.values()].sort((a, b) => b.picks - a.picks);
+}
+
 // One-time rescue for the summary-validation backlog left behind by a prompt
 // recalibration (see summarize.ts's SummarySpec/deriveSummarySpec) — these
 // rows failed against the OLD, now-corrected bounds, so they're worth

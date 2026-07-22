@@ -10,7 +10,12 @@ import {
 } from "./summarize.ts";
 import { tryConsumeSummaryBudget } from "./cost-guard.ts";
 import { markArticleFailed, markArticleReady, markEmbedded } from "./db.ts";
-import { recordThinHostFailure } from "./thin-host-learning.ts";
+import { classifyFailure } from "../../shared/src/classify-failure.ts";
+import {
+  parseAutoblockThreshold,
+  parseAutoblockTtlDays,
+  recordAutoBlockSignal,
+} from "./autoblock.ts";
 import {
   incrementFaithfulnessCallCounter,
   parseFaithfulnessCheckEnabled,
@@ -367,17 +372,15 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
     });
 
     if (extracted.textContent.length < MIN_EXTRACTED_TEXT_CHARS) {
-      await markArticleFailed(
-        env.DB,
-        input.id,
-        `extraction: insufficient text (${extracted.textContent.length} chars)`,
-      );
-      // Teaches the agent's candidate-pool filter to avoid this host next
-      // time (see thin-host-learning.ts) — recorded regardless of
-      // added_via, but only ever consulted for agent candidates, so a
-      // manual/extension/telegram save of the same thin host is never
-      // blocked by this.
-      await recordThinHostFailure(env.CACHE, input.url);
+      const insufficientTextReason =
+        `extraction: insufficient text (${extracted.textContent.length} chars)`;
+      await markArticleFailed(env.DB, input.id, insufficientTextReason);
+      // Teaches Task 33's auto-block layer to avoid this host next time
+      // (see autoblock.ts) — recorded regardless of added_via, but the
+      // block itself is only ever consulted by the agent's candidate-pool
+      // filter, so a manual/extension/telegram save of the same host is
+      // never blocked by this.
+      await recordAutoBlockAgentSignal(env, input.url, insufficientTextReason);
       return;
     }
 
@@ -456,7 +459,28 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
     const message = err instanceof Error ? err.message : String(err);
     const reason = `internal: ${stage}: ${message}`.slice(0, 200);
     await markArticleFailed(env.DB, input.id, reason);
+    // Covers the fetch: upstream responded 403/402 (paywall) case — the
+    // insufficient-text case above already returns before reaching here.
+    // A safe no-op for every other failure shape: autoblockSignalWeight
+    // only scores 'insufficient_text'/'paywalled', so calling this
+    // unconditionally for any other classification just writes nothing.
+    await recordAutoBlockAgentSignal(env, input.url, reason);
   }
+}
+
+// Task 33 §7.1: scores one classified failure against the URL's host (see
+// autoblock.ts). Reused by both the insufficient-text branch and the
+// top-level catch above — the only two places a pipeline run's error
+// string is ever available.
+async function recordAutoBlockAgentSignal(env: Env, url: string, reason: string): Promise<void> {
+  const classification = classifyFailure(reason);
+  await recordAutoBlockSignal(
+    env.CACHE,
+    url,
+    classification,
+    parseAutoblockThreshold(env.AUTOBLOCK_THRESHOLD),
+    parseAutoblockTtlDays(env.AUTOBLOCK_TTL_DAYS),
+  );
 }
 
 export interface ResummarizeInput {

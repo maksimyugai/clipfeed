@@ -7,7 +7,12 @@ import {
   markArticlePending,
 } from "./db.ts";
 import { enqueueArticleJob } from "./queue.ts";
-import { recordThinHostFailure } from "./thin-host-learning.ts";
+import { classifyFailure } from "../../shared/src/classify-failure.ts";
+import {
+  parseAutoblockThreshold,
+  parseAutoblockTtlDays,
+  recordAutoBlockSignal,
+} from "./autoblock.ts";
 
 // Retry budget per class — PERMANENT is excluded entirely (never retried;
 // see listHealableFailedArticles, which only selects
@@ -38,9 +43,9 @@ const MAX_HEALS_PER_TICK = 5;
 //  1. Classify any 'failed' rows that predate the fail_class column
 //     (migration 0003) — lazily backfilled here rather than a one-off
 //     migration script, since migrations only alter schema, never run
-//     application logic. A permanent+insufficient-text backfill also
-//     teaches the thin-host learned list, since that signal was never
-//     recorded for these rows either (see thin-host-learning.ts).
+//     application logic. A permanent+insufficient-text/paywalled backfill
+//     also feeds Task 33's auto-block signal (see autoblock.ts), since
+//     that signal was never recorded for these rows either.
 //  2. Retry TRANSIENT/UNKNOWN failures up to their cap, oldest first,
 //     capped at MAX_HEALS_PER_TICK total. The re-enqueued article goes
 //     through the exact same queue path as any other 'process' job, so the
@@ -48,14 +53,18 @@ const MAX_HEALS_PER_TICK = 5;
 //     healing doesn't bypass it, just adds another way to reach the
 //     pipeline.
 export async function runHealingJob(env: Env, ctx?: ExecutionContext): Promise<void> {
+  const autoblockThreshold = parseAutoblockThreshold(env.AUTOBLOCK_THRESHOLD);
+  const autoblockTtlDays = parseAutoblockTtlDays(env.AUTOBLOCK_TTL_DAYS);
   const unclassified = await listUnclassifiedFailures(env.DB);
   for (const row of unclassified) {
-    const failClass = await classifyAndMaybeArchive(env.DB, row.id, row.error, row.added_via);
-    if (
-      failClass === "permanent" && (row.error ?? "").toLowerCase().includes("insufficient text")
-    ) {
-      await recordThinHostFailure(env.CACHE, row.url);
-    }
+    await classifyAndMaybeArchive(env.DB, row.id, row.error, row.added_via);
+    await recordAutoBlockSignal(
+      env.CACHE,
+      row.url,
+      classifyFailure(row.error ?? ""),
+      autoblockThreshold,
+      autoblockTtlDays,
+    );
   }
 
   const candidates = await listHealableFailedArticles(env.DB, HEAL_CAPS, MAX_HEALS_PER_TICK);
