@@ -92,6 +92,13 @@ export interface Dictionary {
   agentBatchReadyLabel: string;
   agentBatchOfLabel: string;
   pendingProcessingCaption: string;
+  searchModeToggleAria: string;
+  searchModeKeywordLabel: string;
+  searchModeSemanticLabel: string;
+  searchModeKeywordAria: string;
+  searchModeSemanticAria: string;
+  emptySearchTitle: string;
+  emptySearchHint: string;
 }
 
 const ru: Dictionary = {
@@ -184,6 +191,13 @@ const ru: Dictionary = {
   agentBatchReadyLabel: "готово",
   agentBatchOfLabel: "из",
   pendingProcessingCaption: "Обрабатывается…",
+  searchModeToggleAria: "Режим поиска",
+  searchModeKeywordLabel: "по словам",
+  searchModeSemanticLabel: "по смыслу",
+  searchModeKeywordAria: "Искать по словам",
+  searchModeSemanticAria: "Искать по смыслу",
+  emptySearchTitle: "Ничего не найдено",
+  emptySearchHint: "Попробуйте другой режим поиска — «по словам» или «по смыслу»",
 };
 
 const en: Dictionary = {
@@ -277,6 +291,13 @@ const en: Dictionary = {
   agentBatchReadyLabel: "ready",
   agentBatchOfLabel: "of",
   pendingProcessingCaption: "Processing…",
+  searchModeToggleAria: "Search mode",
+  searchModeKeywordLabel: "by words",
+  searchModeSemanticLabel: "by meaning",
+  searchModeKeywordAria: "Search by words",
+  searchModeSemanticAria: "Search by meaning",
+  emptySearchTitle: "No results found",
+  emptySearchHint: 'Try the other search mode — "by words" or "by meaning"',
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };

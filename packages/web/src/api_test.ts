@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { buildArticlesUrl } from "./api.ts";
+import { buildArticlesUrl, buildSearchUrl } from "./api.ts";
 
 Deno.test("buildArticlesUrl: no params yields the bare endpoint", () => {
   assertEquals(buildArticlesUrl({}), "/api/articles");
@@ -54,4 +54,19 @@ Deno.test("buildArticlesUrl: combines cursor + tag + source + q + archived, limi
 
 Deno.test("buildArticlesUrl: empty-string filters are omitted, not sent as blank params", () => {
   assertEquals(buildArticlesUrl({ tag: "", source: "", q: "" }), "/api/articles");
+});
+
+Deno.test("buildSearchUrl: defaults to /api/search", () => {
+  assertEquals(buildSearchUrl("widgets", 20), "/api/search?q=widgets&limit=20");
+});
+
+Deno.test("buildSearchUrl: an explicit base swaps the endpoint (owner mode)", () => {
+  assertEquals(
+    buildSearchUrl("widgets", 10, "/api/admin/search"),
+    "/api/admin/search?q=widgets&limit=10",
+  );
+});
+
+Deno.test("buildSearchUrl: encodes the query", () => {
+  assertEquals(buildSearchUrl("rust & wasm", 20), "/api/search?q=rust+%26+wasm&limit=20");
 });

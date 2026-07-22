@@ -1,4 +1,5 @@
 import type { Dictionary, Lang } from "../i18n.ts";
+import type { SearchMode } from "../lib/searchMode.ts";
 import type { Theme } from "../theme.ts";
 
 export interface HeaderProps {
@@ -10,6 +11,8 @@ export interface HeaderProps {
   searchValue: string;
   onSearchChange: (value: string) => void;
   onSearchClear: () => void;
+  searchMode: SearchMode;
+  onSearchModeChange: (mode: SearchMode) => void;
   onAddClick: () => void;
   isOwner: boolean;
 }
@@ -24,6 +27,8 @@ export function Header(
     searchValue,
     onSearchChange,
     onSearchClear,
+    searchMode,
+    onSearchModeChange,
     onAddClick,
     isOwner,
   }: HeaderProps,
@@ -75,6 +80,36 @@ export function Header(
             </button>
           )}
         </div>
+
+        {
+          /* Only shown once a search is actually active — an idle search box
+            has nothing for this to toggle, and keeping it out of the way
+            avoids extra header clutter on every other view. */
+        }
+        {searchValue !== "" && (
+          <div
+            class="search-mode-toggle"
+            role="group"
+            aria-label={dict.searchModeToggleAria}
+          >
+            <button
+              type="button"
+              aria-pressed={searchMode === "keyword"}
+              aria-label={dict.searchModeKeywordAria}
+              onClick={() => onSearchModeChange("keyword")}
+            >
+              {dict.searchModeKeywordLabel}
+            </button>
+            <button
+              type="button"
+              aria-pressed={searchMode === "semantic"}
+              aria-label={dict.searchModeSemanticAria}
+              onClick={() => onSearchModeChange("semantic")}
+            >
+              {dict.searchModeSemanticLabel}
+            </button>
+          </div>
+        )}
 
         <div class="lang-toggle" role="group" aria-label="RU/EN">
           <button

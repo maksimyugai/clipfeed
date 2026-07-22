@@ -13,7 +13,10 @@ import {
   patchArticle,
   resummarizeArticle,
   retryArticle,
+  searchAdminArticles,
+  searchArticles,
 } from "./api.ts";
+import { readStoredSearchMode, type SearchMode, writeStoredSearchMode } from "./lib/searchMode.ts";
 import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { EMPTY_FILTER_STATE, filterReducer } from "./lib/filterState.ts";
@@ -75,6 +78,26 @@ async function fetchArticleList(
   };
 }
 
+// Semantic search's counterpart to fetchArticleList above — same
+// owner/visitor redaction split, but no pagination (GET /api/search is a
+// single bounded top-K list, already ranked by similarity — see search.ts
+// on the API side) and no tag/source/archived filters, since the endpoint
+// doesn't take any. Scores are dropped here on purpose: this repo's own SPA
+// deliberately never shows them (see README "Semantic dedup & search") —
+// ordering alone carries the ranking.
+async function fetchSemanticSearch(isOwner: boolean, query: string): Promise<ArticleListItem[]> {
+  if (isOwner) {
+    const res = await searchAdminArticles(query, PAGE_LIMIT);
+    return res.items.map((item) => item.article);
+  }
+  const res = await searchArticles(query, PAGE_LIMIT);
+  return res.items.map((item) => ({
+    ...item.article,
+    error: null,
+    faithfulness_json: null,
+  }));
+}
+
 function computeSourceFacets(articles: ArticleListItem[]) {
   const counts = new Map<string, number>();
   for (const article of articles) {
@@ -92,9 +115,17 @@ export function App() {
   const dict = dictionaries[lang];
 
   const [searchInput, setSearchInput] = useState("");
+  const [searchMode, setSearchModeState] = useState<SearchMode>(() =>
+    readStoredSearchMode(localStorage)
+  );
   const [filters, dispatchFilter] = useReducer(filterReducer, EMPTY_FILTER_STATE);
   const { tag: activeTag, source: activeSource, query } = filters;
   const [archivedView, setArchivedView] = useState(false);
+
+  const setSearchMode = (next: SearchMode) => {
+    setSearchModeState(next);
+    writeStoredSearchMode(localStorage, next);
+  };
 
   const [articles, setArticles] = useState<ArticleListItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -159,10 +190,28 @@ export function App() {
   // once ownerModeState resolves from "loading" — the very first fetch
   // (before /api/admin/me settles) always uses the visitor path, so an
   // owner's feed needs this second pass to pick up the admin-list endpoint
-  // instead.
+  // instead. A non-empty query in "semantic" mode takes a completely
+  // different path (fetchSemanticSearch, no pagination, no tag/source/
+  // archived filters — the endpoint doesn't support them) rather than
+  // folding into the loop below.
   useEffect(() => {
     let cancelled = false;
     setExpandedId(null);
+
+    if (query.trim() !== "" && searchMode === "semantic") {
+      fetchSemanticSearch(isOwner, query)
+        .then((items) => {
+          if (cancelled) return;
+          setArticles(items);
+          setNextCursor(null);
+        })
+        .catch((err) => {
+          if (!cancelled) showError(err);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
 
     (async () => {
       let cursor: string | undefined;
@@ -190,7 +239,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [query, activeTag, activeSource, archivedView, isOwner]);
+  }, [query, activeTag, activeSource, archivedView, isOwner, searchMode]);
 
   const handleShowMore = async () => {
     if (!nextCursor || loadingMore) return;
@@ -267,6 +316,7 @@ export function App() {
           faithfulness_verdict: null,
           faithfulness_json: null,
           faithfulness_checked_at: null,
+          embedded_at: null,
         },
         ...current,
       ]);
@@ -433,6 +483,8 @@ export function App() {
         searchValue={searchInput}
         onSearchChange={setSearchInput}
         onSearchClear={handleSearchClear}
+        searchMode={searchMode}
+        onSearchModeChange={setSearchMode}
         onAddClick={() => setModalOpen(true)}
         isOwner={isOwner}
       />

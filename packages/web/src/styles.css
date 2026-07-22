@@ -232,7 +232,8 @@ ul {
   color: var(--acc);
 }
 
-.lang-toggle {
+.lang-toggle,
+.search-mode-toggle {
   display: inline-flex;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -240,16 +241,19 @@ ul {
   flex-shrink: 0;
 }
 
-.lang-toggle button {
+.lang-toggle button,
+.search-mode-toggle button {
   border: none;
   background: transparent;
   color: var(--sub);
   padding: 7px 12px;
   font-size: 0.8125rem;
   font-weight: 500;
+  white-space: nowrap;
 }
 
-.lang-toggle button[aria-pressed="true"] {
+.lang-toggle button[aria-pressed="true"],
+.search-mode-toggle button[aria-pressed="true"] {
   background: var(--grad-action);
   color: #fff;
 }
@@ -303,6 +307,11 @@ ul {
   .search-field {
     order: 3;
     flex: 0 0 100%;
+  }
+
+  .search-mode-toggle {
+    order: 4;
+    margin: 0 auto;
   }
 
   .ua-flag {

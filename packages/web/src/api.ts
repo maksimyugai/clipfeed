@@ -1,5 +1,6 @@
 import type {
   AddedVia,
+  AdminSearchResponse,
   Article,
   ArticleListItem,
   ArticleListResponse,
@@ -8,6 +9,7 @@ import type {
   PatchArticleRequest,
   PublicArticle,
   PublicArticleListResponse,
+  SearchResponse,
 } from "@clipfeed/shared/types";
 
 export class ApiError extends Error {
@@ -84,6 +86,30 @@ export function listArticles(params: ArticlesQueryParams = {}): Promise<PublicAr
 // still excluded, same as GET /api/admin/articles/:id minus full_text).
 export function listAdminArticles(params: ArticlesQueryParams = {}): Promise<ArticleListResponse> {
   return request<ArticleListResponse>(buildArticlesUrl(params, "/api/admin/articles"));
+}
+
+// Pure, same reasoning as buildArticlesUrl above — unit-testable without a
+// fetch mock. `base` lets the owner-mode search reuse it against
+// /api/admin/search (see searchAdminArticles below).
+export function buildSearchUrl(q: string, limit: number, base = "/api/search"): string {
+  const search = new URLSearchParams({ q, limit: String(limit) });
+  return `${base}?${search}`;
+}
+
+// Semantic search ("ask your feed" — see README "Semantic dedup & search").
+// Public, same redaction as listArticles above (no raw `error`). Unlike
+// listArticles/listAdminArticles, this isn't cursor-paginated — a single
+// bounded top-K list, ranked by similarity (never shown, see the empty
+// `score` handling in App.tsx). Falls back server-side to keyword search
+// when Vectorize isn't configured, so this never needs its own fallback.
+export function searchArticles(q: string, limit = 20): Promise<SearchResponse> {
+  return request<SearchResponse>(buildSearchUrl(q, limit));
+}
+
+// Owner-only equivalent — real `error` field, same as listAdminArticles vs.
+// listArticles.
+export function searchAdminArticles(q: string, limit = 20): Promise<AdminSearchResponse> {
+  return request<AdminSearchResponse>(buildSearchUrl(q, limit, "/api/admin/search"));
 }
 
 // Owner-only single-row refetch — used to sync one stale card against the
