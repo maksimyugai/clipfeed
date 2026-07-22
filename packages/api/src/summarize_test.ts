@@ -13,6 +13,7 @@ import {
   parseSummaryJson,
   parseWorkersAiResult,
   renderSummaryMarkdown,
+  repairDuplicateBullets,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
   type SummarySpec,
@@ -1081,6 +1082,143 @@ Deno.test("validateSummary: a bullet duplicating the tldr (>=80% word overlap) i
 Deno.test("validateSummary: a bullet sharing only a few words with the tldr is NOT flagged as a duplicate", () => {
   const result = validateSummary(makeValidSummary());
   assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+});
+
+// --- Task 34 Part A: deterministic bullet repair (repairDuplicateBullets) ---
+// See summarize.ts's doc comment on repairDuplicateBullets for the full
+// history/rationale: prompt-level enforcement of this nit isn't achievable,
+// so it's fixed deterministically instead of failing an otherwise-correct
+// summary.
+
+Deno.test("repairDuplicateBullets: no duplicates -> unchanged, not repaired", () => {
+  const bullets = [
+    "First distinct fact about the story with its own vocabulary.",
+    "Second distinct fact about the story with its own vocabulary.",
+  ];
+  const result = repairDuplicateBullets(bullets, "An unrelated tldr sentence entirely.", 2);
+  assertEquals(result, { bullets, droppedIndexes: [], repaired: false });
+});
+
+Deno.test("repairDuplicateBullets: drops a duplicate and keeps first-occurrence order when the remaining count meets the minimum", () => {
+  const tldr =
+    "The company is raising its subscription price from five dollars to eight dollars a month starting soon.";
+  const duplicate = "The company is raising its subscription price from five dollars to eight.";
+  const bullets = [
+    "First distinct fact about servers and infrastructure spending growth.",
+    duplicate,
+    "Third distinct fact about small business customer concerns raised.",
+    "Fourth distinct fact about competitor pricing moves this year.",
+    "Fifth distinct fact about annual plan renewal timing details.",
+  ];
+  const result = repairDuplicateBullets(bullets, tldr, 4);
+  assertEquals(result.repaired, true);
+  assertEquals(result.droppedIndexes, [1]);
+  assertEquals(result.bullets, [bullets[0], bullets[2], bullets[3], bullets[4]]);
+});
+
+Deno.test("repairDuplicateBullets: drops MULTIPLE duplicates, preserving the order of survivors", () => {
+  const tldr =
+    "The company is raising its subscription price from five dollars to eight dollars a month starting soon.";
+  const duplicate = "The company is raising its subscription price from five dollars to eight.";
+  const bullets = [
+    duplicate,
+    "First distinct fact about servers and infrastructure spending growth.",
+    duplicate,
+    "Second distinct fact about small business customer concerns raised.",
+  ];
+  const result = repairDuplicateBullets(bullets, tldr, 2);
+  assertEquals(result.repaired, true);
+  assertEquals(result.droppedIndexes, [0, 2]);
+  assertEquals(result.bullets, [bullets[1], bullets[3]]);
+});
+
+Deno.test("repairDuplicateBullets: gives up and returns the ORIGINAL bullets when dropping would go under the minimum", () => {
+  const tldr =
+    "The company is raising its subscription price from five dollars to eight dollars a month starting soon.";
+  const duplicate = "The company is raising its subscription price from five dollars to eight.";
+  const bullets = [
+    "First distinct fact about servers and infrastructure spending growth.",
+    duplicate,
+    "Third distinct fact about small business customer concerns raised.",
+  ];
+  // Dropping the one duplicate would leave 2, below the minimum of 3.
+  const result = repairDuplicateBullets(bullets, tldr, 3);
+  assertEquals(result, { bullets, droppedIndexes: [], repaired: false });
+});
+
+Deno.test("validateSummary: a repairable duplicate is dropped silently, summary PASSES with the trimmed bullet list", () => {
+  const original = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => logs.push(args);
+  try {
+    const tldr = makeValidSummary().tldr_en;
+    const duplicate = tldr.slice(0, 90); // well over the 80% overlap threshold
+    const fiveBullets = [
+      ...makeValidSummary().bullets_en, // 4 genuinely distinct bullets
+      duplicate,
+    ];
+    const result = validateSummary(makeValidSummary({ bullets_en: fiveBullets }));
+    assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+    if (result.ok) {
+      assertEquals(result.value.bullets_en, makeValidSummary().bullets_en);
+      assertEquals(result.value.bullets_en.length, 4);
+    }
+
+    const parsed = logs.map((args) => JSON.parse(String(args[0])));
+    const repairLog = parsed.find((l) => l.event === "summary_repaired");
+    assertEquals(repairLog?.field, "bullets_en");
+    assertEquals(repairLog?.droppedIndexes, [4]);
+    assertEquals(repairLog?.remaining, 4);
+  } finally {
+    console.log = original;
+  }
+});
+
+Deno.test("validateSummary: repair is applied INDEPENDENTLY per language — counts may legitimately differ afterward", () => {
+  const tldrEn = makeValidSummary().tldr_en;
+  const duplicateEn = tldrEn.slice(0, 90);
+  // bullets_ru: 7 distinct items, no duplicate at all -> untouched.
+  const bulletsRu = [
+    ...makeValidSummary().bullets_ru,
+    "Пятый отдельный факт со своей собственной лексикой о продукте.",
+    "Шестой отдельный факт со своей собственной лексикой о рынке.",
+    "Седьмой отдельный факт со своей собственной лексикой о планах.",
+  ];
+  // bullets_en: 5 items, 1 duplicate -> repaired down to 4.
+  const bulletsEn = [...makeValidSummary().bullets_en, duplicateEn];
+
+  const result = validateSummary(
+    makeValidSummary({ bullets_ru: bulletsRu, bullets_en: bulletsEn }),
+  );
+  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+  if (result.ok) {
+    assertEquals(result.value.bullets_ru.length, 7);
+    assertEquals(result.value.bullets_en.length, 4);
+  }
+});
+
+Deno.test("validateSummary: an UNREPAIRABLE duplicate (dropping would underflow the minimum) still reports the violation, unchanged from before this task", () => {
+  // Exactly at the minimum (4) with one duplicate — dropping it would leave
+  // 3, below STRICT's minBullets of 4 — repair must give up.
+  const tldr = makeValidSummary().tldr_en;
+  const duplicate = tldr.slice(0, 90);
+  const result = validateSummary(
+    makeValidSummary({
+      bullets_en: [
+        makeValidSummary().bullets_en[0],
+        makeValidSummary().bullets_en[1],
+        makeValidSummary().bullets_en[2],
+        duplicate,
+      ],
+    }),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.violations.some((v) => v.includes("bullets_en[3]") && v.includes("duplicates")),
+      true,
+    );
+  }
 });
 
 // --- validateSummary: body paragraph rules ---
