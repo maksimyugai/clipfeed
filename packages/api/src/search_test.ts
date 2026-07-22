@@ -1,6 +1,12 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
-import { parseSearchRatePerMin, searchArticles, tryConsumeSearchRateLimit } from "./search.ts";
+import {
+  filterAndOrderMatches,
+  parseSearchMinScore,
+  parseSearchRatePerMin,
+  searchArticles,
+  tryConsumeSearchRateLimit,
+} from "./search.ts";
 import { insertPendingArticle, markArticleReady } from "./db.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { FakeKv } from "./testing/fake_kv.ts";
@@ -59,6 +65,58 @@ Deno.test("parseSearchRatePerMin: a valid override is used, rounded", () => {
 Deno.test("parseSearchRatePerMin: out-of-range/non-numeric falls back to the default", () => {
   assertEquals(parseSearchRatePerMin("0"), 30);
   assertEquals(parseSearchRatePerMin("not a number"), 30);
+});
+
+// --- parseSearchMinScore: defensive [vars] parsing ---
+
+Deno.test("parseSearchMinScore: undefined/empty falls back to the default (0.5)", () => {
+  assertEquals(parseSearchMinScore(undefined), 0.5);
+  assertEquals(parseSearchMinScore(""), 0.5);
+  assertEquals(parseSearchMinScore("  "), 0.5);
+});
+
+Deno.test("parseSearchMinScore: a valid override in [0,1] is used as-is", () => {
+  assertEquals(parseSearchMinScore("0.7"), 0.7);
+  assertEquals(parseSearchMinScore("0"), 0);
+  assertEquals(parseSearchMinScore("1"), 1);
+});
+
+Deno.test("parseSearchMinScore: out-of-range/non-numeric falls back to the default", () => {
+  assertEquals(parseSearchMinScore("-0.1"), 0.5);
+  assertEquals(parseSearchMinScore("1.1"), 0.5);
+  assertEquals(parseSearchMinScore("not a number"), 0.5);
+});
+
+// --- filterAndOrderMatches: pure filter/order/truncate ---
+
+Deno.test("filterAndOrderMatches: everything below minScore is dropped, yielding an empty list", () => {
+  const matches = [{ id: "a", score: 0.3 }, { id: "b", score: 0.49 }];
+  assertEquals(filterAndOrderMatches(matches, 0.5, 20), []);
+});
+
+Deno.test("filterAndOrderMatches: keeps only matches >= minScore, ordered score DESC", () => {
+  const matches = [
+    { id: "low", score: 0.2 },
+    { id: "high", score: 0.9 },
+    { id: "mid", score: 0.6 },
+    { id: "boundary", score: 0.5 }, // exactly at the floor — inclusive
+  ];
+  assertEquals(
+    filterAndOrderMatches(matches, 0.5, 20),
+    [{ id: "high", score: 0.9 }, { id: "mid", score: 0.6 }, { id: "boundary", score: 0.5 }],
+  );
+});
+
+Deno.test("filterAndOrderMatches: truncates to limit after filtering", () => {
+  const matches = [
+    { id: "a", score: 0.9 },
+    { id: "b", score: 0.8 },
+    { id: "c", score: 0.7 },
+  ];
+  assertEquals(filterAndOrderMatches(matches, 0.5, 2), [
+    { id: "a", score: 0.9 },
+    { id: "b", score: 0.8 },
+  ]);
 });
 
 // --- tryConsumeSearchRateLimit ---
@@ -215,6 +273,66 @@ Deno.test("searchArticles: a Vectorize query failure (not just 'no matches') als
   const hits = await searchArticles(env, "Widgets", 20);
   assertEquals(hits.map((h) => h.article.id), ["kw1"]);
   assertEquals(hits[0].score, 0);
+});
+
+Deno.test("searchArticles: expands topK beyond the requested limit so the min-score filter has material to work with", async () => {
+  let capturedTopK: number | undefined;
+  const env = makeEnv({
+    AI: makeStubAi(new Array(EMBEDDING_DIMENSIONS).fill(0.1)),
+    VECTORS: {
+      upsert: () => Promise.reject(new Error("not used")),
+      deleteByIds: () => Promise.reject(new Error("not used")),
+      query: (_vector, options) => {
+        capturedTopK = options?.topK;
+        return Promise.resolve({ matches: [], count: 0 });
+      },
+    },
+  });
+
+  await searchArticles(env, "some query", 10);
+  assertEquals(capturedTopK, 30); // 10 * 3
+
+  await searchArticles(env, "some query", 50);
+  assertEquals(capturedTopK, 60); // capped, not 150
+});
+
+Deno.test("searchArticles: drops matches below SEARCH_MIN_SCORE end-to-end, never hydrating them from D1", async () => {
+  const env = makeEnv({
+    AI: makeStubAi(new Array(EMBEDDING_DIMENSIONS).fill(0.1)),
+    VECTORS: makeStubVectors([
+      { id: "relevant", score: 0.8 },
+      { id: "noise", score: 0.2 },
+    ]),
+    SEARCH_MIN_SCORE: "0.5",
+  });
+  await seedReadyArticle(env.DB, {
+    id: "relevant",
+    title: "Relevant Article",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  await seedReadyArticle(env.DB, {
+    id: "noise",
+    title: "Irrelevant Article",
+    added_at: "2026-01-02T00:00:00.000Z",
+  });
+
+  const hits = await searchArticles(env, "some query", 20);
+  assertEquals(hits.map((h) => h.article.id), ["relevant"]);
+});
+
+Deno.test("searchArticles: everything below SEARCH_MIN_SCORE returns an empty list, not keyword fallback", async () => {
+  const env = makeEnv({
+    AI: makeStubAi(new Array(EMBEDDING_DIMENSIONS).fill(0.1)),
+    VECTORS: makeStubVectors([{ id: "noise", score: 0.1 }]),
+  });
+  await seedReadyArticle(env.DB, {
+    id: "noise",
+    title: "Irrelevant Article",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+
+  const hits = await searchArticles(env, "some query", 20);
+  assertEquals(hits, []);
 });
 
 Deno.test("searchArticles: hydrated rows never carry full_text (ArticleListItem shape)", async () => {

@@ -29,6 +29,41 @@ export function parseSearchRatePerMin(raw: string | undefined): number {
   return Math.round(n);
 }
 
+// Empirically derived (see README "Semantic dedup & search" for the live
+// query->score table this was tuned against) — Vectorize's topK always
+// returns the K nearest vectors regardless of how far they actually are,
+// so an off-topic query against a small corpus otherwise returns "least
+// far" noise dressed up as search results instead of an honest empty list.
+const DEFAULT_SEARCH_MIN_SCORE = 0.5;
+
+export function parseSearchMinScore(raw: string | undefined): number {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return DEFAULT_SEARCH_MIN_SCORE;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n < 0 || n > 1) {
+    console.warn(JSON.stringify({
+      event: "search_min_score_invalid",
+      raw: trimmed,
+      fallback: DEFAULT_SEARCH_MIN_SCORE,
+    }));
+    return DEFAULT_SEARCH_MIN_SCORE;
+  }
+  return n;
+}
+
+// Vectorize is queried for more than `limit` candidates so the min-score
+// filter below has real material to work with — filtering topK=limit down
+// to (say) 3 matches would otherwise under-fill a request that could have
+// been satisfied by digging a little deeper. Capped at 60 regardless of
+// how large `limit` is asked to be, since this is still one Vectorize call
+// either way and there's no product need for a deeper search than that.
+const TOPK_MULTIPLIER = 3;
+const MAX_TOPK = 60;
+
+function expandedTopK(limit: number): number {
+  return Math.min(limit * TOPK_MULTIPLIER, MAX_TOPK);
+}
+
 const RATE_LIMIT_TTL_SECONDS = 90; // one bucket-minute plus slack
 
 function rateLimitKey(now: Date): string {
@@ -62,6 +97,26 @@ export interface SearchHit {
   score: number;
 }
 
+// Pure, so the filter/order/truncate logic is unit-testable without a
+// Vectorize stub. Drops anything below `minScore` (a query that's
+// genuinely off-topic for the whole corpus should come back empty, not
+// "least far" noise dressed up as a match — see SEARCH_MIN_SCORE above),
+// re-sorts by score descending (Vectorize already returns matches this
+// way, but topK was over-fetched — see expandedTopK — so re-asserting the
+// order here rather than trusting it stays that way after any future
+// change is cheap insurance), then truncates to the caller's requested
+// `limit`.
+export function filterAndOrderMatches(
+  matches: RelatedMatch[],
+  minScore: number,
+  limit: number,
+): RelatedMatch[] {
+  return matches
+    .filter((m) => m.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
 // The one search implementation behind both GET /api/search (public) and
 // GET /api/admin/search (owner) — callers only differ in how they shape
 // each row afterward (toPublicArticle vs. the raw ArticleListItem, see
@@ -88,9 +143,9 @@ export async function searchArticles(env: Env, q: string, limit: number): Promis
     return await keywordSearch(env, q, limit);
   }
 
-  let matches: RelatedMatch[];
+  let rawMatches: RelatedMatch[];
   try {
-    matches = await queryRelatedEmbeddings(env.VECTORS, vector, { topK: limit });
+    rawMatches = await queryRelatedEmbeddings(env.VECTORS, vector, { topK: expandedTopK(limit) });
   } catch (err) {
     // A real query failure (not just "no matches") — same fallback as an
     // embed failure above, not an empty result set. Covers `wrangler dev`,
@@ -103,6 +158,9 @@ export async function searchArticles(env: Env, q: string, limit: number): Promis
     }));
     return await keywordSearch(env, q, limit);
   }
+
+  const minScore = parseSearchMinScore(env.SEARCH_MIN_SCORE);
+  const matches = filterAndOrderMatches(rawMatches, minScore, limit);
 
   const rows = await getArticlesByIds(env.DB, matches.map((m) => m.id));
   const byId = new Map(rows.map((row) => [row.id, row]));

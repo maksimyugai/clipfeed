@@ -121,8 +121,13 @@
 # SEMANTIC_DEDUP_THRESHOLD is the cosine-similarity floor above which two
 # candidates are treated as the same story (both empirically derived — see
 # README). SEARCH_RATE_PER_MIN rate-limits the public search endpoint
-# (each query costs one Workers AI call).
+# (each query costs one Workers AI call). SEARCH_MIN_SCORE is the cosine
+# floor a semantic-search hit must clear to be returned at all — Vectorize's
+# topK always returns the K nearest vectors regardless of absolute
+# similarity, so without this an off-topic query returns "least far" noise
+# instead of an honest empty result (empirically derived — see README).
 # EMBEDDING_MODEL=@cf/baai/bge-m3
 # SEMANTIC_DEDUP_MAX_CANDIDATES=40
 # SEMANTIC_DEDUP_THRESHOLD=0.82
 # SEARCH_RATE_PER_MIN=30
+# SEARCH_MIN_SCORE=0.5
