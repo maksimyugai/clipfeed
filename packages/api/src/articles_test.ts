@@ -684,6 +684,110 @@ Deno.test("GET /api/articles: never includes the raw error field, even for a fai
   }
 });
 
+// --- Task 32: multi-word keyword search (?q=) ---
+// Live incident: GET /api/articles?q=<multi-word phrase> 500'd in
+// production (D1_ERROR: LIKE or GLOB pattern too complex — see
+// db_test.ts's buildListQuery regression test for the root cause). These
+// exercise the fix at the route level, for both the public and the
+// owner-only admin list endpoints (they share the same buildListQuery/
+// listArticles code path — see index.ts).
+
+function readyRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: overrides.id ?? "row-1",
+    url: `https://example.com/${overrides.id ?? "row-1"}`,
+    canonical_url: null,
+    title: "",
+    source: "example.com",
+    author: null,
+    published_at: null,
+    added_at: new Date().toISOString(),
+    added_via: "manual",
+    lang_original: "en",
+    full_text: null,
+    summary_ru: "",
+    summary_en: "",
+    summary_json: null,
+    tags: "[]",
+    status: "ready",
+    archived: 0,
+    error: null,
+    ...overrides,
+  };
+}
+
+Deno.test("GET /api/articles: multi-word q is AND across terms — a row matching only one term is excluded", async () => {
+  const { env, ctx } = { env: makeEnv(), ...makeExecutionContext() };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "both", title: "TypeScript on the Wikipedia page" }));
+  db.rows.push(readyRow({ id: "one-only", title: "TypeScript news roundup" }));
+
+  const res = await app.request("/api/articles?q=typescript%20wikipedia", {}, env, ctx);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const ids = body.items.map((i: { id: string }) => i.id);
+  assertEquals(ids, ["both"]);
+});
+
+Deno.test("GET /api/admin/articles: same AND-across-terms semantics on the owner-only list endpoint", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx } = makeExecutionContext();
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "both", title: "TypeScript on the Wikipedia page" }));
+  db.rows.push(readyRow({ id: "one-only", title: "TypeScript news roundup" }));
+
+  const res = await app.request(
+    "/api/admin/articles?q=typescript%20wikipedia",
+    { headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const ids = body.items.map((i: { id: string }) => i.id);
+  assertEquals(ids, ["both"]);
+});
+
+Deno.test("GET /api/articles: a term can match in a different field than another term (AND is across title+summary_ru+summary_en combined)", async () => {
+  const { env, ctx } = { env: makeEnv(), ...makeExecutionContext() };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(
+    readyRow({
+      id: "split-match",
+      title: "Deno release notes",
+      summary_en: "Covers widget support",
+    }),
+  );
+
+  const res = await app.request("/api/articles?q=deno%20widget", {}, env, ctx);
+  const body = await res.json();
+  assertEquals(body.items.map((i: { id: string }) => i.id), ["split-match"]);
+});
+
+Deno.test("GET /api/articles + GET /api/admin/articles: a long multi-word query (the exact live-incident phrase) no longer 500s", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const { ctx } = makeExecutionContext();
+  const failingQuery = "секьюрити проблемы у hugging face";
+
+  const publicRes = await app.request(
+    `/api/articles?q=${encodeURIComponent(failingQuery)}`,
+    {},
+    env,
+    ctx,
+  );
+  assertEquals(publicRes.status, 200);
+  await publicRes.json();
+
+  const adminRes = await app.request(
+    `/api/admin/articles?q=${encodeURIComponent(failingQuery)}`,
+    { headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(adminRes.status, 200);
+  await adminRes.json();
+});
+
 Deno.test("PATCH /api/admin/articles/:id: updates archived and tags", async () => {
   const restoreFetch = stubFetch();
   const { env, authHeaders } = await makeOwnerContext();

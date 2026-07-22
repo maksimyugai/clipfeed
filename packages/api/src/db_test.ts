@@ -3,6 +3,7 @@ import {
   backfillNormalizedTags,
   buildListQuery,
   countUnembeddedArticles,
+  escapeLikeTerm,
   findRecentTitles,
   findRecentTitlesForDedup,
   getArticlesByIds,
@@ -13,6 +14,7 @@ import {
   markArticleReady,
   markEmbedded,
   sweepStalePending,
+  tokenizeSearchQuery,
   toPublicArticle,
   toPublicListItem,
   updateFaithfulnessOnly,
@@ -40,9 +42,14 @@ Deno.test("buildListQuery: tag filter uses a JSON-array LIKE pattern", () => {
   assertEquals(binds[0], '%"news"%');
 });
 
-Deno.test("buildListQuery: q filter matches title + both summaries", () => {
+Deno.test("buildListQuery: q filter matches title + both summaries, with an ESCAPE clause", () => {
   const { sql, binds } = buildListQuery({ limit: 10, q: "widget" });
-  assertEquals(sql.includes("(title LIKE ? OR summary_ru LIKE ? OR summary_en LIKE ?)"), true);
+  assertEquals(
+    sql.includes(
+      "(title LIKE ? ESCAPE '\\' OR summary_ru LIKE ? ESCAPE '\\' OR summary_en LIKE ? ESCAPE '\\')",
+    ),
+    true,
+  );
   assertEquals(binds.slice(0, 3), ["%widget%", "%widget%", "%widget%"]);
 });
 
@@ -62,7 +69,9 @@ Deno.test("buildListQuery: combines all filters with AND in a fixed order", () =
   });
   assertEquals(
     sql.includes(
-      "WHERE added_at < ? AND tags LIKE ? AND source = ? AND (title LIKE ? OR summary_ru LIKE ? OR summary_en LIKE ?) AND archived = ?",
+      "WHERE added_at < ? AND tags LIKE ? AND source = ? AND " +
+        "(title LIKE ? ESCAPE '\\' OR summary_ru LIKE ? ESCAPE '\\' OR summary_en LIKE ? ESCAPE '\\') " +
+        "AND archived = ?",
     ),
     true,
   );
@@ -76,6 +85,125 @@ Deno.test("buildListQuery: combines all filters with AND in a fixed order", () =
     1,
     6,
   ]);
+});
+
+// --- Task 32: multi-word search — AND-of-terms semantics, byte-safe
+// truncation, and LIKE-wildcard escaping. See the incident regression
+// test below for the actual root cause (D1's 50-byte LIKE pattern
+// limit). ---
+
+Deno.test("tokenizeSearchQuery: single word — one term", () => {
+  assertEquals(tokenizeSearchQuery("widget"), ["widget"]);
+});
+
+Deno.test("tokenizeSearchQuery: multi-word (Latin) splits into separate terms", () => {
+  assertEquals(tokenizeSearchQuery("hugging face"), ["hugging", "face"]);
+});
+
+Deno.test("tokenizeSearchQuery: multi-word (Cyrillic) splits into separate terms", () => {
+  assertEquals(tokenizeSearchQuery("секьюрити проблемы"), ["секьюрити", "проблемы"]);
+});
+
+Deno.test("tokenizeSearchQuery: mixed-script multi-word query", () => {
+  assertEquals(
+    tokenizeSearchQuery("секьюрити проблемы у hugging face"),
+    ["секьюрити", "проблемы", "у", "hugging", "face"],
+  );
+});
+
+Deno.test("tokenizeSearchQuery: leading/trailing/repeated whitespace collapses — no empty tokens", () => {
+  assertEquals(tokenizeSearchQuery("  widget   gadget  "), ["widget", "gadget"]);
+});
+
+Deno.test("tokenizeSearchQuery: whitespace-only query yields zero terms (not an empty-string term)", () => {
+  assertEquals(tokenizeSearchQuery("   "), []);
+});
+
+Deno.test("tokenizeSearchQuery: caps at 6 terms, dropping the rest rather than erroring", () => {
+  assertEquals(
+    tokenizeSearchQuery("one two three four five six seven eight"),
+    ["one", "two", "three", "four", "five", "six"],
+  );
+});
+
+Deno.test("tokenizeSearchQuery: a single very long term is truncated to the byte budget, not left whole", () => {
+  const term = "a".repeat(200);
+  const [truncated] = tokenizeSearchQuery(term);
+  assertEquals(truncated.length < 200, true);
+  assertEquals(new TextEncoder().encode(truncated).length <= 45, true);
+});
+
+Deno.test("tokenizeSearchQuery: byte truncation never splits a multi-byte (Cyrillic) code point", () => {
+  const term = "а".repeat(100); // Cyrillic а, 2 bytes each
+  const [truncated] = tokenizeSearchQuery(term);
+  // A clean truncation re-encodes to the same string with no replacement
+  // characters — a split code point would corrupt this round-trip.
+  const bytes = new TextEncoder().encode(truncated);
+  assertEquals(new TextDecoder("utf-8", { fatal: true }).decode(bytes), truncated);
+});
+
+Deno.test("escapeLikeTerm: a literal % is escaped so it can't act as a wildcard", () => {
+  assertEquals(escapeLikeTerm("50%"), "50\\%");
+});
+
+Deno.test("escapeLikeTerm: a literal _ is escaped so it can't act as a single-char wildcard", () => {
+  assertEquals(escapeLikeTerm("foo_bar"), "foo\\_bar");
+});
+
+Deno.test("escapeLikeTerm: a literal backslash is escaped first, before % and _ are escaped", () => {
+  assertEquals(escapeLikeTerm("a\\b"), "a\\\\b");
+});
+
+Deno.test("buildListQuery: a term containing wildcard characters is escaped in the bound pattern", () => {
+  const { binds } = buildListQuery({ limit: 10, q: "50%_off" });
+  assertEquals(binds[0], "%50\\%\\_off%");
+});
+
+Deno.test("buildListQuery: multi-word q ANDs one OR-group per term, in term order", () => {
+  const { sql, binds } = buildListQuery({ limit: 10, q: "hugging face" });
+  const group =
+    "(title LIKE ? ESCAPE '\\' OR summary_ru LIKE ? ESCAPE '\\' OR summary_en LIKE ? ESCAPE '\\')";
+  assertEquals(sql.includes(`${group} AND ${group}`), true);
+  assertEquals(binds.slice(0, 6), [
+    "%hugging%",
+    "%hugging%",
+    "%hugging%",
+    "%face%",
+    "%face%",
+    "%face%",
+  ]);
+});
+
+Deno.test("buildListQuery: a whitespace-only q adds no condition at all (same as omitting q)", () => {
+  const withSpaces = buildListQuery({ limit: 10, q: "   " });
+  const withoutQ = buildListQuery({ limit: 10 });
+  assertEquals(withSpaces.sql, withoutQ.sql);
+  assertEquals(withSpaces.binds, withoutQ.binds);
+});
+
+// Regression test for the Task 32 incident: GET /api/articles?q=<multi-word
+// phrase> 500'd in production once the raw query string, bound directly as
+// a single LIKE pattern, exceeded D1/SQLite's default 50-BYTE LIKE-pattern
+// length limit (confirmed empirically against a real D1 binding — a
+// 48-byte q produced a 50-byte pattern and succeeded; 49 bytes produced 51
+// and threw `D1_ERROR: LIKE or GLOB pattern too complex`, identically for
+// ASCII and Cyrillic input). This asserts the actual invariant that
+// prevents it from ever recurring: no single generated LIKE pattern can
+// exceed that limit, no matter how long the raw query is.
+Deno.test("buildListQuery: no generated LIKE pattern can ever exceed D1's 50-byte limit (Task 32 regression)", () => {
+  const longMultiWordQuery =
+    "секьюрити проблемы у hugging face and quite a few more words piled on to make absolutely sure this is long enough to have crashed the old implementation";
+  const { binds } = buildListQuery({ limit: 10, q: longMultiWordQuery });
+
+  const likeBinds = binds.filter((b) => typeof b === "string") as string[];
+  assertEquals(likeBinds.length > 0, true);
+  for (const pattern of likeBinds) {
+    assertEquals(
+      new TextEncoder().encode(pattern).length <= 50,
+      true,
+      `pattern exceeded 50 bytes: ${pattern}`,
+    );
+  }
 });
 
 // --- sweepStalePending ---

@@ -990,6 +990,21 @@ persists in `localStorage`. Deliberately no visible relevance score anywhere; or
 the ranking. An empty result set shows the existing empty-feed layout with a hint to try the other
 mode.
 
+**Keyword search semantics (`GET /api/articles?q=...` / `GET /api/admin/articles?q=...`) —
+AND-of-terms.** The query is whitespace-tokenized into individual terms (repeated/leading/trailing
+whitespace collapses to nothing); every term must appear **somewhere** across `title`, `summary_ru`,
+and `summary_en` combined (not necessarily the same field, not necessarily as a contiguous phrase)
+for an article to match — a query matching only one of several terms excludes that row. Capped at 6
+terms; extra terms beyond that are dropped rather than erroring. Each term is truncated to a safe
+UTF-8 byte length before being turned into a `LIKE` pattern, and a literal `%`/`_` in a term is
+escaped (`ESCAPE '\'`) so it matches literally instead of acting as a SQL wildcard. This fixes a
+live incident: a multi-word query longer than ~48 bytes previously 500'd with
+`D1_ERROR: LIKE or GLOB
+pattern too complex` — D1/SQLite's default `LIKE` pattern-length limit is
+**50 bytes, not characters** (confirmed empirically; a 50-character Cyrillic term is ~100 bytes and
+would still overflow a naive character-based cap), so tokenizing into short per-term patterns keeps
+every generated pattern comfortably under that limit regardless of how long the overall query is.
+
 **Backfill — `POST /api/admin/embeddings/backfill`** (Access-protected): embeds every `'ready'`,
 non-archived article with `embedded_at IS NULL`, 20 per call, returns `{processed, remaining}`. Same
 synchronous-paginated pattern as this repo's other one-shot admin jobs (e.g. tag normalization) —
