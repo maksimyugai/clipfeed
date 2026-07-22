@@ -55,9 +55,16 @@ function renderMessage(
   if (bullets.length > 0) {
     lines.push("", bullets.map((b) => `• ${escapeHtml(b)}`).join("\n"));
   }
+  // Task 31: an unset PUBLIC_BASE_URL used to still render this line via
+  // cardUrl("", id) -> "/#article-<id>" — a bare relative fragment with no
+  // scheme/domain, posted as plain (non-linked) text. Omit the line
+  // entirely rather than ever publish that.
+  const trimmedBase = publicBaseUrl.trim();
+  if (trimmedBase) {
+    lines.push("", `Читать полностью → ${escapeHtml(cardUrl(trimmedBase, input.id))}`);
+  }
   lines.push(
     "",
-    `Читать полностью → ${escapeHtml(cardUrl(publicBaseUrl, input.id))}`,
     `Источник: <a href="${escapeHtmlAttr(input.url)}">${escapeHtml(domainFor(input))}</a>`,
   );
   return lines.join("\n");

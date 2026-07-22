@@ -7,6 +7,7 @@ export interface Dictionary {
   searchPlaceholder: string;
   themeToggleAria: string;
   githubLinkAria: string;
+  scrollToTopAria: string;
   langToggleAriaRu: string;
   langToggleAriaEn: string;
   addButtonAria: string;
@@ -114,6 +115,7 @@ const ru: Dictionary = {
   searchPlaceholder: "Поиск",
   themeToggleAria: "Переключить тему",
   githubLinkAria: "Исходный код на GitHub",
+  scrollToTopAria: "Наверх",
   langToggleAriaRu: "Переключить на русский",
   langToggleAriaEn: "Переключить на английский",
   addButtonAria: "Добавить статью",
@@ -221,6 +223,7 @@ const en: Dictionary = {
   searchPlaceholder: "Search",
   themeToggleAria: "Toggle theme",
   githubLinkAria: "Source code on GitHub",
+  scrollToTopAria: "Back to top",
   langToggleAriaRu: "Switch to Russian",
   langToggleAriaEn: "Switch to English",
   addButtonAria: "Add article",

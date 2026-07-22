@@ -99,6 +99,26 @@ Deno.test("buildPublishPost: truncates bullets first, keeping the title and link
   assertEquals(text.includes("Пункт номер 29"), false);
 });
 
+// --- Task 31: PUBLIC_BASE_URL unset must never produce a broken link ---
+
+Deno.test("buildPublishPost: an empty publicBaseUrl omits the card link entirely, no broken '/#article-x' text", () => {
+  const text = buildPublishPost(baseInput(), "");
+  assertEquals(text.includes("Читать полностью"), false);
+  assertEquals(text.includes("/#article-abc-123"), false);
+  // The rest of the post still renders normally.
+  assertEquals(text.startsWith("<b>Заголовок статьи</b>\n\n"), true);
+  assertEquals(
+    text.includes('Источник: <a href="https://example.com/article">example.com</a>'),
+    true,
+  );
+});
+
+Deno.test("buildPublishPost: a whitespace-only publicBaseUrl is treated the same as empty", () => {
+  const text = buildPublishPost(baseInput(), "   ");
+  assertEquals(text.includes("Читать полностью"), false);
+  assertEquals(text.includes("/#article-abc-123"), false);
+});
+
 Deno.test("buildPublishPost: truncates the TL;DR only once bullets are fully exhausted", () => {
   const input = baseInput({
     bullets_ru: [],

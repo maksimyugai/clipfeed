@@ -18,12 +18,12 @@ SUMMARY_MODEL = "claude-haiku-4-5-20251001"
 DAILY_SUMMARY_LIMIT = 80
 WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 TURNSTILE_SITE_KEY = "0x4AAAAAAD5FSIrh2Xu_PuNh"
-PUBLIC_BASE_URL = ""
+PUBLIC_BASE_URL = "https://clipfeed.maksimyugai.com"
 # Shown as a GitHub icon link in the header and the footer's license link
 # (see GET /api/config, Header.tsx, Footer.tsx) — [vars] default "" (per the
 # forkability policy, never an owner-specific default), so both links are
 # simply hidden until you set this to your own fork's repo URL.
-REPO_URL = ""
+REPO_URL = "https://github.com/maksimyugai/clipfeed"
 PENDING_TIMEOUT_MIN = 10
 INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security; notable science/tech news"
 AGENT_HOUR_UTC = "5"

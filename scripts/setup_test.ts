@@ -9,6 +9,7 @@ import {
   queueExistsInList,
   readD1DatabaseId,
   readKvNamespaceId,
+  readVarValue,
   vectorizeIndexExistsInList,
 } from "./setup.ts";
 
@@ -93,6 +94,29 @@ Deno.test("patching both D1 and KV placeholders together leaves the rest of the 
   assertEquals(patched.includes('name = "clipfeed"'), true);
   assertEquals(patched.includes('SUMMARY_MODEL = "claude-haiku-4-5-20251001"'), true);
   assertNotEquals(patched, FIXTURE_TOML);
+});
+
+// --- readVarValue (Task 31): generic [vars] string reader, backs the
+// REPO_URL/PUBLIC_BASE_URL deployment-vars reminder ---
+
+Deno.test("readVarValue: reads a set value", () => {
+  const toml = `[vars]\nREPO_URL = "https://github.com/example/clipfeed-fork"\n`;
+  assertEquals(readVarValue(toml, "REPO_URL"), "https://github.com/example/clipfeed-fork");
+});
+
+Deno.test("readVarValue: reads the empty-string default", () => {
+  const toml = `[vars]\nPUBLIC_BASE_URL = ""\n`;
+  assertEquals(readVarValue(toml, "PUBLIC_BASE_URL"), "");
+});
+
+Deno.test("readVarValue: returns empty string when the key is absent entirely", () => {
+  assertEquals(readVarValue(FIXTURE_TOML, "REPO_URL"), "");
+});
+
+Deno.test("readVarValue: does not match a similarly-named key with a shared prefix", () => {
+  const toml =
+    `[vars]\nPUBLIC_BASE_URL_OLD = "should not match"\nPUBLIC_BASE_URL = "https://example.com"\n`;
+  assertEquals(readVarValue(toml, "PUBLIC_BASE_URL"), "https://example.com");
 });
 
 Deno.test("extractDatabaseId: parses the UUID from `wrangler d1 create` output", () => {
