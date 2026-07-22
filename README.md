@@ -379,10 +379,19 @@ is tied to a specific account, domain, or Access team.
    Cloudflare Access identity and **fails closed** until that's set up — meaning **you, the owner,
    can't add an article yet either.** Setting up Access (next section) is the last, required step,
    not an optional hardening pass.
+6. Set these after attaching your domain — both are `[vars]`, left as `""` by default (per the
+   forkability policy), so nothing here is owner-specific until you fill them in yourself:
+   - **`PUBLIC_BASE_URL`** — set it to the exact custom domain from step 5 (e.g.
+     `https://your-domain.com`, no trailing slash). Used to build links back to the app in Telegram
+     messages (see "Telegram bot" below): the drip post's card link and the digest command's footer.
+     **Leaving this empty doesn't break anything** — those links are simply omitted from the message
+     text — but until it's set, a published Telegram post has no way back to the actual article card.
+   - **`REPO_URL`** (e.g. `https://github.com/you/clipfeed`) — your fork's repo. Shows a GitHub icon
+     link in the header and turns the footer's "MIT" text into a link to your `LICENSE` file. Both
+     stay hidden until you set it.
 
-Optionally, set `REPO_URL` (e.g. `https://github.com/you/clipfeed`) to your fork's repo — this shows
-a GitHub icon link in the header and turns the footer's "MIT" text into a link to your `LICENSE`
-file. Left as `""` by default (per the forkability policy); both are simply hidden until you set it.
+   `deno task setup` (step 2) prints a reminder naming both if either is still empty after
+   provisioning.
 
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
