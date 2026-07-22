@@ -67,6 +67,7 @@ import {
   upsertArticleEmbedding,
 } from "./embeddings.ts";
 import { parseSearchRatePerMin, searchArticles, tryConsumeSearchRateLimit } from "./search.ts";
+import { buildOgTags, injectOgTags } from "./og.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -173,6 +174,44 @@ app.get("/api/articles/:id", async (c) => {
   const article = await getArticleById(c.env.DB, c.req.param("id"));
   if (!article) return c.json({ error: "not found" }, 404);
   return c.json(toPublicArticle(article));
+});
+
+// Task 32 Part B: real-path per-article route, required for link
+// previews — a crawler (Telegram, etc.) only ever fetches a URL's raw
+// HTML, and a hash fragment ("#article-<id>", the SPA's existing deep-link
+// shape — see lib/deepLink.ts) is never sent to the server at all, so
+// there's no way to inject per-article Open Graph tags without a real
+// path. Serves the identical SPA shell either way — the SPA's own
+// client-side routing handles both this path and the legacy hash — only
+// the injected <head> meta differs. Public: same publicly-readable
+// summary-level data GET /api/articles already exposes, nothing new.
+app.get("/a/:id", async (c) => {
+  const id = c.req.param("id");
+  const shellResponse = await c.env.ASSETS.fetch(new Request(new URL("/", c.req.url)));
+  const shell = await shellResponse.text();
+  const plainShell = () =>
+    new Response(shell, { headers: { "content-type": "text/html; charset=utf-8" } });
+
+  const article = await getArticleById(c.env.DB, id);
+  const publicBaseUrl = (c.env.PUBLIC_BASE_URL ?? "").trim();
+  // Unknown id, not yet summarized, or PUBLIC_BASE_URL unset (og:url has
+  // nowhere valid to point) — the plain shell is never wrong, just less
+  // informative; the SPA itself still handles the id once it boots.
+  if (!article || article.status !== "ready" || !article.summary_json || !publicBaseUrl) {
+    return plainShell();
+  }
+
+  const cardUrl = `${publicBaseUrl}/a/${id}`;
+  const tags = buildOgTags(
+    { title: article.summary_json.title_ru || article.title, tldr: article.summary_json.tldr_ru },
+    cardUrl,
+  );
+  return new Response(injectOgTags(shell, tags), {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "public, max-age=300",
+    },
+  });
 });
 
 // Clamp shared by both search routes below — same bounds as

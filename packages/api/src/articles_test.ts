@@ -788,6 +788,129 @@ Deno.test("GET /api/articles + GET /api/admin/articles: a long multi-word query 
   await adminRes.json();
 });
 
+// --- Task 32 Part B: GET /a/:id — per-article Open Graph route ---
+
+const FAKE_SHELL_HTML =
+  `<!DOCTYPE html><html><head><title>clipfeed</title>\n    <!--OG-->\n  </head><body><div id="app"></div></body></html>`;
+
+function assetsStub(html: string) {
+  return {
+    fetch: () => Promise.resolve(new Response(html, { headers: { "content-type": "text/html" } })),
+  };
+}
+
+Deno.test("GET /a/:id: a ready article injects escaped OG tags into the SPA shell", async () => {
+  const { env, ctx } = {
+    env: makeEnv({
+      ASSETS: assetsStub(FAKE_SHELL_HTML),
+      PUBLIC_BASE_URL: "https://clipfeed.example.com",
+    }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({
+    id: "og-1",
+    summary_json: JSON.stringify({ title_ru: "Заголовок статьи", tldr_ru: "Краткое описание." }),
+  }));
+
+  const res = await app.request("/a/og-1", {}, env, ctx);
+  assertEquals(res.status, 200);
+  assertEquals(res.headers.get("cache-control"), "public, max-age=300");
+  const html = await res.text();
+  assertEquals(html.includes("<!--OG-->"), false);
+  assertEquals(html.includes('og:title" content="Заголовок статьи"'), true);
+  assertEquals(html.includes('og:description" content="Краткое описание."'), true);
+  assertEquals(html.includes('og:url" content="https://clipfeed.example.com/a/og-1"'), true);
+});
+
+Deno.test("GET /a/:id: an unknown id serves the plain shell — 200, not 404, no OG tags", async () => {
+  const { env, ctx } = {
+    env: makeEnv({ ASSETS: assetsStub(FAKE_SHELL_HTML) }),
+    ...makeExecutionContext(),
+  };
+  const res = await app.request("/a/does-not-exist", {}, env, ctx);
+  assertEquals(res.status, 200);
+  const html = await res.text();
+  assertEquals(html.includes("og:title"), false);
+  assertEquals(html.includes("<!--OG-->"), true);
+});
+
+Deno.test("GET /a/:id: a non-ready article (pending/failed) serves the plain shell", async () => {
+  const { env, ctx } = {
+    env: makeEnv({ ASSETS: assetsStub(FAKE_SHELL_HTML) }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "pending-1", status: "pending", summary_json: null }));
+
+  const res = await app.request("/a/pending-1", {}, env, ctx);
+  const html = await res.text();
+  assertEquals(html.includes("og:title"), false);
+});
+
+Deno.test("GET /a/:id: an unset PUBLIC_BASE_URL serves the plain shell rather than a relative/malformed og:url", async () => {
+  const { env, ctx } = {
+    env: makeEnv({ ASSETS: assetsStub(FAKE_SHELL_HTML), PUBLIC_BASE_URL: "" }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({
+    id: "og-2",
+    summary_json: JSON.stringify({ title_ru: "T", tldr_ru: "D" }),
+  }));
+
+  const res = await app.request("/a/og-2", {}, env, ctx);
+  const html = await res.text();
+  assertEquals(html.includes("og:title"), false);
+  assertEquals(html.includes("<!--OG-->"), true);
+});
+
+Deno.test("GET /a/:id: a title containing HTML can't break out of the meta tag's attribute", async () => {
+  const { env, ctx } = {
+    env: makeEnv({
+      ASSETS: assetsStub(FAKE_SHELL_HTML),
+      PUBLIC_BASE_URL: "https://clipfeed.example.com",
+    }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({
+    id: "og-3",
+    summary_json: JSON.stringify({
+      title_ru: `<script>alert(1)</script> & "quotes"`,
+      tldr_ru: "fine",
+    }),
+  }));
+
+  const res = await app.request("/a/og-3", {}, env, ctx);
+  const html = await res.text();
+  assertEquals(html.includes("<script>alert(1)</script>"), false);
+  assertEquals(html.includes("&lt;script&gt;"), true);
+});
+
+Deno.test("GET /a/:id vs GET /api/articles vs unmatched paths: route ordering doesn't break each other", async () => {
+  const { env, ctx } = {
+    env: makeEnv({ ASSETS: assetsStub(FAKE_SHELL_HTML) }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "route-check" }));
+
+  const ogRes = await app.request("/a/route-check", {}, env, ctx);
+  assertEquals(ogRes.status, 200);
+  assertEquals((await ogRes.text()).includes("<!--OG-->"), true); // no PUBLIC_BASE_URL set
+
+  const apiRes = await app.request("/api/articles/route-check", {}, env, ctx);
+  assertEquals(apiRes.status, 200);
+  assertEquals((await apiRes.json()).id, "route-check");
+
+  // An arbitrary unmatched path still falls through to the ASSETS
+  // catch-all at the bottom of index.ts, unaffected by adding /a/:id.
+  const unmatchedRes = await app.request("/some/random/path", {}, env, ctx);
+  assertEquals(unmatchedRes.status, 200);
+  assertEquals((await unmatchedRes.text()).includes("<!--OG-->"), true);
+});
+
 Deno.test("PATCH /api/admin/articles/:id: updates archived and tags", async () => {
   const restoreFetch = stubFetch();
   const { env, authHeaders } = await makeOwnerContext();
