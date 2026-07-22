@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useReducer, useState } from "preact/hooks";
+import { useEffect, useMemo, useReducer, useRef, useState } from "preact/hooks";
 import type { AddedVia, ArticleListItem } from "@clipfeed/shared/types";
 import { dictionaries, type Lang, readStoredLang, writeStoredLang } from "./i18n.ts";
 import { useTheme } from "./theme.ts";
 import {
-  ApiError,
   type ArticlesQueryParams,
   createArticle,
   deleteArticle,
+  getAdminArticle,
   getAdminMe,
   listAdminArticles,
   listArticles,
@@ -25,6 +25,8 @@ import {
 } from "./lib/sectionState.ts";
 import { shouldFetchNextInitialPage, shouldFetchOnEarlierExpand } from "./lib/pagination.ts";
 import { loadAgentSchedule } from "./lib/agentSchedule.ts";
+import { classifyApiError, localizedErrorMessage } from "./lib/errorMessages.ts";
+import { mergeRefreshedArticles, pickFailedIds } from "./lib/failedRefresh.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
 import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
@@ -114,9 +116,13 @@ export function App() {
     writeStoredLang(localStorage, next);
   };
 
+  // Never interpolates the raw error message — localizedErrorMessage maps
+  // every known ApiError shape (409 already-ready/duplicate/similar-title,
+  // 401, 429, 5xx) to localized copy, and anything else (including a
+  // non-ApiError like a network failure) to a generic "something went
+  // wrong" string. See lib/errorMessages.ts.
   const showError = (err: unknown) => {
-    const message = err instanceof ApiError || err instanceof Error ? err.message : String(err);
-    setToastMessage(`${dict.toastErrorPrefix}: ${message}`);
+    setToastMessage(`${dict.toastErrorPrefix}: ${localizedErrorMessage(err, dict)}`);
   };
 
   // The instance is public-read: this only decides which owner-only
@@ -265,6 +271,7 @@ export function App() {
         ...current,
       ]);
       setModalOpen(false);
+      refreshFailedArticles();
     } catch (err) {
       showError(err);
     }
@@ -278,6 +285,7 @@ export function App() {
       } else {
         setArticles((current) => current.map((a) => (a.id === id ? { ...a, ...updated } : a)));
       }
+      refreshFailedArticles();
     } catch (err) {
       showError(err);
     }
@@ -287,18 +295,89 @@ export function App() {
     try {
       await deleteArticle(id);
       setArticles((current) => current.filter((a) => a.id !== id));
+      refreshFailedArticles();
     } catch (err) {
       showError(err);
     }
   };
 
+  // Refetches ONE article from the server and merges it into local state —
+  // used both when a 409-on-ready retry means the client's view was simply
+  // stale (see handleRetry) and by the periodic failed-card refresh below.
+  // Returns whether the refetch itself succeeded, so a caller can decide
+  // whether a fallback toast is warranted.
+  const refetchOneArticle = async (id: string): Promise<boolean> => {
+    try {
+      const fresh = await getAdminArticle(id);
+      setArticles((current) => current.map((a) => (a.id === id ? fresh : a)));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // failed cards never poll on their own (unlike pending — see
+  // usePendingPoll in ArticleCard.tsx), so a card that self-healed in the
+  // background (the hourly healing sweep, see healing.ts) stays showing
+  // 'failed' with a stale Retry button until something explicitly re-syncs
+  // it. Runs on window focus/tab visibility (see the effect below) and
+  // after a successful admin action (see the call sites above/below) —
+  // never a polling timer.
+  const refreshFailedArticles = async () => {
+    const failedIds = pickFailedIds(articles);
+    if (failedIds.length === 0) return;
+    const results = await Promise.allSettled(failedIds.map((id) => getAdminArticle(id)));
+    setArticles((current) => mergeRefreshedArticles(current, failedIds, results));
+  };
+
+  // The listener below is registered once (empty deps) and must still see
+  // the LATEST refreshFailedArticles (which itself closes over the latest
+  // `articles`) — a ref sidesteps re-adding the listener on every render
+  // just to keep its closure fresh.
+  const refreshFailedArticlesRef = useRef(refreshFailedArticles);
+  refreshFailedArticlesRef.current = refreshFailedArticles;
+
+  useEffect(() => {
+    if (!isOwner) return;
+    const handler = () => {
+      if (document.visibilityState === "visible") refreshFailedArticlesRef.current();
+    };
+    globalThis.addEventListener("focus", handler);
+    document.addEventListener("visibilitychange", handler);
+    return () => {
+      globalThis.removeEventListener("focus", handler);
+      document.removeEventListener("visibilitychange", handler);
+    };
+  }, [isOwner]);
+
   const handleRetry = async (id: string) => {
+    // Guard against a stale client view: if the card's local status isn't
+    // actually 'failed' anymore (a background heal completed since the
+    // last render), there's nothing to retry — just resync this one row
+    // instead of calling an endpoint that by design 409s on a ready
+    // article.
+    const current = articles.find((a) => a.id === id);
+    if (current && current.status !== "failed") {
+      await refetchOneArticle(id);
+      return;
+    }
+
     try {
       await retryArticle(id);
       setArticles((current) =>
         current.map((a) => (a.id === id ? { ...a, status: "pending", error: null } : a))
       );
+      refreshFailedArticles();
     } catch (err) {
+      if (classifyApiError(err) === "already-ready") {
+        // The server says it's already done — the client's view was
+        // stale, not an actual error. Silently sync instead of surfacing
+        // a scary toast for a non-problem; only fall back to a neutral
+        // error if the resync itself fails too.
+        const synced = await refetchOneArticle(id);
+        if (!synced) showError(err);
+        return;
+      }
       showError(err);
     }
   };
@@ -309,6 +388,7 @@ export function App() {
       setArticles((current) =>
         current.map((a) => (a.id === id ? { ...a, status: "pending", error: null } : a))
       );
+      refreshFailedArticles();
     } catch (err) {
       showError(err);
     }

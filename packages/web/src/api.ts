@@ -1,6 +1,7 @@
 import type {
   AddedVia,
   Article,
+  ArticleListItem,
   ArticleListResponse,
   CreateArticleRequest,
   CreateArticleResponse,
@@ -10,7 +11,12 @@ import type {
 } from "@clipfeed/shared/types";
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  // `body` carries the full parsed JSON error response (when the response
+  // was JSON) beyond just its `error` string — e.g. the 409 duplicate-add
+  // response's `reason: "similar_title"` field, which errorMessages.ts
+  // needs to tell a plain duplicate URL apart from a similar-title match.
+  // Undefined when the response wasn't JSON at all.
+  constructor(message: string, readonly status: number, readonly body?: unknown) {
     super(message);
   }
 }
@@ -41,14 +47,14 @@ export function buildArticlesUrl(params: ArticlesQueryParams, base = "/api/artic
   return qs ? `${base}?${qs}` : base;
 }
 
-async function readErrorMessage(res: Response): Promise<string> {
+async function readErrorBody(res: Response): Promise<{ message: string; body?: unknown }> {
   try {
     const body = await res.json() as { error?: string };
-    if (body.error) return body.error;
+    if (body.error) return { message: body.error, body };
   } catch {
     // response wasn't JSON — fall through to a generic message
   }
-  return `request failed with status ${res.status}`;
+  return { message: `request failed with status ${res.status}` };
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -57,7 +63,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { "content-type": "application/json", ...init?.headers },
   });
   if (!res.ok) {
-    throw new ApiError(await readErrorMessage(res), res.status);
+    const { message, body } = await readErrorBody(res);
+    throw new ApiError(message, res.status, body);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -77,6 +84,18 @@ export function listArticles(params: ArticlesQueryParams = {}): Promise<PublicAr
 // still excluded, same as GET /api/admin/articles/:id minus full_text).
 export function listAdminArticles(params: ArticlesQueryParams = {}): Promise<ArticleListResponse> {
   return request<ArticleListResponse>(buildArticlesUrl(params, "/api/admin/articles"));
+}
+
+// Owner-only single-row refetch — used to sync one stale card against the
+// server without a full list reload: after a 409-on-ready retry (the
+// client's view was stale) and by the periodic failed-card refresh (see
+// lib/failedRefresh.ts). Strips full_text the same way listAdminArticles'
+// rows already lack it, so a refreshed row is drop-in compatible with
+// ArticleListItem.
+export async function getAdminArticle(id: string): Promise<ArticleListItem> {
+  const article = await request<Article>(`/api/admin/articles/${encodeURIComponent(id)}`);
+  const { full_text: _fullText, ...rest } = article;
+  return rest;
 }
 
 // Public — excludes full_text/error (see PublicArticle). Used by the
