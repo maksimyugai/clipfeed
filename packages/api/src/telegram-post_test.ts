@@ -25,7 +25,15 @@ function baseInput(overrides: Partial<PublishPostInput> = {}): PublishPostInput 
   };
 }
 
-Deno.test("buildPublishPost: renders title (bold), tldr, bullets, card link, and source line", () => {
+// Counts every `<a href=` occurrence in the message — the Task 32 Part B
+// invariant is that the message contains AT MOST one link (the ClipFeed
+// card), so Telegram's crawler can only ever build its preview from that
+// one URL, never the original source.
+function linkCount(text: string): number {
+  return (text.match(/<a href=/g) ?? []).length;
+}
+
+Deno.test("buildPublishPost: renders title (bold), tldr, bullets, a single card link, and a plain-text source line", () => {
   const text = buildPublishPost(baseInput(), "https://clipfeed.example.com");
   assertEquals(text.startsWith("<b>Заголовок статьи</b>\n\n"), true);
   assertEquals(text.includes("Краткое содержание статьи в двух предложениях."), true);
@@ -33,21 +41,25 @@ Deno.test("buildPublishPost: renders title (bold), tldr, bullets, card link, and
   assertEquals(text.includes("• Второй пункт."), true);
   assertEquals(text.includes("• Третий пункт."), true);
   assertEquals(
-    text.includes("Читать полностью → https://clipfeed.example.com/#article-abc-123"),
+    text.includes(
+      'Читать полностью → <a href="https://clipfeed.example.com/a/abc-123">https://clipfeed.example.com/a/abc-123</a>',
+    ),
     true,
   );
-  assertEquals(
-    text.includes('Источник: <a href="https://example.com/article">example.com</a>'),
-    true,
-  );
+  assertEquals(text.includes("Источник: example.com"), true);
+  assertEquals(linkCount(text), 1);
+});
+
+Deno.test("buildPublishPost: the source line is plain text — no <a>, even though the original article URL is known", () => {
+  const text = buildPublishPost(baseInput(), "https://clipfeed.example.com");
+  assertEquals(text.includes("https://example.com/article"), false);
+  assertEquals(text.includes(`Источник: <a`), false);
 });
 
 Deno.test("buildPublishPost: falls back to the URL's hostname when source is null", () => {
   const text = buildPublishPost(baseInput({ source: null }), "https://clipfeed.example.com");
-  assertEquals(
-    text.includes('Источник: <a href="https://example.com/article">example.com</a>'),
-    true,
-  );
+  assertEquals(text.includes("Источник: example.com"), true);
+  assertEquals(linkCount(text), 1);
 });
 
 Deno.test("buildPublishPost: every dynamic value is HTML-escaped, a '<' in the title can't break the message", () => {
@@ -56,6 +68,7 @@ Deno.test("buildPublishPost: every dynamic value is HTML-escaped, a '<' in the t
       title_ru: "Cравнение <лучше> & хуже",
       tldr_ru: "Текст с & и < и >.",
       bullets_ru: ["Пункт с <тегом> внутри."],
+      source: "example<.com",
     }),
     "https://clipfeed.example.com",
   );
@@ -63,6 +76,7 @@ Deno.test("buildPublishPost: every dynamic value is HTML-escaped, a '<' in the t
   assertEquals(text.includes("Cравнение &lt;лучше&gt; &amp; хуже"), true);
   assertEquals(text.includes("Текст с &amp; и &lt; и &gt;."), true);
   assertEquals(text.includes("• Пункт с &lt;тегом&gt; внутри."), true);
+  assertEquals(text.includes("Источник: example&lt;.com"), true);
 });
 
 Deno.test("buildPublishPost: stays within Telegram's 4096-char cap", () => {
@@ -88,35 +102,42 @@ Deno.test("buildPublishPost: truncates bullets first, keeping the title and link
   assertEquals(text.startsWith("<b>Заголовок статьи</b>\n\n"), true);
   assertEquals(text.includes("Короткое содержание."), true);
   assertEquals(
-    text.includes("Читать полностью → https://clipfeed.example.com/#article-abc-123"),
+    text.includes('<a href="https://clipfeed.example.com/a/abc-123">'),
     true,
   );
-  assertEquals(
-    text.includes('Источник: <a href="https://example.com/article">example.com</a>'),
-    true,
-  );
+  assertEquals(text.includes("Источник: example.com"), true);
   // Not every bullet survived — that's the point of the truncation.
   assertEquals(text.includes("Пункт номер 29"), false);
 });
 
-// --- Task 31: PUBLIC_BASE_URL unset must never produce a broken link ---
+// --- Task 31 (updated for the Task 32 Part B reformat): PUBLIC_BASE_URL
+// unset must never produce a broken link ---
 
-Deno.test("buildPublishPost: an empty publicBaseUrl omits the card link entirely, no broken '/#article-x' text", () => {
+Deno.test("buildPublishPost: an empty publicBaseUrl omits the card link entirely, no broken relative href", () => {
   const text = buildPublishPost(baseInput(), "");
   assertEquals(text.includes("Читать полностью"), false);
-  assertEquals(text.includes("/#article-abc-123"), false);
+  assertEquals(text.includes("/a/abc-123"), false);
+  assertEquals(text.includes("/#"), false);
+  assertEquals(linkCount(text), 0);
   // The rest of the post still renders normally.
   assertEquals(text.startsWith("<b>Заголовок статьи</b>\n\n"), true);
-  assertEquals(
-    text.includes('Источник: <a href="https://example.com/article">example.com</a>'),
-    true,
-  );
+  assertEquals(text.includes("Источник: example.com"), true);
 });
 
 Deno.test("buildPublishPost: a whitespace-only publicBaseUrl is treated the same as empty", () => {
   const text = buildPublishPost(baseInput(), "   ");
   assertEquals(text.includes("Читать полностью"), false);
-  assertEquals(text.includes("/#article-abc-123"), false);
+  assertEquals(text.includes("/a/abc-123"), false);
+  assertEquals(linkCount(text), 0);
+});
+
+Deno.test("buildPublishPost: no published message can ever contain a bare '/#' hash-fragment reference", () => {
+  // Regression guard for the pre-Task-32 format, which linked to
+  // "/#article-<id>" — a hash fragment Telegram's crawler can never see.
+  for (const publicBaseUrl of ["https://clipfeed.example.com", "", "   "]) {
+    const text = buildPublishPost(baseInput(), publicBaseUrl);
+    assertEquals(text.includes("/#"), false);
+  }
 });
 
 Deno.test("buildPublishPost: truncates the TL;DR only once bullets are fully exhausted", () => {
@@ -128,8 +149,9 @@ Deno.test("buildPublishPost: truncates the TL;DR only once bullets are fully exh
   assertEquals(text.length <= 4096, true);
   assertEquals(text.startsWith("<b>Заголовок статьи</b>\n\n"), true);
   assertEquals(
-    text.includes("Читать полностью → https://clipfeed.example.com/#article-abc-123"),
+    text.includes('<a href="https://clipfeed.example.com/a/abc-123">'),
     true,
   );
-  assertEquals(text.endsWith("</a>"), true);
+  assertEquals(text.endsWith("Источник: example.com"), true);
+  assertEquals(linkCount(text), 1);
 });
