@@ -75,3 +75,17 @@ export function isSectionVisiblyEmpty(items: readonly AgentBatchItem[]): boolean
 export function shouldShowEmptyCountdown(items: readonly AgentBatchItem[]): boolean {
   return isSectionVisiblyEmpty(items) && !computeAgentBatchIndicator(items).visible;
 }
+
+// Task 29 Part C: the Today countdown is only meaningful in the default,
+// unfiltered view — under an active tag/source filter or search query,
+// "nothing here" simply means the filter excludes everything, not that
+// something is being prepared (see Feed.tsx, which hides Today like any
+// other empty section once this is false). Archived view never shows it
+// either way, same as before this task.
+export function computeTodayIsEmpty(
+  archivedView: boolean,
+  isFilteredView: boolean,
+  todayItems: readonly AgentBatchItem[],
+): boolean {
+  return !archivedView && !isFilteredView && shouldShowEmptyCountdown(todayItems);
+}
