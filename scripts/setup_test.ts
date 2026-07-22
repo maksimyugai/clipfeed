@@ -9,6 +9,7 @@ import {
   queueExistsInList,
   readD1DatabaseId,
   readKvNamespaceId,
+  vectorizeIndexExistsInList,
 } from "./setup.ts";
 
 const FIXTURE_TOML = `name = "clipfeed"
@@ -172,4 +173,31 @@ Deno.test("queueExistsInList: does not match a substring of the id or another co
 Deno.test("queueExistsInList: returns false for empty/unparseable output", () => {
   assertEquals(queueExistsInList("", "clipfeed-jobs"), false);
   assertEquals(queueExistsInList("some unrelated wrangler output", "clipfeed-jobs"), false);
+});
+
+// Real `wrangler vectorize list --json` output shape — an actual JSON
+// array, unlike `wrangler queues list`'s ASCII table above.
+const VECTORIZE_LIST_OUTPUT = JSON.stringify([
+  { name: "some-other-index", dimensions: 768, metric: "cosine" },
+  { name: "clipfeed-embeddings", dimensions: 1024, metric: "cosine" },
+]);
+
+Deno.test("vectorizeIndexExistsInList: finds the index by exact name in real `wrangler vectorize list --json` output", () => {
+  assertEquals(vectorizeIndexExistsInList(VECTORIZE_LIST_OUTPUT, "clipfeed-embeddings"), true);
+});
+
+Deno.test("vectorizeIndexExistsInList: returns false when no entry's name matches", () => {
+  assertEquals(vectorizeIndexExistsInList(VECTORIZE_LIST_OUTPUT, "some-unrelated-index"), false);
+});
+
+Deno.test("vectorizeIndexExistsInList: returns false for empty/unparseable output", () => {
+  assertEquals(vectorizeIndexExistsInList("", "clipfeed-embeddings"), false);
+  assertEquals(
+    vectorizeIndexExistsInList("some unrelated wrangler output", "clipfeed-embeddings"),
+    false,
+  );
+});
+
+Deno.test("vectorizeIndexExistsInList: an empty list returns false", () => {
+  assertEquals(vectorizeIndexExistsInList("[]", "clipfeed-embeddings"), false);
 });
