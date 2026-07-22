@@ -877,8 +877,8 @@ search over everything you've saved.
 
 **Model choice.** `@cf/baai/bge-m3` via Workers AI (free tier) — 1024 output dimensions, cosine
 metric, and multilingual (100+ languages, explicitly including Russian and English). It's the model
-this task's spec named directly, and it turned out to be available, so no fallback model was
-needed. One embedding per article, built from **English only** —
+this task's spec named directly, and it turned out to be available, so no fallback model was needed.
+One embedding per article, built from **English only** —
 `title_en + "\n" + tldr_en + "\n" + bullets_en` (see `buildEmbeddingText` in `embeddings.ts`) — for
 the same reason `faithfulness.ts`'s claim check is EN-only: RU/EN are independently-written parallel
 translations of the same facts (see the summarization prompt), so embedding one language captures
@@ -904,64 +904,71 @@ unrelated stories are expected to sit. This is one real calibration point, not a
 validated threshold — see the honest caveat at the end of this section.
 
 **Embedding stage.** After a summary is stored (`status = 'ready'`), the pipeline computes and
-upserts one embedding per article, tagged with metadata `{added_at, source, added_via,
-lang_original}` (see `runEmbedStage` in `pipeline.ts`). A `embedded_at` marker column
-(migration `0005`) makes this idempotent and drives the backfill below. Embed failures **never** fail
-the article — they're logged and left for a later backfill, same as this task's spec required.
-Deleting an article also deletes its vector (`DELETE /api/admin/articles/:id`) — no orphans.
+upserts one embedding per article, tagged with metadata
+`{added_at, source, added_via,
+lang_original}` (see `runEmbedStage` in `pipeline.ts`). A
+`embedded_at` marker column (migration `0005`) makes this idempotent and drives the backfill below.
+Embed failures **never** fail the article — they're logged and left for a later backfill, same as
+this task's spec required. Deleting an article also deletes its vector
+(`DELETE /api/admin/articles/:id`) — no orphans.
 
 **Semantic dedup layer (`agent-pool.ts`).** Runs **last**, after the three cheap string layers in
 "Daily scraping agent" above, and only on the candidates that survived them — embedding every
 candidate costs a Workers AI call, so this is capped at `SEMANTIC_DEDUP_MAX_CANDIDATES` (default
-`40`) per agent run, newest-first. For each: query Vectorize (`topK=3`, filtered to `added_at` within
-the last 72 hours) for a same-story match against already-saved articles, **and** compare pairwise
-against every other candidate's freshly-computed embedding still in this same batch (catches two
-picks about the same story in one run, before either is even saved). Either match `>=
-SEMANTIC_DEDUP_THRESHOLD` drops the candidate, logging `pool_dedup_dropped {reason: 'semantic',
-score, matchedId?}`. An embed or Vectorize-query failure for one candidate fails **open** (the
-candidate is kept, not dropped) — a transient infrastructure hiccup is not evidence of duplication.
+`40`) per agent run, newest-first. For each: query Vectorize (`topK=3`, filtered to `added_at`
+within the last 72 hours) for a same-story match against already-saved articles, **and** compare
+pairwise against every other candidate's freshly-computed embedding still in this same batch
+(catches two picks about the same story in one run, before either is even saved). Either match
+`>=
+SEMANTIC_DEDUP_THRESHOLD` drops the candidate, logging
+`pool_dedup_dropped {reason: 'semantic',
+score, matchedId?}`. An embed or Vectorize-query failure
+for one candidate fails **open** (the candidate is kept, not dropped) — a transient infrastructure
+hiccup is not evidence of duplication.
 
 **Search — `GET /api/search?q=...&limit=20`** (public, same as the rest of the feed) embeds the
 query, queries Vectorize, and hydrates matching rows from D1 in score order. `GET
-/api/admin/search` is the owner-mode equivalent (real `error` field included, same as
-`/api/admin/articles` vs. `/api/articles`). Both fall back to the pre-existing title/summary `LIKE`
-search — same rows, `score: 0` — whenever Vectorize isn't configured or a call to it fails; a caller
-never sees a 500 just because semantic search couldn't run. The public endpoint is rate-limited
+/api/admin/search`
+is the owner-mode equivalent (real `error` field included, same as `/api/admin/articles` vs.
+`/api/articles`). Both fall back to the pre-existing title/summary `LIKE` search — same rows,
+`score: 0` — whenever Vectorize isn't configured or a call to it fails; a caller never sees a 500
+just because semantic search couldn't run. The public endpoint is rate-limited
 (`SEARCH_RATE_PER_MIN`, default `30`, a KV counter shared across all callers) since each query costs
 a Workers AI call — over the limit returns `429 {error: "rate_limited"}` with the SPA showing
-localized copy for it. In the SPA, once the search box has a query, a small toggle appears —
-**по словам** (keyword, the default, today's `LIKE` behavior) / **по смыслу** (semantic) — and the
-choice persists in `localStorage`. Deliberately no visible relevance score anywhere; ordering alone
-carries the ranking. An empty result set shows the existing empty-feed layout with a hint to try the
-other mode.
+localized copy for it. In the SPA, once the search box has a query, a small toggle appears — **по
+словам** (keyword, the default, today's `LIKE` behavior) / **по смыслу** (semantic) — and the choice
+persists in `localStorage`. Deliberately no visible relevance score anywhere; ordering alone carries
+the ranking. An empty result set shows the existing empty-feed layout with a hint to try the other
+mode.
 
 **Backfill — `POST /api/admin/embeddings/backfill`** (Access-protected): embeds every `'ready'`,
 non-archived article with `embedded_at IS NULL`, 20 per call, returns `{processed, remaining}`. Same
-synchronous-paginated pattern as this repo's other one-shot admin jobs (e.g. tag normalization) — the
-caller repeats the call until `remaining` is `0`. Idempotent; safe to run anytime, including
+synchronous-paginated pattern as this repo's other one-shot admin jobs (e.g. tag normalization) —
+the caller repeats the call until `remaining` is `0`. Idempotent; safe to run anytime, including
 repeatedly. **Existing rows saved before this feature shipped have no embedding until this is run at
 least once** — the owner needs to call this after deploying, the same way the tag-normalize backfill
 needed a manual run after its own fix shipped.
 
 **Graceful degradation.** Everything above degrades to "acts like Vectorize doesn't exist" rather
 than crashing: a fork that hasn't run `deno task setup` yet has no `VECTORS` binding at all
-(`undefined`), and dedup/search both fall back to their string-only/`LIKE` equivalents automatically.
-Less obviously: **`wrangler dev` has no local Vectorize emulation whatsoever** — `env.VECTORS` there
-is a *present but non-functional* proxy that throws `"needs to be run remotely"` on every single
-method call, a materially different failure mode from a genuinely missing binding, and one this task
-had to specifically account for (`embeddings.ts`'s `upsertArticleEmbedding`/`deleteArticleEmbedding`
-swallow this; `queryRelatedEmbeddings` deliberately does not, so its callers — `search.ts`,
-`agent-pool.ts` — can fall back properly instead of silently returning zero results). `env.AI`, by
-contrast, always works locally too (Workers AI bindings proxy to the real remote API even in local
-dev) — which is how the live threshold measurement above was taken without ever touching Vectorize.
+(`undefined`), and dedup/search both fall back to their string-only/`LIKE` equivalents
+automatically. Less obviously: **`wrangler dev` has no local Vectorize emulation whatsoever** —
+`env.VECTORS` there is a _present but non-functional_ proxy that throws `"needs to be run remotely"`
+on every single method call, a materially different failure mode from a genuinely missing binding,
+and one this task had to specifically account for (`embeddings.ts`'s
+`upsertArticleEmbedding`/`deleteArticleEmbedding` swallow this; `queryRelatedEmbeddings`
+deliberately does not, so its callers — `search.ts`, `agent-pool.ts` — can fall back properly
+instead of silently returning zero results). `env.AI`, by contrast, always works locally too
+(Workers AI bindings proxy to the real remote API even in local dev) — which is how the live
+threshold measurement above was taken without ever touching Vectorize.
 
-**Honest limitation.** This is best-effort, same as every other dedup/matching layer in this repo:
-a cosine-similarity threshold necessarily trades false positives (two distinct stories dropped as
+**Honest limitation.** This is best-effort, same as every other dedup/matching layer in this repo: a
+cosine-similarity threshold necessarily trades false positives (two distinct stories dropped as
 "duplicates") against misses (a real duplicate scoring just under the bar). The 0.82 default is
 calibrated against exactly one real pair — there was no negative example (a genuinely unrelated
 article pair) measured alongside it, so there's no confirmed floor below which false positives start
-appearing. If your own feed's dedup behavior looks off in either direction, `SEMANTIC_DEDUP_THRESHOLD`
-is a `[vars]` override, no code change needed.
+appearing. If your own feed's dedup behavior looks off in either direction,
+`SEMANTIC_DEDUP_THRESHOLD` is a `[vars]` override, no code change needed.
 
 ## Chrome extension
 

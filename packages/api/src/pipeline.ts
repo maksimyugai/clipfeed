@@ -18,7 +18,12 @@ import {
   resolveFaithfulnessJudgeModel,
   runFaithfulnessCheck,
 } from "./faithfulness.ts";
-import { buildEmbeddingText, embedText, resolveEmbeddingModel, upsertArticleEmbedding } from "./embeddings.ts";
+import {
+  buildEmbeddingText,
+  embedText,
+  resolveEmbeddingModel,
+  upsertArticleEmbedding,
+} from "./embeddings.ts";
 
 export interface PipelineInput {
   id: string;
