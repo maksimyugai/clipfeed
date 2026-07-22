@@ -380,6 +380,10 @@ is tied to a specific account, domain, or Access team.
    can't add an article yet either.** Setting up Access (next section) is the last, required step,
    not an optional hardening pass.
 
+Optionally, set `REPO_URL` (e.g. `https://github.com/you/clipfeed`) to your fork's repo — this shows
+a GitHub icon link in the header and turns the footer's "MIT" text into a link to your `LICENSE`
+file. Left as `""` by default (per the forkability policy); both are simply hidden until you set it.
+
 See `.dev.vars.example` for local-dev secrets and variable overrides, and [CLAUDE.md](CLAUDE.md) for
 the forkability policy new changes must follow.
 

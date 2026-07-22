@@ -6,6 +6,7 @@ export interface Dictionary {
   brand: string;
   searchPlaceholder: string;
   themeToggleAria: string;
+  githubLinkAria: string;
   langToggleAriaRu: string;
   langToggleAriaEn: string;
   addButtonAria: string;
@@ -112,6 +113,7 @@ const ru: Dictionary = {
   brand: "clipfeed",
   searchPlaceholder: "Поиск",
   themeToggleAria: "Переключить тему",
+  githubLinkAria: "Исходный код на GitHub",
   langToggleAriaRu: "Переключить на русский",
   langToggleAriaEn: "Переключить на английский",
   addButtonAria: "Добавить статью",
@@ -218,6 +220,7 @@ const en: Dictionary = {
   brand: "clipfeed",
   searchPlaceholder: "Search",
   themeToggleAria: "Toggle theme",
+  githubLinkAria: "Source code on GitHub",
   langToggleAriaRu: "Switch to Russian",
   langToggleAriaEn: "Switch to English",
   addButtonAria: "Add article",
