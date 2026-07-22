@@ -19,6 +19,7 @@ import {
   getFailureStats,
   getFaithfulnessStats,
   getLastAgentActivity,
+  getSourceStats,
   insertPendingArticle,
   listArticles,
   listSummaryValidationFailures,
@@ -68,6 +69,11 @@ import {
 } from "./embeddings.ts";
 import { parseSearchRatePerMin, searchArticles, tryConsumeSearchRateLimit } from "./search.ts";
 import { buildOgTags, injectOgTags } from "./og.ts";
+import { SOURCES } from "./sources.ts";
+import { loadBlocklistConfig, loadCurationConfig } from "./curation.ts";
+import { normalizeDomainInput, resolveDomainPrecedence } from "./domain-block.ts";
+import { hostname } from "./url-host.ts";
+import { clearAutoBlock, isAutoBlocked, listAutoBlocks } from "./autoblock.ts";
 
 const app = new Hono<AppEnv>();
 
@@ -110,6 +116,29 @@ app.get("/api/health", (c) => {
 // header instead (see telegram-webhook.ts). 404s when the feature isn't
 // configured, so its existence isn't even observable otherwise.
 app.post("/api/telegram/webhook", handleTelegramWebhook);
+
+// Task 33 §2: checks a manually-added URL's host against the curation
+// blocklist (config + KV auto-learned) purely for the advisory
+// {warning:'blocked_domain'} response field — never blocks the save
+// itself. A single isAutoBlocked() KV get (not the full listAutoBlocks()
+// enumeration the agent pool/health-report use) since this only needs one
+// host's membership, not the whole list.
+async function checkBlockedDomainWarning(
+  env: Env,
+  url: string,
+): Promise<"blocked_domain" | undefined> {
+  const host = hostname(url);
+  if (!host) return undefined;
+  const blocklist = loadBlocklistConfig();
+  const autoBlocked = await isAutoBlocked(env.CACHE, host);
+  const precedence = resolveDomainPrecedence(
+    host,
+    blocklist.blockedDomains,
+    autoBlocked ? new Set([host]) : new Set<string>(),
+    [],
+  );
+  return precedence.blocked ? "blocked_domain" : undefined;
+}
 
 // Reads the request body once, enforcing the overall size cap before
 // attempting to parse it as JSON.
@@ -362,6 +391,13 @@ app.post("/api/admin/articles", async (c) => {
   }
   await enqueueArticleJob(c.env, c.executionCtx, { kind: "process", articleId: id });
 
+  // Task 33 §2: manual/extension/telegram adds are NEVER blocked (owner
+  // intent overrides the curation blocklist) — but a warning surfaces the
+  // fact so the owner knows this save is likely to fail extraction anyway.
+  const blockedWarning = await checkBlockedDomainWarning(c.env, url);
+  if (blockedWarning) {
+    return c.json({ id, status: "pending", warning: blockedWarning }, 202);
+  }
   return c.json({ id, status: "pending" }, 202);
 });
 
@@ -489,6 +525,8 @@ app.get("/api/admin/health-report", async (c) => {
     llmCalls,
     faithfulnessStats,
     faithfulnessCallsToday,
+    curationBlocked,
+    sourceStats,
   ] = await Promise.all([
     getFailureStats(c.env.DB),
     listLearnedThinHosts(c.env.CACHE),
@@ -496,7 +534,25 @@ app.get("/api/admin/health-report", async (c) => {
     readSummaryBudgetUsage(c.env.CACHE, c.env.DAILY_SUMMARY_LIMIT),
     getFaithfulnessStats(c.env.DB),
     readFaithfulnessCallCount(c.env.CACHE),
+    buildCurationBlockedReport(c.env),
+    getSourceStats(c.env.DB),
   ]);
+
+  // Task 33 §8: joins each source's picks/successes/failures with its
+  // domain's current autoblock score (0 when the domain isn't
+  // autoblocked at all) — best-effort domain resolution from sources.json
+  // (RSS sources carry a url; "hn" is the one hackernews-type source,
+  // hardcoded to its own well-known domain since it has no url field).
+  const autoScoreByDomain = new Map(
+    curationBlocked.auto.map((entry) => [entry.domain, entry.score]),
+  );
+  const sourcesWithAutoblock = sourceStats.map((stat) => {
+    const source = SOURCES.find((s) => s.id === stat.sourceId);
+    const domain = source?.url
+      ? hostname(source.url)
+      : (source?.type === "hackernews" ? "news.ycombinator.com" : null);
+    return { ...stat, autoblockScore: domain ? (autoScoreByDomain.get(domain) ?? 0) : 0 };
+  });
 
   return c.json({
     failed_by_class,
@@ -514,6 +570,79 @@ app.get("/api/admin/health-report", async (c) => {
     // own (uncapped, observability-only) KV counter, distinct from
     // llm_calls above which only tracks the paid summarization budget.
     faithfulness: { ...faithfulnessStats, judge_calls_today: faithfulnessCallsToday },
+    // Task 33 §8: curation — the blocklist snapshot (same shape as GET
+    // /api/admin/curation/blocked) plus per-source stats, so the owner
+    // doesn't need a second call to see the whole curation picture.
+    curation: {
+      blocked: curationBlocked,
+      sources: sourcesWithAutoblock,
+    },
+  });
+});
+
+// Task 33 §8: shared by GET /api/admin/curation/blocked and the
+// health-report's curation section below — one blocklist/autoblock/conflict
+// snapshot, computed once per call.
+interface CurationBlockedReport {
+  config: string[];
+  auto: Awaited<ReturnType<typeof listAutoBlocks>>;
+  conflicts: { domain: string; layer: "config" | "auto" }[];
+}
+
+async function buildCurationBlockedReport(env: Env): Promise<CurationBlockedReport> {
+  const blocklist = loadBlocklistConfig();
+  const pickCount = parseAgentDailyPicks(env.AGENT_DAILY_PICKS);
+  const curationConfig = loadCurationConfig(SOURCES, pickCount);
+  const auto = await listAutoBlocks(env.CACHE);
+  const autoSet = new Set(auto.map((entry) => entry.domain));
+
+  // Preferred-but-blocked conflicts (Task 33 §5): the whitelist never
+  // unblocks anything, so a preferred domain that's ALSO blocked is
+  // reported here rather than silently overridden — surfaced prominently
+  // so the owner decides deliberately.
+  const conflicts: { domain: string; layer: "config" | "auto" }[] = [];
+  for (const domain of curationConfig.preferredDomains) {
+    const result = resolveDomainPrecedence(
+      domain,
+      blocklist.blockedDomains,
+      autoSet,
+      curationConfig.preferredDomains,
+    );
+    if (result.conflict && result.layer) {
+      conflicts.push({ domain, layer: result.layer });
+    }
+  }
+
+  return { config: blocklist.blockedDomains, auto, conflicts };
+}
+
+// Owner-only visibility into the curation blocklist (Task 33 §7.3) — the
+// manual/config layer is read straight from blocklist.json (edit the file
+// in your fork, no endpoint needed); this exists for the KV-learned side,
+// which changes at runtime with no deploy.
+app.get("/api/admin/curation/blocked", async (c) => {
+  const report = await buildCurationBlockedReport(c.env);
+  return c.json(report);
+});
+
+// False-positive relief without a deploy: clears one auto-learned block
+// immediately. Normalizes free-form input (lowercase, strip scheme/path/
+// www) and rejects anything that doesn't look like a real hostname.
+app.delete("/api/admin/curation/autoblock", async (c) => {
+  const bodyResult = await readJsonBody(c);
+  if (!bodyResult.ok) return bodyResult.response;
+  const rawDomain = typeof bodyResult.body === "object" && bodyResult.body !== null
+    ? (bodyResult.body as Record<string, unknown>).domain
+    : undefined;
+  const domain = normalizeDomainInput(rawDomain);
+  if (!domain) {
+    return c.json({ error: "domain is required and must be a valid hostname" }, 400);
+  }
+  await clearAutoBlock(c.env.CACHE, domain);
+  return c.json({
+    domain,
+    cleared: true,
+    note: "config-file blocklist entries require editing blocklist.json in your fork",
   });
 });
 

@@ -31,11 +31,17 @@ declare global {
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
     delete(key: string): Promise<void>;
     // Used by GET /api/admin/health-report to enumerate learned thin hosts
-    // (see thin-host-learning.ts's listLearnedThinHosts) — simplified to
-    // the fields we actually read from Cloudflare's real KV list API.
+    // (see thin-host-learning.ts's listLearnedThinHosts) and Task 33's
+    // autoblock.ts listAutoBlocks — simplified to the fields we actually
+    // read from Cloudflare's real KV list API. `expiration` (unix seconds)
+    // is only present when the key was stored with an expirationTtl, which
+    // every key this app writes always is — used to derive an autoblock
+    // entry's expiresAt without a separate metadata call.
     list(
       options?: { prefix?: string; cursor?: string },
-    ): Promise<{ keys: { name: string }[]; list_complete: boolean; cursor?: string }>;
+    ): Promise<
+      { keys: { name: string; expiration?: number }[]; list_complete: boolean; cursor?: string }
+    >;
   }
 
   interface Ai {
@@ -283,6 +289,18 @@ declare global {
     // out before D1 hydration; see search.ts's searchArticles and README
     // for the live-tuned derivation. [vars] string, parsed defensively.
     SEARCH_MIN_SCORE?: string;
+    // Curated variety (Task 33, README "Curated variety"): topic quotas,
+    // priority sources and the manual blocklist live in committed JSON
+    // files (curation.json/blocklist.json, sibling to sources.json) — no
+    // env vars needed for those. These two vars tune ONLY the KV-based
+    // auto-learned block mechanism (autoblock.ts), which supersedes the
+    // older thin-host-learning.ts counter (see autoblock.ts's module doc).
+    // [vars] strings, parsed defensively (see
+    // autoblock.ts's parseAutoblockThreshold/parseAutoblockTtlDays) —
+    // missing/invalid falls back to the documented default (3 signals,
+    // 60 days) rather than throwing.
+    AUTOBLOCK_THRESHOLD?: string;
+    AUTOBLOCK_TTL_DAYS?: string;
   }
 }
 

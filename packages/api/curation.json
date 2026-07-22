@@ -1,0 +1,15 @@
+{
+  "topicVocabulary": [
+    "ai",
+    "hardware",
+    "linux",
+    "security",
+    "programming",
+    "science",
+    "business",
+    "other"
+  ],
+  "topicQuotas": { "linux": 1, "hardware": 1, "security": 1 },
+  "prioritySources": ["phoronix", "lwn", "thehackernews"],
+  "preferredDomains": ["phoronix.com", "lwn.net", "thehackernews.com"]
+}

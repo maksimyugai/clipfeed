@@ -12,6 +12,12 @@ class FakeKV {
     this.store.set(key, value);
     return Promise.resolve();
   }
+  // Task 33: runAgentJob (reached via the agent-hour dispatch) lists
+  // autoblock:* entries once per run — always empty here, same convention
+  // as agent_test.ts's own FakeKV.
+  list(): Promise<{ keys: { name: string }[]; list_complete: boolean }> {
+    return Promise.resolve({ keys: [], list_complete: true });
+  }
 }
 
 function makeEnv(overrides: Partial<Env> = {}): Env {

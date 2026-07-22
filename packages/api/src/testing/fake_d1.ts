@@ -232,6 +232,12 @@ export class FakeD1 implements D1Database {
       return [{ last_added_at: lastAddedAt }];
     }
 
+    if (sql === "SELECT tags, status FROM articles WHERE added_via = 'agent'") {
+      return this.rows
+        .filter((r) => r.added_via === "agent")
+        .map((r) => ({ tags: r.tags, status: r.status }));
+    }
+
     if (sql.startsWith("SELECT fail_class, COUNT(*) as count, SUM(heal_attempts) as attempts")) {
       const groups = new Map<string | null, { count: number; attempts: number }>();
       for (const r of this.rows) {

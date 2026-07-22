@@ -265,6 +265,8 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
     ["POST", "/api/admin/tags/normalize"],
     ["GET", "/api/admin/search?q=widget"],
     ["POST", "/api/admin/embeddings/backfill"],
+    ["GET", "/api/admin/curation/blocked"],
+    ["DELETE", "/api/admin/curation/autoblock"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -293,6 +295,8 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     ["POST", "/api/admin/tags/normalize"],
     ["GET", "/api/admin/search?q=widget"],
     ["POST", "/api/admin/embeddings/backfill"],
+    ["GET", "/api/admin/curation/blocked"],
+    ["DELETE", "/api/admin/curation/autoblock"],
   ];
   for (const [method, path] of cases) {
     const res = await app.request(path, { method }, env, ctx);
@@ -345,6 +349,124 @@ Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-hea
   assertEquals(body.llm_calls, { used: 7, limit: env.DAILY_SUMMARY_LIMIT });
   // h1/h2 never had a faithfulness check run — both land in the null bucket.
   assertEquals(body.faithfulness, { pass: 0, weak: 0, fail: 0, null: 2, judge_calls_today: 4 });
+
+  // Task 33 §8: the curation section — config blocklist (from the real
+  // committed blocklist.json), auto-learned entries, per-source stats, and
+  // preferred-but-blocked conflicts, all in one response.
+  assertEquals(body.curation.blocked.config.includes("wsj.com"), true);
+  assertEquals(body.curation.sources, []); // no agent-added rows in this test
+});
+
+// --- Task 33: GET /api/admin/curation/blocked, DELETE .../autoblock ---
+
+Deno.test("GET /api/admin/curation/blocked: 200 for the owner, includes config blocklist + auto entries + conflicts", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  // "phoronix.com" is both a real preferredDomains entry (curation.json)
+  // AND, here, deliberately also autoblocked — a live conflict.
+  await env.CACHE.put(
+    "autoblock:phoronix.com",
+    JSON.stringify({
+      firstSeen: "2026-01-01T00:00:00.000Z",
+      score: 5,
+      lastReason: "page has no substantive article text",
+    }),
+  );
+
+  const res = await app.request("/api/admin/curation/blocked", { headers: authHeaders }, env, ctx);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+
+  assertEquals(body.config.includes("wsj.com"), true);
+  assertEquals(body.auto.length, 1);
+  assertEquals(body.auto[0].domain, "phoronix.com");
+  assertEquals(body.auto[0].score, 5);
+  assertEquals(body.conflicts, [{ domain: "phoronix.com", layer: "auto" }]);
+});
+
+Deno.test("DELETE /api/admin/curation/autoblock: clears the entry, normalizes free-form input, 400 on an invalid hostname", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+  await env.CACHE.put(
+    "autoblock:flaky.example",
+    JSON.stringify({ firstSeen: "2026-01-01T00:00:00.000Z", score: 3, lastReason: "x" }),
+  );
+  await env.CACHE.put("autostat:flaky.example", "3");
+
+  const res = await app.request(
+    "/api/admin/curation/autoblock",
+    {
+      method: "DELETE",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: "https://www.Flaky.example/some/path" }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body, {
+    domain: "flaky.example",
+    cleared: true,
+    note: "config-file blocklist entries require editing blocklist.json in your fork",
+  });
+  assertEquals(await env.CACHE.get("autoblock:flaky.example"), null);
+  assertEquals(await env.CACHE.get("autostat:flaky.example"), null);
+
+  const badRes = await app.request(
+    "/api/admin/curation/autoblock",
+    {
+      method: "DELETE",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: "not a hostname" }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(badRes.status, 400);
+});
+
+// Task 33 §2: manual/extension/telegram adds are NEVER blocked (owner
+// intent overrides), but the 202 carries an advisory warning.
+Deno.test("POST /api/admin/articles: a blocked domain still saves (202), but the response carries {warning:'blocked_domain'}", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  // wsj.com is in the real, committed blocklist.json.
+  const res = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "https://www.wsj.com/articles/some-story" }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 202);
+  const body = await res.json();
+  assertEquals(body.status, "pending");
+  assertEquals(body.warning, "blocked_domain");
+});
+
+Deno.test("POST /api/admin/articles: a non-blocked domain saves with no warning field at all", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  const res = await app.request(
+    "/api/admin/articles",
+    {
+      method: "POST",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/some-story" }),
+    },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 202);
+  const body = await res.json();
+  assertEquals("warning" in body, false);
 });
 
 // --- POST /api/admin/articles/:id/reverify (Task 23) ---

@@ -1,0 +1,4 @@
+{
+  "blockedDomains": ["wsj.com", "ft.com", "bloomberg.com", "nytimes.com", "medium.com"],
+  "note": "Hard paywalls and open-publishing platforms — extraction yields nothing usable. Edit freely in your fork."
+}

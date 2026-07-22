@@ -11,6 +11,8 @@ import { findArticleIdByUrl, insertPendingArticle } from "./db.ts";
 import { enqueueArticleJob } from "./queue.ts";
 import { sourceFromUrl } from "./validation.ts";
 import { resolveEmbeddingModel } from "./embeddings.ts";
+import { loadBlocklistConfig } from "./curation.ts";
+import { listAutoBlocks } from "./autoblock.ts";
 
 // Structured, category-level stage log for the agent job — counts and ids
 // only, never candidate titles/snippets or credentials.
@@ -36,8 +38,16 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
     failed: failed.map((f) => f.id),
   });
 
+  // Task 33 §2/§5: absolute domain block (manual blocklist.json + KV
+  // auto-learned blocks), applied inside buildCandidatePool before any
+  // ranking happens. The autoblock list is fetched ONCE per run here
+  // (rather than per-candidate) and passed down as a plain Set.
+  const blocklistConfig = loadBlocklistConfig();
+  const autoBlocks = await listAutoBlocks(env.CACHE);
+  const autoBlockedDomains = new Set(autoBlocks.map((entry) => entry.domain));
+
   const poolStart = performance.now();
-  const { pool, dedupDrops } = await buildCandidatePool(
+  const { pool, dedupDrops, blockedDropped } = await buildCandidatePool(
     env.DB,
     env.CACHE,
     candidates,
@@ -49,6 +59,7 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
       maxCandidates: parseSemanticDedupMaxCandidates(env.SEMANTIC_DEDUP_MAX_CANDIDATES),
       threshold: parseSemanticDedupThreshold(env.SEMANTIC_DEDUP_THRESHOLD),
     },
+    { blockedDomains: blocklistConfig.blockedDomains, autoBlockedDomains },
   );
   const dedupDropCounts = { url: 0, title: 0, jaccard: 0, semantic: 0 };
   for (const drop of dedupDrops) dedupDropCounts[drop.reason] += 1;
@@ -57,6 +68,7 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
     pool_size: pool.length,
     dedup_dropped: dedupDrops.length,
     dedup_dropped_by_reason: dedupDropCounts,
+    blocked_dropped: blockedDropped,
   });
 
   if (pool.length === 0) {
@@ -65,7 +77,7 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
   }
 
   const rankStart = performance.now();
-  const pickedIds = await rankCandidates(env, env.INTEREST_TOPICS, pool);
+  const pickedIds = await rankCandidates(env, env.INTEREST_TOPICS, pool, sources);
   const poolById = new Map(pool.map((c) => [c.id, c]));
   const orderedPicks = pickedIds
     .map((id) => poolById.get(id))

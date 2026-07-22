@@ -44,5 +44,10 @@
     "id": "servethehome",
     "type": "rss",
     "url": "https://www.servethehome.com/feed/"
+  },
+  {
+    "id": "thehackernews",
+    "type": "rss",
+    "url": "https://feeds.feedburner.com/TheHackersNews"
   }
 ]

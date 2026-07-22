@@ -25,11 +25,23 @@ export class FakeKv implements KVNamespace {
 
   list(
     options?: { prefix?: string; cursor?: string },
-  ): Promise<{ keys: { name: string }[]; list_complete: boolean; cursor?: string }> {
+  ): Promise<
+    { keys: { name: string; expiration?: number }[]; list_complete: boolean; cursor?: string }
+  > {
     const prefix = options?.prefix ?? "";
     const keys = [...this.store.keys()]
       .filter((k) => k.startsWith(prefix))
-      .map((name) => ({ name }));
+      .map((name) => {
+        const ttl = this.ttls.get(name);
+        // Fake "stored at call time" expiration (unix seconds) — good
+        // enough for tests that only assert an expiresAt was derived from
+        // SOME ttl, not real wall-clock expiry (nothing in this fake
+        // enforces actual expiry either, see the class doc comment above).
+        return {
+          name,
+          expiration: ttl !== undefined ? Math.floor(Date.now() / 1000) + ttl : undefined,
+        };
+      });
     return Promise.resolve({ keys, list_complete: true });
   }
 }

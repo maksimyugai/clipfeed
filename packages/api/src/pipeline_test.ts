@@ -595,12 +595,13 @@ Deno.test("runArticlePipeline: extraction under 300 chars -> 'failed' with a cle
   assertEquals(llmCalled, false);
 });
 
-// Regression: a fresh insufficient-text failure teaches the agent's
-// learned thin-host blocklist, not just the healing job's backfill pass
-// for pre-existing rows (see healing_test.ts for that half) — see
-// thin-host-learning.ts's recordThinHostFailure, called right alongside
-// markArticleFailed in this exact guard.
-Deno.test("runArticlePipeline: extraction under 300 chars also records a thin-host learning hit", async () => {
+// Regression: a fresh insufficient-text failure feeds Task 33's auto-block
+// signal, not just the healing job's backfill pass for pre-existing rows
+// (see healing_test.ts for that half) — see autoblock.ts's
+// recordAutoBlockSignal, called right alongside markArticleFailed in this
+// exact guard (superseding the old thin-host-learning.ts counter this test
+// used to check).
+Deno.test("runArticlePipeline: extraction under 300 chars also records an auto-block signal", async () => {
   const thinHtml = `<html><head><title>Some Post</title></head><body><nav>xcancel</nav>` +
     `<div id="app"></div>` +
     `<footer>xcancel is an alternative front-end for X.</footer></body></html>`;
@@ -622,7 +623,66 @@ Deno.test("runArticlePipeline: extraction under 300 chars also records a thin-ho
     addedAt: "2026-01-01T00:00:00.000Z",
   });
 
-  assertEquals(await cache.get("thinhost:mirror.example"), "1");
+  assertEquals(await cache.get("autostat:mirror.example"), "1");
+});
+
+// Task 33 §7.1: a 403/402 (paywall) fetch failure is the OTHER signal
+// source, recorded from the top-level catch (never reached by the
+// insufficient-text guard above, since that returns before any error is
+// thrown) — previously not recorded anywhere at all (see this task's
+// report for the incomplete-coverage finding that motivated this test).
+Deno.test("runArticlePipeline: a 403 upstream response also records an auto-block signal, via the top-level catch", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch =
+    (() => Promise.resolve(new Response("forbidden", { status: 403 }))) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const cache = new FakeKV();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      CACHE: cache as unknown as KVNamespace,
+    });
+    await runArticlePipeline(env, {
+      id: "p-paywall",
+      url: "https://paywalled.example/article",
+      requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const row = db.rows.get("p-paywall");
+    assertEquals(row?.status, "failed");
+    assertEquals(await cache.get("autostat:paywalled.example"), "1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// A 5xx (transient) fetch failure must NOT contribute to the auto-block
+// score — see autoblock.ts's autoblockSignalWeight doc comment for why.
+Deno.test("runArticlePipeline: a 500 upstream response records NO auto-block signal (transient, not evidence)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch =
+    (() => Promise.resolve(new Response("server error", { status: 500 }))) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const cache = new FakeKV();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      CACHE: cache as unknown as KVNamespace,
+    });
+    await runArticlePipeline(env, {
+      id: "p-5xx",
+      url: "https://flaky.example/article",
+      requestTags: [],
+      addedVia: "manual",
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assertEquals(await cache.get("autostat:flaky.example"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 Deno.test("runArticlePipeline: extraction exactly at 300 chars passes the guard (boundary)", async () => {
