@@ -22,6 +22,12 @@ export function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Attribute context needs stricter escaping than text nodes because quotes
+// can terminate the attribute value.
+function escapeHtmlAttr(text: string): string {
+  return escapeHtml(text).replace(/"/g, "&quot;");
+}
+
 function cardUrl(publicBaseUrl: string, id: string): string {
   return `${publicBaseUrl}/#article-${id}`;
 }
@@ -52,7 +58,7 @@ function renderMessage(
   lines.push(
     "",
     `Читать полностью → ${escapeHtml(cardUrl(publicBaseUrl, input.id))}`,
-    `Источник: <a href="${escapeHtml(input.url)}">${escapeHtml(domainFor(input))}</a>`,
+    `Источник: <a href="${escapeHtmlAttr(input.url)}">${escapeHtml(domainFor(input))}</a>`,
   );
   return lines.join("\n");
 }
