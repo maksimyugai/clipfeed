@@ -1,7 +1,9 @@
 import "./env.d.ts";
 import {
+  archiveContentFailure,
   classifyAndMaybeArchive,
   incrementHealAttempts,
+  listExhaustedContentFailures,
   listHealableFailedArticles,
   listUnclassifiedFailures,
   markArticlePending,
@@ -39,7 +41,7 @@ const MAX_HEALS_PER_TICK = 5;
 // two safety limits above (per-class caps, MAX_HEALS_PER_TICK) already
 // bound its cost when there is.
 //
-// Two independent passes:
+// Three independent passes:
 //  1. Classify any 'failed' rows that predate the fail_class column
 //     (migration 0003) — lazily backfilled here rather than a one-off
 //     migration script, since migrations only alter schema, never run
@@ -52,6 +54,13 @@ const MAX_HEALS_PER_TICK = 5;
 //     normal daily summary budget (cost-guard.ts) still applies —
 //     healing doesn't bypass it, just adds another way to reach the
 //     pipeline.
+//  3. Task 34 Part A §3: auto-archive agent-picked 'content' failures that
+//     have exhausted their heal cap (see listExhaustedContentFailures in
+//     db.ts for the exact rule and why it's scoped to added_via='agent'
+//     only). Runs after the retry pass so a row this same tick just
+//     bumped to the cap value isn't caught prematurely — it's 'pending',
+//     not 'failed', until its retry actually completes in a later
+//     invocation.
 export async function runHealingJob(env: Env, ctx?: ExecutionContext): Promise<void> {
   const autoblockThreshold = parseAutoblockThreshold(env.AUTOBLOCK_THRESHOLD);
   const autoblockTtlDays = parseAutoblockTtlDays(env.AUTOBLOCK_TTL_DAYS);
@@ -78,5 +87,10 @@ export async function runHealingJob(env: Env, ctx?: ExecutionContext): Promise<v
     }));
     await markArticlePending(env.DB, article.id);
     await enqueueArticleJob(env, ctx, { kind: "process", articleId: article.id });
+  }
+
+  const exhausted = await listExhaustedContentFailures(env.DB, HEAL_CAPS.content);
+  for (const row of exhausted) {
+    await archiveContentFailure(env.DB, row.id);
   }
 }

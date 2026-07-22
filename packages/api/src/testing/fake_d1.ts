@@ -354,6 +354,19 @@ export class FakeD1 implements D1Database {
         }));
     }
 
+    if (
+      sql ===
+        "SELECT id FROM articles WHERE status = 'failed' AND archived = 0 AND added_via = 'agent' AND fail_class = 'content' AND heal_attempts >= ?"
+    ) {
+      const contentCap = values[0] as number;
+      return this.rows
+        .filter((r) =>
+          r.status === "failed" && r.archived === 0 && r.added_via === "agent" &&
+          r.fail_class === "content" && (r.heal_attempts as number) >= contentCap
+        )
+        .map((r) => ({ id: r.id }));
+    }
+
     throw new Error(`FakeD1: unsupported query: ${sql}`);
   }
 
