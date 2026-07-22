@@ -49,6 +49,7 @@ export interface Dictionary {
   faithfulnessContradictedLabel: string;
   readMore: string;
   tldrLabel: string;
+  keyTakeawaysHeading: string;
   summaryByPrefix: string;
   summaryAddedVia: string;
   archiveAction: string;
@@ -133,6 +134,7 @@ const ru: Dictionary = {
   faithfulnessContradictedLabel: "противоречит",
   readMore: "читать далее",
   tldrLabel: "TL;DR",
+  keyTakeawaysHeading: "Итог",
   summaryByPrefix: "Пересказ Claude по статье",
   summaryAddedVia: "добавлено",
   archiveAction: "В архив",
@@ -217,6 +219,7 @@ const en: Dictionary = {
   faithfulnessContradictedLabel: "contradicted",
   readMore: "read more",
   tldrLabel: "TL;DR",
+  keyTakeawaysHeading: "Key points",
   summaryByPrefix: "Summary by Claude from",
   summaryAddedVia: "added via",
   archiveAction: "Archive",
