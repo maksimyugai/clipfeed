@@ -30,6 +30,7 @@ import {
 } from "./lib/sectionState.ts";
 import { shouldFetchNextInitialPage, shouldFetchOnEarlierExpand } from "./lib/pagination.ts";
 import { loadAgentSchedule } from "./lib/agentSchedule.ts";
+import { loadRepoUrl } from "./lib/repoConfig.ts";
 import { classifyApiError, localizedErrorMessage } from "./lib/errorMessages.ts";
 import { mergeRefreshedArticles, pickFailedIds } from "./lib/failedRefresh.ts";
 import { isArticleInList, parseArticleHash } from "./lib/deepLink.ts";
@@ -156,6 +157,9 @@ export function App() {
     readStoredSectionState(localStorage)
   );
   const [agentHourUtc, setAgentHourUtc] = useState<number | null>(null);
+  // Task 30 Part D: null hides both the header's GitHub icon and the
+  // footer's license link (see repoConfig.ts, Header.tsx, Footer.tsx).
+  const [repoUrl, setRepoUrl] = useState<string | null>(null);
 
   // Deep-link resolution (Part B: a Telegram drip post links to
   // "#article-<id>", see lib/deepLink.ts). deepLinkPending is the id still
@@ -203,6 +207,12 @@ export function App() {
   // Turnstile site key fetch elsewhere.
   useEffect(() => {
     loadAgentSchedule().then((config) => setAgentHourUtc(config.agentHourUtc));
+  }, []);
+
+  // Powers the header's GitHub icon link and the footer's license link
+  // (see lib/repoConfig.ts) — fetched once and cached, same convention.
+  useEffect(() => {
+    loadRepoUrl().then(setRepoUrl);
   }, []);
 
   // Debounce the raw search input into the value that actually drives fetches.
@@ -607,6 +617,7 @@ export function App() {
         onSearchModeChange={setSearchMode}
         onAddClick={() => setModalOpen(true)}
         isOwner={isOwner}
+        repoUrl={repoUrl}
       />
 
       <div class="layout">
@@ -703,7 +714,7 @@ export function App() {
         />
       </div>
 
-      <Footer dict={dict} />
+      <Footer dict={dict} repoUrl={repoUrl} />
 
       {modalOpen && isOwner && (
         <AddModal

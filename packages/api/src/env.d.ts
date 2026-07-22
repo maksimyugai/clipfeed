@@ -182,6 +182,13 @@ declare global {
     // link, the "saved" reply). [vars], default "" — when empty those
     // links are simply omitted, never a broken/placeholder URL.
     PUBLIC_BASE_URL: string;
+    // Repo URL shown as a GitHub icon link in the header and the footer's
+    // license link (see GET /api/config, Header.tsx, Footer.tsx). [vars],
+    // default "" — a fork sets its own; the icon and license link are simply
+    // hidden until it's a non-empty https URL (see repoConfig.ts). Optional
+    // here (unlike PUBLIC_BASE_URL) so the many existing test files' Env
+    // literals don't all need updating just to add an unused field.
+    REPO_URL?: string;
     // Daily scraping agent (see agent.ts, README "Daily scraping agent").
     // INTEREST_TOPICS steers the ranking call's taste — owner-editable
     // free text, no particular format required.

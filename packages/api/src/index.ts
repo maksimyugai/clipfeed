@@ -92,6 +92,10 @@ app.get("/api/config", (c) => {
     turnstile_site_key: config?.siteKey ?? null,
     agent_hour_utc: parseHour(c.env.AGENT_HOUR_UTC),
     agent_daily_picks: parseAgentDailyPicks(c.env.AGENT_DAILY_PICKS),
+    // Task 30 Part D: single source of truth for the header's GitHub icon
+    // link and the footer's license link (see repoConfig.ts) — "" when
+    // unset, never a hardcoded owner-specific fallback.
+    repo_url: c.env.REPO_URL ?? "",
   });
 });
 

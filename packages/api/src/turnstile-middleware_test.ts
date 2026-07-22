@@ -245,3 +245,20 @@ Deno.test("GET /api/config: agent_daily_picks falls back to the default for an i
   const body = await res.json();
   assertEquals(body.agent_daily_picks, 10);
 });
+
+// --- repo_url (Task 30 Part D): single source of truth for the header's
+// GitHub icon link and the footer's license link — see repoConfig.ts. ---
+
+Deno.test("GET /api/config: exposes repo_url when REPO_URL is set", async () => {
+  const env = makeEnv({ REPO_URL: "https://github.com/example/clipfeed-fork" });
+  const res = await app.request("/api/config", {}, env, makeExecutionContext());
+  const body = await res.json();
+  assertEquals(body.repo_url, "https://github.com/example/clipfeed-fork");
+});
+
+Deno.test("GET /api/config: repo_url is an empty string when REPO_URL is unset", async () => {
+  const env = makeEnv({ REPO_URL: undefined });
+  const res = await app.request("/api/config", {}, env, makeExecutionContext());
+  const body = await res.json();
+  assertEquals(body.repo_url, "");
+});

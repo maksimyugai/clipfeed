@@ -119,6 +119,12 @@
 # is empty.
 # PUBLIC_BASE_URL=
 
+# Your fork's repo URL, e.g. https://github.com/you/clipfeed — shown as a
+# GitHub icon link in the header and used for the footer's license link.
+# [vars] default "" (per the forkability policy); both links are simply
+# hidden until you set this.
+# REPO_URL=
+
 # Embeddings — semantic dedup (agent-pool.ts) + semantic search
 # (GET /api/search, README "Semantic dedup & search"). Everything here is
 # OPTIONAL: without a Vectorize index provisioned (`deno task setup`, or
