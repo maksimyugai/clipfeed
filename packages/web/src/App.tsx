@@ -34,6 +34,7 @@ import { loadRepoUrl } from "./lib/repoConfig.ts";
 import { classifyApiError, localizedErrorMessage } from "./lib/errorMessages.ts";
 import { mergeRefreshedArticles, pickFailedIds } from "./lib/failedRefresh.ts";
 import { isArticleInList, parseDeepLinkId } from "./lib/deepLink.ts";
+import { translateQueue } from "./lib/translateQueue.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
 import { ActiveFilterChips, Sidebar, SourcePills, TopicPills } from "./components/Sidebar.tsx";
@@ -155,6 +156,15 @@ export function App() {
   const isOwner = canMutate(ownerModeState);
   const effectiveLang = resolveEffectiveLang(lang, isOwner);
   const dict = dictionaries[effectiveLang];
+
+  // Task 37 §6 point 4: switching back to RU (or losing owner mode, which
+  // forces the same effective language — see resolveEffectiveLang) drops
+  // every not-yet-started translate request. Already in-flight ones are
+  // left alone; their results are still stored/reused if they land after
+  // the switch (see ArticleCard's onArticleUpdate).
+  useEffect(() => {
+    if (effectiveLang !== "en") translateQueue.cancelQueued();
+  }, [effectiveLang]);
   const [sectionOpen, setSectionOpen] = useState<SectionOpenState>(() =>
     readStoredSectionState(localStorage)
   );

@@ -186,52 +186,99 @@ function useJustReadyHighlight(status: ArticleListItem["status"]): boolean {
   return justReady;
 }
 
-// Task 35 Part A §4: in owner-only EN mode, a ready article missing its
-// English edition (en_generated_at is null) renders a "preparing English"
-// skeleton (see the needsEnglish branch below) instead of blocking on a
-// bulk translate. This hook is what makes that skeleton self-resolving: it
-// fires POST .../translate for this one card (subject to the shared
-// translateQueue's concurrency cap — see lib/translateQueue.ts, "max 5
-// concurrently, never in bulk") and polls on the same cadence as
-// usePendingPoll (lib/pollSchedule.ts) until en_generated_at appears. A card
-// that can't get a queue slot yet still polls without re-triggering the
-// endpoint — each tick re-checks the queue, so it opportunistically starts
-// its own translate call the moment a slot frees up, without any central
-// coordinator besides the shared queue.
+// Task 37 §6: in owner-only EN mode, a ready article missing its English
+// edition (en_generated_at is null) eventually renders a "preparing
+// English" skeleton — but ONLY once this specific card has actually been
+// reached, never for the whole fetched list at once (that was the reported
+// bug: every mounted card used to request a translation the instant
+// needsEnglish became true). "Reached" means either the card scrolled into
+// the viewport (IntersectionObserver, rootMargin ~200px so it starts
+// slightly before) or the reader expanded it (which translates immediately,
+// bypassing the observer — see the `expanded` effect below). The actual
+// network call is gated by the shared translateQueue (lib/translateQueue.ts,
+// now a real FIFO queue capped at 3 in flight, not a bare slot counter).
+// Returns whether THIS card is currently queued/in-flight/awaiting
+// completion — the caller uses that to decide whether to paint the skeleton
+// or fall back to normal (Russian) rendering for a not-yet-reached card.
 function useEnglishTranslation(
   article: ArticleListItem,
   needsEnglish: boolean,
+  expanded: boolean,
+  cardRef: { current: HTMLElement | null },
   onArticleUpdate: (article: ArticleListItem) => void,
-): void {
-  const triggeredRef = useRef(false);
+): boolean {
+  const [isTranslating, setIsTranslating] = useState(false);
+  const isTranslatingRef = useRef(false);
 
   useEffect(() => {
     if (!needsEnglish) {
-      triggeredRef.current = false;
-      return;
+      isTranslatingRef.current = false;
+      setIsTranslating(false);
     }
+  }, [needsEnglish]);
+
+  const requestTranslation = (priority: boolean) => {
+    if (isTranslatingRef.current) return;
+    isTranslatingRef.current = true;
+    setIsTranslating(true);
+    translateQueue.request(
+      article.id,
+      () => translateArticle(article.id).then(() => undefined, () => undefined),
+      { priority },
+    );
+  };
+
+  // Priority: the reader is looking at this card right now.
+  useEffect(() => {
+    if (needsEnglish && expanded) requestTranslation(true);
+  }, [needsEnglish, expanded, article.id]);
+
+  // Viewport gate: only ask once the card is actually on (or near) screen.
+  // Disconnects itself the moment a request is made — by this observer
+  // firing, or by the expanded-priority effect above already having
+  // claimed it (the `isTranslating` dependency below then skips re-creating
+  // it).
+  useEffect(() => {
+    if (!needsEnglish || isTranslating || expanded) return;
+    const node = cardRef.current;
+    if (!node) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          requestTranslation(false);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "200px", threshold: 0 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [needsEnglish, isTranslating, expanded, article.id]);
+
+  // If this card is unmounted while still merely queued (waiting for a
+  // slot) — the reader filtered or navigated it away before its turn came
+  // up — drop its own queue entry so it doesn't fire once nothing shows its
+  // result anymore. A no-op once the request is already in flight; that one
+  // is left to finish (see translateQueue.cancel's own doc comment).
+  useEffect(() => {
+    if (!isTranslating) return;
+    return () => translateQueue.cancel(article.id);
+  }, [isTranslating, article.id]);
+
+  // Once triggered, poll on the same cadence as usePendingPoll
+  // (lib/pollSchedule.ts) until en_generated_at appears — the POST above
+  // only enqueues the actual translate job (see queue.ts), it doesn't wait
+  // for it.
+  useEffect(() => {
+    if (!isTranslating) return;
 
     let cancelled = false;
     let timerId: ReturnType<typeof setTimeout> | undefined;
     let elapsed = 0;
     let cycleStartedAt = Date.now();
 
-    const maybeTrigger = () => {
-      if (triggeredRef.current || !translateQueue.canEnqueue(article.id)) return;
-      triggeredRef.current = true;
-      translateQueue.start(article.id);
-      translateArticle(article.id)
-        .catch(() => {
-          // A failed trigger just means this cycle's polling won't be
-          // backed by a fresh job — the existing poll loop below keeps
-          // checking regardless, and a later tick may re-trigger once
-          // triggeredRef is reset (e.g. on unmount/remount).
-        })
-        .finally(() => translateQueue.finish(article.id));
-    };
-
     const tick = async () => {
-      maybeTrigger();
       try {
         const updated = await getAdminArticle(article.id);
         if (cancelled) return;
@@ -256,7 +303,9 @@ function useEnglishTranslation(
       cancelled = true;
       if (timerId !== undefined) clearTimeout(timerId);
     };
-  }, [needsEnglish, article.id]);
+  }, [isTranslating, article.id]);
+
+  return isTranslating;
 }
 
 export interface ArticleCardProps {
@@ -300,12 +349,27 @@ export function ArticleCard(props: ArticleCardProps) {
   const reducedMotion = usePrefersReducedMotion();
 
   // Task 35 Part A §4: EN mode is owner-only (see Header.tsx/App.tsx's
-  // effectiveLang) — a ready article that hasn't been translated yet gets a
-  // "preparing English" skeleton instead of silently falling back to RU
-  // (which selectSummaryFields would otherwise do).
+  // effectiveLang) — a ready article that hasn't been translated yet
+  // eventually gets a "preparing English" skeleton instead of silently
+  // falling back to RU forever. Task 37 §6: that skeleton now only shows
+  // once THIS card has actually been reached (see isTranslating below) —
+  // until then it renders normally, in Russian (see effectiveContentLang).
   const needsEnglish = isOwner && lang === "en" && article.status === "ready" &&
     !article.en_generated_at;
-  useEnglishTranslation(article, needsEnglish, onArticleUpdate);
+  const cardRef = useRef<HTMLElement>(null);
+  const isTranslating = useEnglishTranslation(
+    article,
+    needsEnglish,
+    expanded,
+    cardRef,
+    onArticleUpdate,
+  );
+  // A needsEnglish card not yet reached shows its Russian content — never a
+  // blank/empty render (selectSummaryFields would otherwise pick the still-
+  // missing EN fields) and never the skeleton (that's reserved for a card
+  // actually queued/in-flight, see the needsEnglish-and-isTranslating branch
+  // below).
+  const effectiveContentLang: Lang = needsEnglish ? "ru" : lang;
 
   // Task 35 Part C §4: article.image_key is only ever set once /img/:id
   // (index.ts) actually has something to serve — see downloadAndStoreImage
@@ -422,7 +486,7 @@ export function ArticleCard(props: ArticleCardProps) {
     );
   }
 
-  if (needsEnglish) {
+  if (needsEnglish && isTranslating) {
     const shimmerClass = withMotionClass(
       "skeleton-shimmer",
       "skeleton-shimmer--animated",
@@ -441,7 +505,7 @@ export function ArticleCard(props: ArticleCardProps) {
     );
   }
 
-  const fields = selectSummaryFields(article.title, article.summary_json, lang);
+  const fields = selectSummaryFields(article.title, article.summary_json, effectiveContentLang);
   const source = article.source;
   // Task 25 Part A point 2: a card that just finished (pending->ready,
   // whether an agent-batch member or an owner add) gets a gentle
@@ -465,7 +529,7 @@ export function ArticleCard(props: ArticleCardProps) {
   const faithfulnessDetailCounts = faithfulnessCounts(article.faithfulness_json);
 
   return (
-    <article class={cardClass} aria-expanded={expanded}>
+    <article class={cardClass} aria-expanded={expanded} ref={cardRef}>
       {(isPickOfDay || badgeInfo) && (
         <div class="card-badges-row">
           {isPickOfDay && <span class="pick-chip">{dict.pickOfDay}</span>}
