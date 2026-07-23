@@ -1351,18 +1351,21 @@ search over everything you've saved.
 **Model choice.** `@cf/baai/bge-m3` via Workers AI (free tier) — 1024 output dimensions, cosine
 metric, and multilingual (100+ languages, explicitly including Russian and English). It's the model
 this task's spec named directly, and it turned out to be available, so no fallback model was needed.
-One embedding per article, built from **English only** —
-`title_en + "\n" + tldr_en + "\n" + bullets_en` (see `buildEmbeddingText` in `embeddings.ts`) — for
-the same reason `faithfulness.ts`'s claim check is EN-only: RU/EN are independently-written parallel
-translations of the same facts (see the summarization prompt), so embedding one language captures
-equivalent meaning at half the Workers AI calls, and — more importantly here — keeps every article
-in one shared vector space regardless of `lang_original`, instead of a RU write-up and an EN
-write-up of the identical story landing in different regions of the space purely from language
-rather than content. Truncated to a conservative 1800 characters before embedding: Cloudflare's own
-docs disagree with each other on bge-m3's practical input limit (one table says ~512 tokens, the
-model's own page says a 60,000-token context window), and there's no tokenizer available at the edge
-to count exactly, so this errs toward truncating a little early rather than risking the API's own
-behavior on an oversized request.
+One embedding per article, built from **Russian only** —
+`title_ru + "\n" + tldr_ru + "\n" + bullets_ru` (see `buildEmbeddingText` in `embeddings.ts`). This
+feature originally embedded EN instead; Task 35 flipped both this and `faithfulness.ts`'s claim
+check from EN to RU for the same reason — RU-only became the default summary output, so a fresh
+article no longer carries `_en` fields at all until (if ever) the owner triggers the lazy EN
+translation, making RU the one field every article is actually guaranteed to have. bge-m3's declared
+multilingual support (100+ languages, including RU/EN) still keeps every article in one shared
+vector space regardless of `lang_original` — the same invariant this choice always protected, just
+anchored on RU instead of EN. One caveat the flip carries: `SEMANTIC_DEDUP_THRESHOLD` below was
+originally tuned against EN embeddings; RU embeddings may cluster at a slightly different similarity
+scale, so it's worth re-tuning against live data if dedup/search quality looks off. Truncated to a
+conservative 1800 characters before embedding: Cloudflare's own docs disagree with each other on
+bge-m3's practical input limit (one table says ~512 tokens, the model's own page says a 60,000-token
+context window), and there's no tokenizer available at the edge to count exactly, so this errs
+toward truncating a little early rather than risking the API's own behavior on an oversized request.
 
 **Live-measured threshold.** The task that added this asked for a live sanity check against a real
 same-story pair already in production: two independently-written articles about the Kimi K3/Qwen 3.8
