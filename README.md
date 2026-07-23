@@ -295,15 +295,27 @@ article.
 - `FAITHFULNESS_CHECK` (default `"true"`) — master on/off. Only the literal `"false"` disables it:
   no judge call, no `faithfulness_*` columns written, the pipeline behaves exactly as it did before
   this feature existed.
-- `FAITHFULNESS_ENFORCE` (default `"false"`) — **soft/signal-only by design for this first
-  release.** A `'fail'` verdict is stored and shown as a badge, but the article still proceeds to
-  `ready` regardless. Only the literal `"true"` turns on the enforce path: a `'fail'` triggers one
-  resummarize-and-reverify attempt, and if that retry still fails the judge, the article is
+- `FAITHFULNESS_ENFORCE` (default `"true"` as of Task 42) — a `'fail'` verdict now drives ONE
+  automatic remediation attempt instead of staying purely observational:
+  1. **Surgical repair first, no LLM call:** if every unsupported/contradicted claim maps to a
+     bullet (never the tldr or a body paragraph), those bullets are dropped and nothing else — no
+     re-judge needed, since the flagged claims are known and removed by construction.
+  2. **Otherwise, one informed regeneration:** re-summarize with the judge's flagged claim text fed
+     back into the prompt ("a previous attempt included claims not supported by the source: …; stay
+     strictly within the article; do not infer or add detail"), then re-judge once.
+
+  Whatever that single attempt produces: an **agent-picked** article still `'fail'` afterward is
   permanently discarded (`status: 'failed'`,
   `error: 'faithfulness: summary not supported by
-  source'`). Leave this off until you've watched
-  the health-report's faithfulness breakdown for a while and trust the judge isn't producing false
-  positives on your content.
+  source'`, and auto-archived — the reader never
+  sees it, consistent with how exhausted agent failures are already handled elsewhere). An
+  **owner-added** article (manual/extension/telegram) always stays `'ready'` and visible regardless
+  of the final verdict — the owner decides what to do with their own saves. This never repeats for
+  the same article, even across a later resummarize or heal cycle (tracked by
+  `articles.faithfulness_enforced_at`) — a second `'fail'` on an already-enforced article is
+  recorded as a signal only, same as the fully-off behavior below. Only the literal `"false"`
+  reverts to the original signal-only behavior: verdict stored, article proceeds to `'ready'`
+  regardless, no remediation ever attempted.
 - `FAITHFULNESS_JUDGE_MODEL` (default `"@cf/meta/llama-3.3-70b-instruct-fp8-fast"`, same default as
   `WORKERS_AI_MODEL`) — a separate setting so an owner running Claude via gateway/direct for
   summarization can still pick a specific Llama judge model.
@@ -313,10 +325,16 @@ paragraph — RU fields, since Task 35 made summarization Russian-only by defaul
 summaries" above) and the same extracted source text the summarizer saw, and returns
 `supported`/`unsupported`/`contradicted` per claim plus a short source-span citation for each. Any
 single `contradicted` claim fails the article outright; otherwise the unsupported-claim ratio
-decides `pass` (≤25%), `weak` (25–50%), or `fail` (>50%) — see
-`packages/api/src/pipeline/faithfulness.ts` for the exact thresholds, which are intentionally round,
-untuned numbers for this first release rather than something calibrated against real judge output
-yet.
+decides `pass` (≤34%), `weak` (34–60%), or `fail` (>60%) — see
+`packages/api/src/pipeline/faithfulness.ts` for the exact thresholds. Task 42 raised these from the
+original 25%/50%: a local investigation (6 real articles reproduced through the full pipeline, no
+production access in that sandbox) found the judge's citation-forcing design can mislabel a
+legitimate claim that synthesizes facts stated across several separate source sentences — a real, if
+modest, source of noise. The thresholds now carry a bit more headroom against that specific failure
+mode without weakening the disqualifying-contradiction rule or requiring a judge model change; see
+the source comment for the full investigation writeup, including the two REAL hallucinations (an
+invented statistic, a claim contradicting the source's own stated specifics) the judge caught
+correctly in that same sample.
 
 **Cross-lingual caveat:** the source article is usually English while the summary being judged is
 now Russian by default (it was the reverse before Task 35, when EN was the judged language and RU/EN
@@ -335,10 +353,12 @@ call does **not** count against the paid summarization budget above (`DAILY_SUMM
 its own uncapped KV counter purely for observability, visible in `GET /api/admin/health-report`
 alongside a pass/weak/fail/null breakdown across every article.
 
-**In the SPA:** a `'weak'`/`'fail'` verdict shows a small amber, non-alarming badge ("needs
-review"/"possibly inaccurate") on the card — visible to owner **and visitor** alike, since the whole
-point is transparency, not a private owner tool. `'pass'` and `null` (disabled/never checked) show
-nothing at all. The badge is a tooltip trigger (`Tooltip.tsx`/`lib/tooltip.ts`, no external library)
+**In the SPA (Task 42):** the badge is now internal quality instrumentation, not a reader-facing
+disclaimer — a `'weak'`/`'fail'` verdict shows the small amber badge ("needs review"/"possibly
+inaccurate") in **owner mode only**. A visitor never sees it, in either verdict state; a reader
+comes to read, not to audit the pipeline, and the old copy implied doubt about the ORIGINAL article
+rather than our own summary. `'pass'` and `null` (disabled/never checked) still show nothing at all,
+for everyone. The badge is a tooltip trigger (`Tooltip.tsx`/`lib/tooltip.ts`, no external library)
 explaining in plain language what the badge means and that a separate AI model did the checking —
 hover or keyboard-focus on desktop, tap on touch (dismissed by an outside tap or Escape). The
 owner-only expanded-card footnote additionally shows the unsupported/contradicted claim counts from

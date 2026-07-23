@@ -149,7 +149,9 @@
           "telegram_published_at",
           "en_generated_at",
           "image_key",
-          "image_source_url"
+          "image_source_url",
+          "processing_started_at",
+          "faithfulness_enforced_at"
         ],
         "properties": {
           "id": { "type": "string", "format": "uuid" },
@@ -201,7 +203,17 @@
             "type": ["string", "null"],
             "description": "R2 object key; fetch the image itself via GET /img/{id}, never this key directly."
           },
-          "image_source_url": { "type": ["string", "null"], "format": "uri" }
+          "image_source_url": { "type": ["string", "null"], "format": "uri" },
+          "processing_started_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Set as the first action of the queue consumer invocation that processes this article. Null means still queued (or never queued), not yet picked up — see the stale-pending sweeper's two-branch timeout logic."
+          },
+          "faithfulness_enforced_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Set once this article's single lifetime faithfulness remediation attempt (surgical bullet-repair or one informed regeneration) has run, regardless of outcome. Owner-only bookkeeping; never rendered, gates a later resummarize/heal cycle from restarting the cycle."
+          }
         }
       },
       "Article": {

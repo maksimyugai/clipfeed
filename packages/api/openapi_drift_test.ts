@@ -105,6 +105,7 @@ const sampleArticleListItem: ArticleListItem = {
   ...samplePublicArticle,
   error: null,
   faithfulness_json: null,
+  faithfulness_enforced_at: null,
 };
 // PublicArticle's owner-only counterpart drops has_error and adds error/faithfulness_json —
 // strip has_error explicitly so the ArticleListItem sample doesn't carry a field that isn't

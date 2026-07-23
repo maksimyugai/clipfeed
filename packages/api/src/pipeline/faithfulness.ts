@@ -28,11 +28,17 @@ export function parseFaithfulnessCheckEnabled(raw: string | undefined): boolean 
   return (raw ?? "").trim().toLowerCase() !== "false";
 }
 
-// FAITHFULNESS_ENFORCE default "false" — only the literal string "true"
-// (case-insensitive, trimmed) turns enforcement on; anything else
-// (absent/empty/garbage/"false") stays soft/signal-only.
+// Task 42 Part C: default flipped to "true" now that enforcement actually
+// does something useful (surgical bullet-repair or one informed
+// regeneration, capped at a single attempt, with agent-vs-owner-aware
+// outcome handling — see pipeline.ts's runFaithfulnessStage) instead of the
+// old "discard unconditionally" behavior this was gated off to avoid by
+// default. Same inverse-default convention as FAITHFULNESS_CHECK above now:
+// anything except the literal string "false" keeps enforcement enabled,
+// including an absent/empty/garbage value — an owner who wants the old
+// signal-only behavior back sets FAITHFULNESS_ENFORCE=false explicitly.
 export function parseFaithfulnessEnforceEnabled(raw: string | undefined): boolean {
-  return (raw ?? "").trim().toLowerCase() === "true";
+  return (raw ?? "").trim().toLowerCase() !== "false";
 }
 
 export function resolveFaithfulnessJudgeModel(raw: string | undefined): string {
@@ -157,14 +163,35 @@ export function parseJudgeResponse(
 // verdict. A single 'contradicted' claim is disqualifying regardless of
 // ratio — a summary that states something the source actively denies is
 // worse than one that merely adds unsupported color, so it always fails
-// outright rather than needing to cross a ratio bar. The two ratio
-// thresholds are round, untuned numbers for this first (soft-mode-only)
-// release — deliberately not calibrated against real judge output yet,
-// since FAITHFULNESS_ENFORCE stays off by default specifically so the
-// owner can watch real false-positive rates before these numbers (or the
-// enforce gate itself) are trusted to discard anything.
-export const FAIL_UNSUPPORTED_RATIO = 0.5;
-export const WEAK_UNSUPPORTED_RATIO = 0.25;
+// outright rather than needing to cross a ratio bar.
+//
+// Task 42 Part A/D: investigated whether 'weak'/'fail' verdicts are mostly
+// real hallucinations or judge false positives by reproducing 6 real
+// articles through the full pipeline locally (no access to the owner's
+// production data in this sandbox). Of 3 flagged claims found, 2 were real
+// hallucinations the judge correctly caught (an invented "400 languages"
+// figure conflating an unrelated "400 unrelicensed contributions" source
+// fact; a claim about Cas12a cutting single-stranded DNA that actually
+// contradicts the source's explicit double-stranded-DNA description) — the
+// judge worked correctly in both cases. The third was a genuine judge miss:
+// a claim synthesizing "Kubernetes supports pods/ReplicaSets/Deployments"
+// from facts stated across several separate source sentences, which the
+// judge's citation-forcing (quote-one-span) design can't easily verify as a
+// single quote — but this never actually flipped that article's verdict
+// (1 unsupported claim out of 6, well under WEAK_UNSUPPORTED_RATIO). This
+// small sample leans toward "hallucination is the dominant real problem,
+// judge already catches it" rather than "the judge is broken" — see
+// pipeline.ts's runFaithfulnessStage and summarize.ts's system prompt for
+// the corresponding hallucination-side fix. Since a real (if non-flipping)
+// cross-lingual synthesis-miss WAS observed and enforcement now actually
+// acts on 'fail' (see below), these ratios get modest headroom against that
+// noise rather than staying at their original untuned 0.5/0.25 — a cheap,
+// zero-added-cost hedge, chosen over switching judge models (real added
+// cost on every article) or judging against an English summary (doesn't
+// apply to the pipeline's first-pass judge call, since a fresh article
+// never has an EN translation yet at that point — see Task 35 Part A).
+export const FAIL_UNSUPPORTED_RATIO = 0.6;
+export const WEAK_UNSUPPORTED_RATIO = 0.34;
 
 export function aggregateFaithfulnessVerdict(
   claims: readonly FaithfulnessClaimResult[],
@@ -303,4 +330,77 @@ export async function runFaithfulnessCheck(
     contradicted: parsed.claims.filter((c) => c.verdict === "contradicted").length,
   };
   return { verdict, json: { claims: parsed.claims, notes: parsed.notes }, checkedAt, counts };
+}
+
+// --- Task 42 Part C: single-attempt remediation on a 'fail' verdict ---
+
+// Maps a judge claim index (1-based, per buildFaithfulnessClaims: index 1
+// is always the tldr, indices 2..(1+bullets.length) are the bullets in
+// order, everything after that is a body paragraph) back to a 0-based
+// bullets_ru array index — null when the claim is the tldr or a body
+// paragraph, meaning it can't be fixed by dropping a bullet.
+function claimIndexToBulletIndex(claimIndex: number, summary: SummaryJson): number | null {
+  const bulletsStart = 2;
+  const bulletsEnd = bulletsStart + summary.bullets_ru.length - 1;
+  if (claimIndex < bulletsStart || claimIndex > bulletsEnd) return null;
+  return claimIndex - bulletsStart;
+}
+
+export interface FaithfulnessRepairResult {
+  summary: SummaryJson;
+  droppedBullets: number;
+}
+
+// Deterministic, no-LLM fix for a 'fail' verdict: if EVERY unsupported/
+// contradicted claim maps to a bullet (none of them are the tldr or a body
+// paragraph — those can't be dropped without rewriting), drop exactly those
+// bullets and nothing else. Declines (returns null) when any bad claim
+// isn't a bullet, or when dropping would leave fewer than the profile's
+// minimum bullet count — the caller falls through to a full informed
+// regeneration in either case. No re-judge here by design (see
+// pipeline.ts's runFaithfulnessStage): the offending claims are known and
+// removed by construction, so a second judge call would only add latency
+// and cost for no new information.
+export function tryRepairUnfaithfulBullets(
+  summary: SummaryJson,
+  judgeJson: FaithfulnessJson,
+  minBullets: number,
+): FaithfulnessRepairResult | null {
+  if (!("claims" in judgeJson)) return null;
+  const badClaims = judgeJson.claims.filter((c) => c.verdict !== "supported");
+  if (badClaims.length === 0) return null;
+
+  const dropIndexes = new Set<number>();
+  for (const claim of badClaims) {
+    const bulletIndex = claimIndexToBulletIndex(claim.i, summary);
+    if (bulletIndex === null) return null;
+    dropIndexes.add(bulletIndex);
+  }
+
+  const kept = summary.bullets_ru.filter((_, i) => !dropIndexes.has(i));
+  if (kept.length < minBullets) return null;
+
+  return { summary: { ...summary, bullets_ru: kept }, droppedBullets: dropIndexes.size };
+}
+
+// Builds the corrective text fed back into the summarizer for the
+// regeneration path (see summarize.ts's buildUserMessage with
+// priorViolationsKind "faithfulness") — the ORIGINAL claim text (not just
+// the judge's verdict/evidence) for every unsupported/contradicted claim,
+// so the retry has a concrete target instead of a generic "try again".
+// Uses the summary that was actually judged (buildFaithfulnessClaims must
+// be re-run against it to recover claim text by index, since
+// FaithfulnessJson only stores {i, verdict, evidence}, not the claim text
+// itself). Truncated downstream by buildUserMessage's existing 300-char cap.
+export function buildFaithfulnessRetryViolations(
+  judgedSummary: SummaryJson,
+  judgeJson: FaithfulnessJson,
+): string | undefined {
+  if (!("claims" in judgeJson)) return undefined;
+  const textByIndex = new Map(buildFaithfulnessClaims(judgedSummary).map((c) => [c.i, c.text]));
+  const badTexts = judgeJson.claims
+    .filter((c) => c.verdict !== "supported")
+    .map((c) => textByIndex.get(c.i))
+    .filter((t): t is string => Boolean(t));
+  return badTexts.length > 0 ? badTexts.join("; ") : undefined;
 }
