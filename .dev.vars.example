@@ -22,7 +22,8 @@
 # SUMMARY_MODEL=claude-haiku-4-5-20251001
 # WORKERS_AI_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
 # DAILY_SUMMARY_LIMIT=80
-# PENDING_TIMEOUT_MIN=10
+# PENDING_TIMEOUT_MIN=8
+# QUEUE_WAIT_TIMEOUT_MIN=30
 
 # How much summary you want to read: target TOTAL body length in characters
 # (all paragraphs, per language) — the prompt and validation both derive

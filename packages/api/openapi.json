@@ -692,6 +692,12 @@
         "schema": { "type": "string", "enum": ["0", "1"] },
         "description": "Filter to archived (1) or non-archived (0) only; omit for both."
       },
+      "ListStatus": {
+        "name": "status",
+        "in": "query",
+        "schema": { "type": "string", "enum": ["ready", "pending", "failed", "all"] },
+        "description": "Task 41 Part D: filter by article status; 'all' (or omitting this param) means every status. Honored ONLY by GET /api/admin/articles — GET /api/articles (public) always forces 'ready' server-side regardless of this param, so a visitor can never request pending/failed rows."
+      },
       "SearchQuery": {
         "name": "q",
         "in": "query",
@@ -792,7 +798,7 @@
       "get": {
         "tags": ["public"],
         "summary": "List articles (public)",
-        "description": "Cursor-paginated, oldest-`next_cursor`-first. Rows are redacted (PublicArticle) — no raw `error` string, no faithfulness_json.",
+        "description": "Cursor-paginated, oldest-`next_cursor`-first. Rows are redacted (PublicArticle) — no raw `error` string, no faithfulness_json. Task 41 Part D: always status='ready' server-side — a pending or failed article is never returned here, regardless of any status= query param a caller sends (see GET /api/admin/articles for the owner-only equivalent that honors it).",
         "operationId": "listPublicArticles",
         "parameters": [
           { "$ref": "#/components/parameters/ListLimit" },
@@ -818,6 +824,7 @@
       "get": {
         "tags": ["public"],
         "summary": "Get one article (public)",
+        "description": "Task 41 Part D: 404s for a pending or failed article, same as a missing id — a visitor must not be able to learn that an article exists but hasn't finished (or failed) processing. The owner-only GET /api/admin/articles/{id} is unaffected.",
         "operationId": "getPublicArticle",
         "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
         "responses": {
@@ -835,7 +842,7 @@
       "get": {
         "tags": ["public"],
         "summary": "Semantic search (public)",
-        "description": "\"Ask your feed\" — embeds `q` and finds nearest articles by cosine similarity, filtered to a minimum score. Falls back to the plain keyword LIKE search (see GET /api/articles?q=) when Vectorize isn't configured or the embed call fails — never a dead end, just less precise. Rate-limited instance-wide (SEARCH_RATE_PER_MIN, default 30/min) because a hit here costs a Workers AI embedding call; GET /api/articles?q= is not rate-limited since it's a plain SQL LIKE query.",
+        "description": "\"Ask your feed\" — embeds `q` and finds nearest articles by cosine similarity, filtered to a minimum score. Falls back to the plain keyword LIKE search (see GET /api/articles?q=) when Vectorize isn't configured or the embed call fails — never a dead end, just less precise. Rate-limited instance-wide (SEARCH_RATE_PER_MIN, default 30/min) because a hit here costs a Workers AI embedding call; GET /api/articles?q= is not rate-limited since it's a plain SQL LIKE query. Task 41 Part D: results are always status='ready' — this also covers a row that still matches an old embedding while mid-resummarize (status back to 'pending').",
         "operationId": "searchPublicArticles",
         "parameters": [
           { "$ref": "#/components/parameters/SearchQuery" },
@@ -959,7 +966,7 @@
       "get": {
         "tags": ["admin"],
         "summary": "List articles (owner)",
-        "description": "Same filters/pagination as GET /api/articles, but full rows including the real `error` field (still without full_text).",
+        "description": "Same filters/pagination as GET /api/articles, but full rows including the real `error` field (still without full_text). Task 41 Part D: honors status= (default 'all', every status) — the owner legitimately needs to see pending/failed rows.",
         "operationId": "listAdminArticles",
         "security": [{ "cloudflareAccess": [] }],
         "parameters": [
@@ -968,7 +975,8 @@
           { "$ref": "#/components/parameters/ListTag" },
           { "$ref": "#/components/parameters/ListSource" },
           { "$ref": "#/components/parameters/ListQuery" },
-          { "$ref": "#/components/parameters/ListArchived" }
+          { "$ref": "#/components/parameters/ListArchived" },
+          { "$ref": "#/components/parameters/ListStatus" }
         ],
         "responses": {
           "200": {

@@ -134,6 +134,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    QUEUE_WAIT_TIMEOUT_MIN: 30,
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
@@ -216,7 +217,7 @@ Deno.test("public reads: still 200 w/o auth even when Access IS configured", asy
 // error, a visitor never does (see articles_test.ts's dedicated privacy
 // regression test for the incident this fixes) ---
 
-Deno.test("GET /api/admin/articles: 200 for the owner, includes the real error field; GET /api/articles omits it for the same row", async () => {
+Deno.test("GET /api/admin/articles: 200 for the owner, includes the real error field; GET /api/articles excludes the failed row entirely (Task 41 Part D)", async () => {
   const { env, authHeaders } = await makeOwnerContext();
   const ctx = makeExecutionContext().ctx;
 
@@ -238,11 +239,97 @@ Deno.test("GET /api/admin/articles: 200 for the owner, includes the real error f
   assertEquals(adminItem.error, "internal: fetch: upstream responded 500");
   assertEquals("full_text" in adminItem, false);
 
+  // Task 41 Part D: a public visitor never sees a failed article at all —
+  // internal pipeline state, not something a public feed should expose (a
+  // failed card was making the public feed look broken).
   const publicRes = await app.request("/api/articles", {}, env, ctx);
   const publicBody = await publicRes.json();
   const publicItem = publicBody.items.find((i: { id: string }) => i.id === "al1");
-  assertEquals("error" in publicItem, false);
-  assertEquals(publicItem.has_error, true);
+  assertEquals(publicItem, undefined);
+});
+
+Deno.test("GET /api/articles: a pending article is excluded too (Task 41 Part D) — a visitor never sees in-progress pipeline state", async () => {
+  const { env } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  await insertPendingArticle(env.DB, {
+    id: "pend1",
+    url: "https://example.com/pend1",
+    title: "pend1",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: new Date().toISOString(),
+  });
+
+  const publicRes = await app.request("/api/articles", {}, env, ctx);
+  const publicBody = await publicRes.json();
+  assertEquals(publicBody.items.find((i: { id: string }) => i.id === "pend1"), undefined);
+});
+
+Deno.test("GET /api/admin/articles: status= param filters to just that status; default (omitted) still returns every status", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  await insertPendingArticle(env.DB, {
+    id: "s-pending",
+    url: "https://example.com/s-pending",
+    title: "s-pending",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: new Date().toISOString(),
+  });
+  await insertPendingArticle(env.DB, {
+    id: "s-failed",
+    url: "https://example.com/s-failed",
+    title: "s-failed",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: new Date().toISOString(),
+  });
+  await markArticleFailed(env.DB, "s-failed", "boom");
+
+  const pendingOnly = await (
+    await app.request("/api/admin/articles?status=pending", { headers: authHeaders }, env, ctx)
+  ).json();
+  const pendingIds = pendingOnly.items.map((i: { id: string }) => i.id);
+  assertEquals(pendingIds.includes("s-pending"), true);
+  assertEquals(pendingIds.includes("s-failed"), false);
+
+  const failedOnly = await (
+    await app.request("/api/admin/articles?status=failed", { headers: authHeaders }, env, ctx)
+  ).json();
+  const failedIds = failedOnly.items.map((i: { id: string }) => i.id);
+  assertEquals(failedIds.includes("s-failed"), true);
+  assertEquals(failedIds.includes("s-pending"), false);
+
+  const all = await (
+    await app.request("/api/admin/articles", { headers: authHeaders }, env, ctx)
+  ).json();
+  const allIds = all.items.map((i: { id: string }) => i.id);
+  assertEquals(allIds.includes("s-pending"), true);
+  assertEquals(allIds.includes("s-failed"), true);
+});
+
+Deno.test("GET /api/articles?status=pending: the public route ignores the status param and stays ready-only regardless", async () => {
+  const { env } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  await insertPendingArticle(env.DB, {
+    id: "ignore-status",
+    url: "https://example.com/ignore-status",
+    title: "ignore-status",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: new Date().toISOString(),
+  });
+
+  const res = await app.request("/api/articles?status=pending", {}, env, ctx);
+  const body = await res.json();
+  assertEquals(body.items.find((i: { id: string }) => i.id === "ignore-status"), undefined);
 });
 
 // --- Admin routes: 401 without a token, both configured and unconfigured ---
@@ -834,7 +921,12 @@ Deno.test("POST /api/admin/heal/revalidate-failed: re-enqueues every summary-val
   const body = await res.json();
   assertEquals(body.count, 1);
 
-  assertEquals(jobs.sent, [{ kind: "process", articleId: "sv1" }]);
+  // queueMessageId is generated per-enqueue (see queue.ts's
+  // enqueueArticleJob) — assert the fields that matter, not the random id.
+  assertEquals(jobs.sent.length, 1);
+  assertEquals(jobs.sent[0].kind, "process");
+  assertEquals(jobs.sent[0].articleId, "sv1");
+  assertEquals(typeof jobs.sent[0].queueMessageId, "string");
   const sv1 = rowsOf().find((r) => r.id === "sv1")!;
   assertEquals(sv1.heal_attempts, 0);
   assertEquals(sv1.status, "pending");
@@ -1014,7 +1106,7 @@ Deno.test("GET /api/admin/me: 401 when not authenticated", async () => {
 
 // --- Public vs admin data hygiene on the same article ---
 
-Deno.test("public GET /api/articles/:id excludes full_text/error, has_error reflects failure state", async () => {
+Deno.test("public GET /api/articles/:id: 404 for a failed article (Task 41 Part D — a visitor must not learn it exists but failed)", async () => {
   const { env, authHeaders } = await makeOwnerContext({ DAILY_SUMMARY_LIMIT: 0 });
   const { ctx, settle } = makeExecutionContext();
   const restoreFetch = stubFetch();
@@ -1035,12 +1127,9 @@ Deno.test("public GET /api/articles/:id excludes full_text/error, has_error refl
     await settle();
 
     const publicRes = await app.request(`/api/articles/${created.id}`, {}, env, ctx);
-    assertEquals(publicRes.status, 200);
-    const publicArticle = await publicRes.json();
-    assertEquals("full_text" in publicArticle, false);
-    assertEquals("error" in publicArticle, false);
-    assertEquals(publicArticle.has_error, true);
-    assertEquals(publicArticle.status, "failed");
+    assertEquals(publicRes.status, 404);
+    const publicBody = await publicRes.json();
+    assertEquals(JSON.stringify(publicBody).includes("daily-limit"), false);
 
     const adminRes = await app.request(
       `/api/admin/articles/${created.id}`,

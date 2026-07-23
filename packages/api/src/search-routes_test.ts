@@ -103,6 +103,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    QUEUE_WAIT_TIMEOUT_MIN: 30,
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
@@ -201,6 +202,55 @@ Deno.test("GET /api/search: falls back to keyword search when VECTORS is absent,
   assertEquals(body.items[0].score, 0);
   assertEquals("error" in body.items[0].article, false);
   assertEquals("full_text" in body.items[0].article, false);
+});
+
+Deno.test("GET /api/search: a pending article matching the query is excluded (keyword fallback, Task 41 Part D)", async () => {
+  const env = makeEnv({ VECTORS: undefined });
+  const ctx = makeExecutionContext().ctx;
+  await insertPendingArticle(env.DB, {
+    id: "pend-s1",
+    url: "https://example.com/pend-s1",
+    title: "Widgets In Progress",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+
+  const publicRes = await app.request("/api/search?q=Widgets", {}, env, ctx);
+  const publicBody = await publicRes.json();
+  assertEquals(publicBody.items.length, 0);
+});
+
+Deno.test("GET /api/search: a row still matching its OLD embedding while mid-resummarize (status back to 'pending') is excluded from the public route (Task 41 Part D)", async () => {
+  const { env, authHeaders } = await makeOwnerContext({
+    AI: makeStubAi(new Array(EMBEDDING_DIMENSIONS).fill(0.1)),
+    VECTORS: makeStubVectors([{ id: "resum-1", score: 0.9 }]),
+  });
+  const ctx = makeExecutionContext().ctx;
+  await seedReadyArticle(env.DB, {
+    id: "resum-1",
+    title: "Article Being Resummarized",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  const db = env.DB as unknown as FakeD1;
+  db.rows.find((r) => r.id === "resum-1")!.status = "pending";
+
+  const publicRes = await app.request("/api/search?q=something", {}, env, ctx);
+  const publicBody = await publicRes.json();
+  assertEquals(publicBody.items.length, 0);
+
+  const adminRes = await app.request(
+    "/api/admin/search?q=something",
+    { headers: authHeaders },
+    env,
+    ctx,
+  );
+  const adminBody = await adminRes.json();
+  assertEquals(
+    adminBody.items.map((i: { article: { id: string } }) => i.article.id),
+    ["resum-1"],
+  );
 });
 
 Deno.test("GET /api/search: semantic path preserves Vectorize's score order", async () => {

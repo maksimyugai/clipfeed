@@ -156,9 +156,22 @@ declare global {
     WORKERS_AI_MODEL: string;
     DAILY_SUMMARY_LIMIT: number;
     // Stale-pending sweeper (see sweepStalePending in db.ts): a 'pending' row
-    // older than this many minutes is lazily flipped to 'failed' on the next
-    // GET /api/articles. Backstop for a Workers CPU-time kill mid-pipeline.
+    // whose processing_started_at is older than this many minutes is lazily
+    // flipped to 'failed' ('timeout: processing did not complete') on the
+    // next GET /api/articles. Backstop for a Workers CPU-time kill
+    // mid-pipeline, OR a genuinely stuck LLM call. Task 41 Part C: measured
+    // from processing_started_at (when a consumer actually picked the
+    // message up), not added_at — see QUEUE_WAIT_TIMEOUT_MIN below for the
+    // "still waiting in the queue" case this used to conflate with.
     PENDING_TIMEOUT_MIN: number;
+    // Task 41 Part C: a 'pending' row that has NEVER reached a consumer
+    // (processing_started_at still null) but was added more than this many
+    // minutes ago is flipped to 'failed' ('queue: never picked up') instead
+    // — a distinct, longer budget than PENDING_TIMEOUT_MIN because a message
+    // can legitimately wait behind others under queue backpressure
+    // (max_concurrency = 3 in wrangler.toml) without anything actually being
+    // stuck.
+    QUEUE_WAIT_TIMEOUT_MIN: number;
     // LLM credentials/routing: pick one mode, in priority order —
     // AI Gateway (AI_GATEWAY_URL [+ CF_AIG_TOKEN]) > direct (ANTHROPIC_API_KEY)
     // > Workers AI (no config needed, the AI binding above, free-tier

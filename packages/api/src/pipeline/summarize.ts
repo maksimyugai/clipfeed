@@ -13,12 +13,14 @@ const ANTHROPIC_VERSION = "2023-06-01";
 // exceeds a Workers subrequest/duration limit (killing the isolate before
 // our own try/catch ever runs — the same "no catchable exception" class as
 // the CPU-kill scenario in pipeline.ts) or just hangs until the
-// stale-pending sweeper's 10-minute timeout finally catches it. 90s gives
-// the observed successful case (53.6s) real headroom for run-to-run
-// variance while still bounding worst-case wait time to a fraction of the
-// sweeper's fallback — the owner's existing Retry button covers the rarer
-// case where the model would have eventually succeeded given even longer.
-const LLM_CALL_TIMEOUT_MS = 90_000;
+// stale-pending sweeper's processing-timeout branch finally catches it
+// (see db.ts's sweepStalePending). 60s gives the observed successful case
+// (53.6s) real headroom for run-to-run variance; Task 41 Part C split this
+// out from the judge's own JUDGE_CALL_TIMEOUT_MS (faithfulness.ts) so each
+// LLM call site can be tuned to its own observed latency instead of sharing
+// one timeout — the owner's existing Retry button covers the rarer case
+// where the model would have eventually succeeded given even longer.
+const SUMMARIZE_CALL_TIMEOUT_MS = 60_000;
 
 // env.AI.run() is a binding call, not a fetch — our ambient Ai type has no
 // AbortSignal param to cancel it directly, so this races it against a timer
@@ -1193,7 +1195,7 @@ async function callAnthropicRaw(
 ): Promise<AnthropicCallResult> {
   const { url, headers } = buildAnthropicRequest(config);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LLM_CALL_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), SUMMARIZE_CALL_TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetch(url, {
@@ -1209,7 +1211,9 @@ async function callAnthropicRaw(
     });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`${anthropicErrorPrefix(config)}: timed out after ${LLM_CALL_TIMEOUT_MS}ms`);
+      throw new Error(
+        `${anthropicErrorPrefix(config)}: timed out after ${SUMMARIZE_CALL_TIMEOUT_MS}ms`,
+      );
     }
     throw err;
   } finally {
@@ -1435,8 +1439,8 @@ function parseWorkersAiEnglishResultWithDiagnostics(result: unknown): EnglishPar
 function runAiWithTimeout(ai: Ai, model: string, input: Record<string, unknown>): Promise<unknown> {
   return withTimeout(
     ai.run(model, input),
-    LLM_CALL_TIMEOUT_MS,
-    `timed out after ${LLM_CALL_TIMEOUT_MS}ms`,
+    SUMMARIZE_CALL_TIMEOUT_MS,
+    `timed out after ${SUMMARIZE_CALL_TIMEOUT_MS}ms`,
   );
 }
 

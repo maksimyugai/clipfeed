@@ -1,5 +1,5 @@
 import "../env.d.ts";
-import type { ArticleListItem } from "@clipfeed/shared/types";
+import type { ArticleListItem, ArticleStatus } from "@clipfeed/shared/types";
 import { getArticlesByIds, listArticles } from "../articles/db.ts";
 import {
   embedText,
@@ -126,9 +126,22 @@ export function filterAndOrderMatches(
 // already uses) when Vectorize isn't provisioned, the embed call fails, or
 // the query embeds to nothing useful — never throws, never a dead end for
 // the caller.
-export async function searchArticles(env: Env, q: string, limit: number): Promise<SearchHit[]> {
+//
+// Task 41 Part D: `status`, when given, filters BOTH search paths — the
+// public route passes 'ready' (a pending/failed article must never surface
+// in a visitor's results, same principle as the list/detail routes; a
+// resummarize-in-progress row can still match its OLD embedding while
+// showing 'pending', so the semantic path needs this filter too, not just
+// the keyword fallback). The admin route passes nothing (undefined), same
+// as its list-endpoint counterpart.
+export async function searchArticles(
+  env: Env,
+  q: string,
+  limit: number,
+  status?: ArticleStatus,
+): Promise<SearchHit[]> {
   if (!env.VECTORS) {
-    return await keywordSearch(env, q, limit);
+    return await keywordSearch(env, q, limit, status);
   }
 
   let vector: number[];
@@ -169,13 +182,19 @@ export async function searchArticles(env: Env, q: string, limit: number): Promis
   for (const match of matches) {
     const article = byId.get(match.id);
     if (!article) continue; // deleted since being embedded — skip, not an error
+    if (status && article.status !== status) continue;
     const { full_text: _fullText, ...listItem } = article;
     hits.push({ article: listItem, score: match.score });
   }
   return hits;
 }
 
-async function keywordSearch(env: Env, q: string, limit: number): Promise<SearchHit[]> {
-  const result = await listArticles(env.DB, { limit, q });
+async function keywordSearch(
+  env: Env,
+  q: string,
+  limit: number,
+  status?: ArticleStatus,
+): Promise<SearchHit[]> {
+  const result = await listArticles(env.DB, { limit, q, status });
   return result.items.slice(0, limit).map((article) => ({ article, score: 0 }));
 }

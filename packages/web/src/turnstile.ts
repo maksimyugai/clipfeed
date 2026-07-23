@@ -1,4 +1,5 @@
-const CONFIG_URL = "/api/config";
+import { loadRawConfig } from "./lib/config.ts";
+
 const SCRIPT_URL = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
 // Thrown for any client-side failure to acquire a token (script failed to
@@ -23,22 +24,14 @@ declare global {
   var turnstile: TurnstileGlobal | undefined;
 }
 
-let siteKeyCache: string | null | undefined; // undefined = not yet fetched
-
-// Fetches /api/config once and caches the result for the session. A fetch
-// failure is treated the same as "inactive" — this must never block the app
-// from working; if Turnstile is really active, the server's own check on
-// the next mutation attempt is the source of truth and surfaces the error.
+// Reads its slice of the single shared GET /api/config fetch (see
+// lib/config.ts). A fetch failure is treated the same as "inactive" — this
+// must never block the app from working; if Turnstile is really active, the
+// server's own check on the next mutation attempt is the source of truth and
+// surfaces the error.
 export async function loadTurnstileSiteKey(): Promise<string | null> {
-  if (siteKeyCache !== undefined) return siteKeyCache;
-  try {
-    const res = await fetch(CONFIG_URL);
-    const body = await res.json() as { turnstile_site_key: string | null };
-    siteKeyCache = body.turnstile_site_key ?? null;
-  } catch {
-    siteKeyCache = null;
-  }
-  return siteKeyCache;
+  const body = await loadRawConfig();
+  return body.turnstile_site_key ?? null;
 }
 
 let scriptPromise: Promise<void> | null = null;

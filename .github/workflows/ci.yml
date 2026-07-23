@@ -17,11 +17,19 @@ jobs:
         with:
           deno-version: "2.9.1"
 
+      # Task 41 Part E: caps resident memory for fmt/lint so a future huge
+      # vendored asset (accidentally outside deno.json's exclude patterns)
+      # can't OOM the runner. `ulimit -v` doesn't work here -- V8 reserves a
+      # large virtual address space on startup regardless of actual usage,
+      # so it kills `deno` immediately rather than only under real memory
+      # pressure. The wrapper script polls actual RSS instead; see its
+      # header comment for the local repro that proved a ~500MB-plus valid
+      # JS file drives deno fmt's peak RSS into double-digit GB.
       - name: Format check
-        run: deno fmt --check
+        run: ./scripts/ci/run-with-memory-limit.sh 512 -- deno fmt --check
 
       - name: Lint
-        run: deno lint
+        run: ./scripts/ci/run-with-memory-limit.sh 512 -- deno lint
 
       - name: Test
         run: deno task test

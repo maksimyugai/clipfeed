@@ -30,6 +30,7 @@ function article(overrides: Partial<ArticleListItem> & { id: string }): ArticleL
     en_generated_at: null,
     image_key: null,
     image_source_url: null,
+    processing_started_at: null,
     ...overrides,
   };
 }

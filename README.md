@@ -416,21 +416,47 @@ this app used) hard-caps at 30 seconds after the response is sent, and an unsett
 cancelled outright at that point — a silent isolate teardown, not a catchable exception. Large
 articles' Workers AI summarization calls have been measured well past 30 seconds; every past
 `"timeout: processing did not complete"` incident traces back to this cap. A queue consumer
-invocation gets minutes of wall time instead, so the `LLM_CALL_TIMEOUT_MS` guard (see
+invocation gets minutes of wall time instead, so the `SUMMARIZE_CALL_TIMEOUT_MS` guard (see
 `summarize.ts`) can actually fire and turn a slow call into a clean `'failed'` row instead of the
 article getting stuck.
 
-Mutating endpoints and the scraping agent enqueue a small `{ kind, articleId, notify? }` message
-(see `QueueMessage` in `packages/shared/src/types.ts`) onto the `clipfeed-jobs` queue instead of
-running the pipeline directly; the same Worker's `queue()` export (`index.ts`) consumes it.
-`kind: 'process'` runs the full pipeline; `kind: 'resummarize'` re-runs just the summarize step.
-Extension-submitted HTML (up to 2MB) is too large for a Queues message body (128KB limit), so it's
-handed off through KV instead — see `queue.ts`'s `stashPendingHtml`/`takePendingHtml`. Batch size is
-1: one article per consumer invocation, so one slow summarization never blocks another queued
-article. Every consumer invocation logs `queue_received` as its first line and `queue_done` as its
-last (with `articleId`/`kind`/`outcome`/`duration_ms`), and every successful enqueue logs
-`queue_enqueued` — so a `wrangler tail` window always shows a life sign for a message, rather than a
-silent gap if something goes wrong before the pipeline itself gets to log anything.
+Mutating endpoints and the scraping agent enqueue a small
+`{ kind, articleId, notify?, queueMessageId
+}` message (see `QueueMessage` in
+`packages/shared/src/types.ts`) onto the `clipfeed-jobs` queue instead of running the pipeline
+directly; the same Worker's `queue()` export (`index.ts`) consumes it. `kind: 'process'` runs the
+full pipeline; `kind: 'resummarize'` re-runs just the summarize step. Extension-submitted HTML (up
+to 2MB) is too large for a Queues message body (128KB limit), so it's handed off through KV instead
+— see `queue.ts`'s `stashPendingHtml`/`takePendingHtml`. Batch size is 1: one article per consumer
+invocation, so one slow summarization never blocks another queued article. Every successful enqueue
+logs `queue_started` with a producer-generated `queueMessageId` (a `crypto.randomUUID()`, since
+Cloudflare's real `Queue.send()` returns no id), and every consumer invocation echoes that same id
+in its `queue_received` (first line) and `queue_done` (last line, with
+`articleId`/`kind`/`outcome`/`duration_ms`) logs — so a `wrangler tail` window always shows a life
+sign for a message and lets you correlate producer and consumer log lines for the same delivery,
+rather than a silent gap if something goes wrong before the pipeline itself gets to log anything.
+
+**Stale-pending sweep (two timeouts, not one):** a consumer invocation sets `processing_started_at`
+as the very first thing it does (`queue.ts`'s `processQueueMessage`, before even reading the article
+row), so the sweeper (`sweepStalePending` in `articles/db.ts`) can tell "queued but never picked up
+by a consumer" apart from "a consumer picked it up and the pipeline itself is stuck" — two very
+different failure modes that used to share one clock measured from `added_at`, which punished a
+message stuck behind a queue backlog for wait time it never caused. Two independent env vars, two
+distinct error strings:
+
+- **`PENDING_TIMEOUT_MIN`** (default `8`) — from `processing_started_at`; a pipeline invocation
+  that's been running longer than this is presumed hung and marked `'failed'` with
+  `"timeout: processing did not complete"`. 8 minutes leaves real headroom over the pipeline's own
+  worst-case wall time (`SUMMARIZE_CALL_TIMEOUT_MS` x2 + `JUDGE_CALL_TIMEOUT_MS` x2 + fetch/extract/
+  embed/image overhead ≈ 357s/~6 min) — 6 minutes was considered and rejected as too tight (only ~3s
+  of margin).
+- **`QUEUE_WAIT_TIMEOUT_MIN`** (default `30`) — from `added_at`, only for rows where
+  `processing_started_at` is still `NULL`; a message that's been sitting in the queue this long
+  without a consumer ever touching it is marked `'failed'` with `"queue: never picked up"`.
+
+Both branches re-check `status = 'pending'` inside their own `UPDATE`'s `WHERE` clause (not a stale
+prior `SELECT`), so a pipeline that completes concurrently with a sweep always wins — the sweep
+simply becomes a no-op for that row rather than clobbering a real result.
 
 The pipeline itself guarantees a terminal `'ready'`/`'failed'` row for every invocation it actually
 runs (see `pipeline.ts`) — but that guarantee only covers messages the consumer gets to run at all.

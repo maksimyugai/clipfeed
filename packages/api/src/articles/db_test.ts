@@ -70,6 +70,7 @@ const sampleListItem: ArticleListItem = {
   en_generated_at: null,
   image_key: null,
   image_source_url: null,
+  processing_started_at: null,
 };
 
 Deno.test("LIST_COLUMNS: projects every ArticleListItem column (Article minus full_text)", () => {
@@ -116,6 +117,21 @@ Deno.test("buildListQuery: archived true/false bind 1/0", () => {
   assertEquals(buildListQuery({ limit: 5, archived: false }).binds, [0, 6]);
 });
 
+// --- Task 41 Part D: status filter ---
+
+Deno.test("buildListQuery: status='ready' adds a status = ? condition", () => {
+  const { sql, binds } = buildListQuery({ limit: 5, status: "ready" });
+  assertEquals(sql.includes("WHERE status = ?"), true);
+  assertEquals(binds, ["ready", 6]);
+});
+
+Deno.test("buildListQuery: status omitted (undefined) — no status condition, every row eligible", () => {
+  const { sql, binds } = buildListQuery({ limit: 5 });
+  assertEquals(sql.includes("status = ?"), false);
+  assertEquals(sql.includes("WHERE"), false);
+  assertEquals(binds, [6]);
+});
+
 Deno.test("buildListQuery: combines all filters with AND in a fixed order", () => {
   const { sql, binds } = buildListQuery({
     limit: 5,
@@ -124,12 +140,13 @@ Deno.test("buildListQuery: combines all filters with AND in a fixed order", () =
     source: "example.com",
     q: "widget",
     archived: true,
+    status: "ready",
   });
   assertEquals(
     sql.includes(
       "WHERE added_at < ? AND tags LIKE ? AND source = ? AND " +
         "(title LIKE ? ESCAPE '\\' OR summary_ru LIKE ? ESCAPE '\\' OR summary_en LIKE ? ESCAPE '\\') " +
-        "AND archived = ?",
+        "AND archived = ? AND status = ?",
     ),
     true,
   );
@@ -141,6 +158,7 @@ Deno.test("buildListQuery: combines all filters with AND in a fixed order", () =
     "%widget%",
     "%widget%",
     1,
+    "ready",
     6,
   ]);
 });
@@ -264,38 +282,203 @@ Deno.test("buildListQuery: no generated LIKE pattern can ever exceed D1's 50-byt
   }
 });
 
-// --- sweepStalePending ---
+// --- sweepStalePending: Task 41 Part C two-branch split ---
+// PROCESSING branch (processing_started_at set) -> 'timeout: processing did
+// not complete', measured from processing_started_at. QUEUE-WAIT branch
+// (processing_started_at still null) -> 'queue: never picked up', measured
+// from added_at — this is what stops the sweeper punishing a message for
+// time it spent waiting in the queue behind others (max_concurrency), not
+// actually stuck mid-pipeline.
 
-Deno.test("sweepStalePending: flips only pending rows older than the timeout, leaves newer/non-pending rows alone", async () => {
+const NOW = new Date("2026-01-01T00:10:00.000Z");
+
+Deno.test("sweepStalePending: PROCESSING branch — a row whose processing_started_at is older than pendingTimeoutMinutes is flipped, with the processing-timeout error", async () => {
   const db = new FakeD1();
   db.rows.push(
-    { id: "old-pending", status: "pending", added_at: "2025-12-31T23:49:00.000Z", error: null },
-    { id: "new-pending", status: "pending", added_at: "2026-01-01T00:08:00.000Z", error: null },
-    { id: "old-ready", status: "ready", added_at: "2025-12-31T23:00:00.000Z", error: null },
+    {
+      id: "stuck-processing",
+      status: "pending",
+      added_at: "2025-12-31T23:00:00.000Z", // long before processing even started — irrelevant here
+      processing_started_at: "2025-12-31T23:59:00.000Z", // 11 min before NOW
+      error: null,
+    },
   );
 
-  await sweepStalePending(db, 10, new Date("2026-01-01T00:10:00.000Z"));
+  await sweepStalePending(db, 10, 30, NOW);
 
-  const byId = (id: string) => db.rows.find((r) => r.id === id)!;
-  assertEquals(byId("old-pending").status, "failed");
-  assertEquals(byId("old-pending").error, "timeout: processing did not complete");
-  assertEquals(byId("new-pending").status, "pending");
-  assertEquals(byId("new-pending").error, null);
-  assertEquals(byId("old-ready").status, "ready");
+  const row = db.rows[0];
+  assertEquals(row.status, "failed");
+  assertEquals(row.error, "timeout: processing did not complete");
 });
 
-Deno.test("sweepStalePending: timeout value is honored — a longer timeout spares the same row", async () => {
+Deno.test("sweepStalePending: PROCESSING branch — a row whose processing started recently is left pending", async () => {
   const db = new FakeD1();
   db.rows.push(
-    { id: "eleven-min-old", status: "pending", added_at: "2025-12-31T23:59:00.000Z", error: null },
+    {
+      id: "processing-fresh",
+      status: "pending",
+      added_at: "2025-12-31T23:00:00.000Z",
+      processing_started_at: "2026-01-01T00:08:00.000Z", // 2 min before NOW
+      error: null,
+    },
   );
-  const now = new Date("2026-01-01T00:10:00.000Z");
 
-  await sweepStalePending(db, 60, now);
+  await sweepStalePending(db, 10, 30, NOW);
+  assertEquals(db.rows[0].status, "pending");
+});
+
+Deno.test("sweepStalePending: QUEUE-WAIT branch — a row that never reached a consumer (processing_started_at null) is flipped once added_at exceeds queueWaitTimeoutMinutes, with the queue-wait error — never the processing-timeout error", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    {
+      id: "never-picked-up",
+      status: "pending",
+      added_at: "2025-12-31T23:39:00.000Z", // 31 min before NOW
+      processing_started_at: null,
+      error: null,
+    },
+  );
+
+  await sweepStalePending(db, 10, 30, NOW);
+
+  const row = db.rows[0];
+  assertEquals(row.status, "failed");
+  assertEquals(row.error, "queue: never picked up");
+});
+
+Deno.test("sweepStalePending: QUEUE-WAIT branch — a row still within the queue-wait budget is left pending, even though it's already past pendingTimeoutMinutes", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    {
+      id: "still-queued",
+      status: "pending",
+      added_at: "2026-01-01T00:05:00.000Z", // 5 min before NOW — past a 10min PENDING_TIMEOUT_MIN
+      // but well within a 30min QUEUE_WAIT_TIMEOUT_MIN, and this row never
+      // started processing — a busy queue, not a stuck pipeline.
+      processing_started_at: null,
+      error: null,
+    },
+  );
+
+  await sweepStalePending(db, 10, 30, NOW);
+  assertEquals(db.rows[0].status, "pending");
+});
+
+Deno.test("sweepStalePending: non-pending rows are never touched by either branch", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    {
+      id: "old-ready",
+      status: "ready",
+      added_at: "2025-12-01T00:00:00.000Z",
+      processing_started_at: "2025-12-01T00:01:00.000Z",
+      error: null,
+    },
+  );
+  await sweepStalePending(db, 10, 30, NOW);
+  assertEquals(db.rows[0].status, "ready");
+});
+
+Deno.test("sweepStalePending: pendingTimeoutMinutes/queueWaitTimeoutMinutes are honored independently — a longer value spares the same row", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    {
+      id: "eleven-min-processing",
+      status: "pending",
+      added_at: "2025-12-31T23:00:00.000Z",
+      processing_started_at: "2025-12-31T23:59:00.000Z", // 11 min before NOW
+      error: null,
+    },
+  );
+
+  await sweepStalePending(db, 60, 30, NOW);
   assertEquals(db.rows[0].status, "pending");
 
-  await sweepStalePending(db, 10, now);
+  await sweepStalePending(db, 10, 30, NOW);
   assertEquals(db.rows[0].status, "failed");
+});
+
+// --- Race safety: a swept-to-failed row whose real pipeline completes
+// afterward must end up 'ready', never stuck showing the generic sweep
+// error for content that actually succeeded. Both sweep UPDATEs re-check
+// `status = 'pending'` at execution time (not from a stale read), so
+// whichever write actually lands SECOND against a given row is what wins —
+// this is what makes the two writes safe regardless of ordering. ---
+
+Deno.test("sweepStalePending: last-writer-safe — a real completion landing AFTER the sweep overwrites the sweep's failure (content wins)", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    {
+      id: "race-1",
+      status: "pending",
+      added_at: "2025-12-31T23:00:00.000Z",
+      processing_started_at: "2025-12-31T23:59:00.000Z",
+      error: null,
+    },
+  );
+
+  await sweepStalePending(db, 10, 30, NOW);
+  assertEquals(db.rows[0].status, "failed");
+
+  // The pipeline, unaware it was just swept, finishes moments later and
+  // writes its own real result — markArticleReady is unconditional on id,
+  // so this simply overwrites whatever the sweep left behind.
+  await markArticleReady(db, "race-1", {
+    full_text: "text",
+    title: "Race 1",
+    author: null,
+    lang_original: "en",
+    summary_ru: "summary",
+    summary_json: {
+      title_ru: "t",
+      tldr_ru: "t",
+      body_ru: [],
+      bullets_ru: [],
+      tags: [],
+      lang_original: "en",
+    },
+    tags: [],
+  });
+
+  assertEquals(db.rows[0].status, "ready");
+});
+
+Deno.test("sweepStalePending: last-writer-safe — a real completion landing BEFORE the sweep means the sweep is a no-op (status is no longer 'pending')", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    {
+      id: "race-2",
+      status: "pending",
+      added_at: "2025-12-31T23:00:00.000Z",
+      processing_started_at: "2025-12-31T23:59:00.000Z",
+      error: null,
+    },
+  );
+
+  await markArticleReady(db, "race-2", {
+    full_text: "text",
+    title: "Race 2",
+    author: null,
+    lang_original: "en",
+    summary_ru: "summary",
+    summary_json: {
+      title_ru: "t",
+      tldr_ru: "t",
+      body_ru: [],
+      bullets_ru: [],
+      tags: [],
+      lang_original: "en",
+    },
+    tags: [],
+  });
+  assertEquals(db.rows[0].status, "ready");
+
+  // The sweep's own WHERE clause re-checks status = 'pending' at UPDATE
+  // time — it no longer matches this row at all, so it can't clobber the
+  // real result even though processing_started_at is still "stale" old.
+  await sweepStalePending(db, 10, 30, NOW);
+  assertEquals(db.rows[0].status, "ready");
+  assertEquals(db.rows[0].error, null);
 });
 
 // --- markArticleFailed: no code path may persist an empty/whitespace error ---
@@ -983,6 +1166,7 @@ Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verd
     en_generated_at: null,
     image_key: null,
     image_source_url: null,
+    processing_started_at: null,
   };
   const pub = toPublicArticle(article);
   assertEquals("faithfulness_json" in pub, false);
@@ -1021,6 +1205,7 @@ Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_ver
     en_generated_at: null,
     image_key: null,
     image_source_url: null,
+    processing_started_at: null,
   };
   const pub = toPublicListItem(item);
   assertEquals("faithfulness_json" in pub, false);

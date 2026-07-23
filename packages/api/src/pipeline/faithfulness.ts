@@ -216,11 +216,14 @@ export async function readFaithfulnessCallCount(
 
 // --- The judge call itself ---
 
-// Lighter task than full summarization (a fixed prompt shape, no retry-
-// with-corrective-content-rewrite loop) but still a real Workers AI call
-// worth bounding — same reasoning as summarize.ts's LLM_CALL_TIMEOUT_MS, a
-// smaller number since there's much less for the model to generate.
-const JUDGE_CALL_TIMEOUT_MS = 60_000;
+// A different prompt shape than summarization (fixed, no retry-with-
+// corrective-content-rewrite loop) but not necessarily a faster call: the
+// judge re-reads the full article text plus the generated summary to check
+// faithfulness, and Workers AI judge calls have been observed running
+// 30-90s — see summarize.ts's SUMMARIZE_CALL_TIMEOUT_MS for the sibling
+// constant (Task 41 Part C split these two apart so each can be tuned to
+// its own observed latency instead of sharing one timeout).
+const JUDGE_CALL_TIMEOUT_MS = 90_000;
 
 async function callJudgeOnce(ai: Ai, model: string, prompt: string): Promise<unknown | null> {
   try {

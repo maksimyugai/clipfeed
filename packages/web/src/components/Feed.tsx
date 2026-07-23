@@ -222,7 +222,7 @@ export function Feed(props: FeedProps) {
                   />
                 )}
 
-                {agentBatch.visible && (
+                {agentBatch.visible && isOwner && (
                   <AgentBatchIndicator
                     dict={dict}
                     lang={props.lang}

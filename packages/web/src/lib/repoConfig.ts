@@ -4,7 +4,7 @@
 // the forkability policy, never an owner-specific default), so a fresh fork
 // simply shows neither link until the owner sets their own.
 
-const CONFIG_URL = "/api/config";
+import { loadRawConfig } from "./config.ts";
 
 // The pure, directly-testable gating rule: only render the link for a
 // well-formed https URL. Guards against a misconfigured REPO_URL (a bare
@@ -19,19 +19,10 @@ export function isValidRepoUrl(url: string | null | undefined): boolean {
   }
 }
 
-let repoUrlCache: string | null | undefined; // undefined = not yet fetched
-
-// Fetch-once-and-cache convention shared with loadTurnstileSiteKey/
-// loadAgentSchedule — a fetch failure degrades to "no link shown", never
+// Reads its slice of the single shared GET /api/config fetch (see
+// lib/config.ts) — a fetch failure degrades to "no link shown", never
 // blocks rendering the rest of the app.
 export async function loadRepoUrl(): Promise<string | null> {
-  if (repoUrlCache !== undefined) return repoUrlCache;
-  try {
-    const res = await fetch(CONFIG_URL);
-    const body = await res.json() as { repo_url?: string };
-    repoUrlCache = isValidRepoUrl(body.repo_url) ? body.repo_url! : null;
-  } catch {
-    repoUrlCache = null;
-  }
-  return repoUrlCache;
+  const body = await loadRawConfig();
+  return isValidRepoUrl(body.repo_url) ? body.repo_url! : null;
 }

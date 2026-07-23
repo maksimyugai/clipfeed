@@ -88,6 +88,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    QUEUE_WAIT_TIMEOUT_MIN: 30,
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
@@ -129,7 +130,9 @@ Deno.test("runHealingJob: a transient failure is retried (re-enqueued, heal_atte
 
   await runHealingJob(env);
 
-  assertEquals(jobs.sent, [{ kind: "process", articleId: "t1" }]);
+  assertEquals(jobs.sent.length, 1);
+  assertEquals(jobs.sent[0].kind, "process");
+  assertEquals(jobs.sent[0].articleId, "t1");
   const row = rowsOf(env).find((r) => r.id === "t1")!;
   assertEquals(row.heal_attempts, 1);
   assertEquals(row.status, "pending"); // markArticlePending before re-enqueue
@@ -367,7 +370,8 @@ Deno.test("runHealingJob: re-enqueues through the normal queue path (JOBS), not 
   // the daily summary budget (cost-guard.ts) is enforced later, inside the
   // normal pipeline run this message eventually triggers, not bypassed here.
   assertEquals(jobs.sent.length, 1);
-  assertEquals(jobs.sent[0], { kind: "process", articleId: "t1" });
+  assertEquals(jobs.sent[0].kind, "process");
+  assertEquals(jobs.sent[0].articleId, "t1");
 });
 
 Deno.test("runHealingJob: caps at 5 retries per tick even with more eligible articles", async () => {
@@ -418,7 +422,9 @@ Deno.test("runHealingJob end-to-end: a 'daily-limit' failure heals to 'ready' on
     const afterSweep = rowsOf(env).find((r) => r.id === "d1")!;
     assertEquals(afterSweep.heal_attempts, 1);
     assertEquals(afterSweep.status, "pending");
-    assertEquals(jobs.sent, [{ kind: "process", articleId: "d1" }]);
+    assertEquals(jobs.sent.length, 1);
+    assertEquals(jobs.sent[0].kind, "process");
+    assertEquals(jobs.sent[0].articleId, "d1");
 
     // Simulate the queue consumer actually running the re-enqueued message.
     for (const message of jobs.sent) {

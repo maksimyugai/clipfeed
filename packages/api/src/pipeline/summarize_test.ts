@@ -860,6 +860,7 @@ function makeLlmEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    QUEUE_WAIT_TIMEOUT_MIN: 30,
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
     AGENT_DAILY_PICKS: "10",
@@ -963,7 +964,7 @@ Deno.test("callLlm: workers-ai binding failure surfaces as a workers-ai-prefixed
 
 // --- withTimeout: the core timing/racing mechanism, unit-tested directly
 // with small ms values so the suite doesn't have to wait out the real
-// 90s LLM_CALL_TIMEOUT_MS to exercise it. ---
+// 60s SUMMARIZE_CALL_TIMEOUT_MS to exercise it. ---
 
 function neverResolves<T>(): Promise<T> {
   return new Promise<T>(() => {});
@@ -1012,7 +1013,7 @@ Deno.test("callAnthropic (via summarizeArticle): an aborted fetch is reported as
     await assertRejects(
       () => summarizeArticle({ apiKey: "sk-direct", model: "test-model" }, "Title", "Body"),
       Error,
-      "anthropic api error: timed out after 90000ms",
+      "anthropic api error: timed out after 60000ms",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -1039,7 +1040,7 @@ Deno.test("callAnthropic (via summarizeArticle): gateway mode prefixes the timeo
           "Body",
         ),
       Error,
-      "ai gateway error: timed out after 90000ms",
+      "ai gateway error: timed out after 60000ms",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -1062,19 +1063,19 @@ Deno.test("callAnthropic: a non-abort fetch error is not mislabeled as a timeout
 });
 
 Deno.test("runWorkersAi (via summarizeArticleWithWorkersAi): a timeout-shaped rejection is reported as a workers-ai-prefixed timeout", async () => {
-  // Stubs what withTimeout(ai.run(...), 90000, "timed out after 90000ms")
+  // Stubs what withTimeout(ai.run(...), 60000, "timed out after 60000ms")
   // rejects with once the race actually loses (see the withTimeout tests
   // above for proof the race itself works) — checks that the resulting
   // message threads through runWorkersAi's error-wrapping the same way any
   // other ai.run() failure does, without waiting out the real 45s.
   const ai = makeStubAi(() => {
-    throw new Error("timed out after 90000ms");
+    throw new Error("timed out after 60000ms");
   });
 
   await assertRejects(
     () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
     Error,
-    "workers ai error: Error: timed out after 90000ms",
+    "workers ai error: Error: timed out after 60000ms",
   );
 });
 

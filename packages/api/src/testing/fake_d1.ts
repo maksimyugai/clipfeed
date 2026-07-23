@@ -69,6 +69,7 @@ export class FakeD1 implements D1Database {
         en_generated_at: null,
         image_key: null,
         image_source_url: null,
+        processing_started_at: null,
       };
       let vi = 0;
       for (const col of cols) {
@@ -81,12 +82,35 @@ export class FakeD1 implements D1Database {
       return;
     }
 
-    if (sql.startsWith("UPDATE articles SET status = 'failed', error = 'timeout")) {
+    if (
+      sql.includes(
+        "SET status = 'failed', error = 'timeout: processing did not complete'",
+      )
+    ) {
       const cutoff = values[0] as string;
       for (const row of this.rows) {
-        if (row.status === "pending" && (row.added_at as string) < cutoff) {
+        if (
+          row.status === "pending" && row.processing_started_at !== null &&
+          row.processing_started_at !== undefined &&
+          (row.processing_started_at as string) < cutoff
+        ) {
           row.status = "failed";
           row.error = "timeout: processing did not complete";
+        }
+      }
+      return;
+    }
+
+    if (sql.includes("SET status = 'failed', error = 'queue: never picked up'")) {
+      const cutoff = values[0] as string;
+      for (const row of this.rows) {
+        if (
+          row.status === "pending" &&
+          (row.processing_started_at === null || row.processing_started_at === undefined) &&
+          (row.added_at as string) < cutoff
+        ) {
+          row.status = "failed";
+          row.error = "queue: never picked up";
         }
       }
       return;
@@ -123,6 +147,7 @@ export class FakeD1 implements D1Database {
         // markArticlePending doc comment (Task 26.5's priorViolations
         // plumbing reads them back on the very next processQueueMessage).
         row.status = "pending";
+        if (sql.includes("processing_started_at = NULL")) row.processing_started_at = null;
         return;
       }
       if (sql.startsWith("UPDATE articles SET fail_class = ?")) {
@@ -385,6 +410,34 @@ export class FakeD1 implements D1Database {
           r.fail_class === "content" && (r.heal_attempts as number) >= contentCap
         )
         .map((r) => ({ id: r.id }));
+    }
+
+    if (
+      sql ===
+        "SELECT id, processing_started_at as ts FROM articles WHERE status = 'pending' AND processing_started_at IS NOT NULL AND processing_started_at < ?"
+    ) {
+      const cutoff = values[0] as string;
+      return this.rows
+        .filter((r) =>
+          r.status === "pending" && r.processing_started_at !== null &&
+          r.processing_started_at !== undefined &&
+          (r.processing_started_at as string) < cutoff
+        )
+        .map((r) => ({ id: r.id, ts: r.processing_started_at }));
+    }
+
+    if (
+      sql ===
+        "SELECT id, added_at as ts FROM articles WHERE status = 'pending' AND processing_started_at IS NULL AND added_at < ?"
+    ) {
+      const cutoff = values[0] as string;
+      return this.rows
+        .filter((r) =>
+          r.status === "pending" &&
+          (r.processing_started_at === null || r.processing_started_at === undefined) &&
+          (r.added_at as string) < cutoff
+        )
+        .map((r) => ({ id: r.id, ts: r.added_at }));
     }
 
     throw new Error(`FakeD1: unsupported query: ${sql}`);
