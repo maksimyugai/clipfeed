@@ -284,11 +284,16 @@ declare global {
     //     on/off. Disabled means the judge is never called at all: no
     //     Workers AI call, no faithfulness_* columns written, pipeline
     //     behaves exactly as it did before this feature existed.
-    //   FAITHFULNESS_ENFORCE: "true"/"false", default "false" — false
-    //     (soft/signal-only, the first-release default) stores the
-    //     verdict and proceeds to 'ready' regardless; true additionally
-    //     retries the summary once and discards (permanent 'failed') if
-    //     the retry still fails the judge.
+    //   FAITHFULNESS_ENFORCE: "true"/"false", default "true" — Task 42:
+    //     a 'fail' verdict drives ONE remediation attempt (a no-LLM
+    //     bullet-drop repair when every bad claim maps to a bullet,
+    //     otherwise one informed resummarize-and-reverify); afterward, an
+    //     agent-picked article still 'fail' auto-archives, an owner-added
+    //     one always stays visible. Never repeats for the same article,
+    //     even across a later resummarize/heal cycle (see
+    //     articles.faithfulness_enforced_at). "false" reverts to the
+    //     original signal-only behavior: verdict stored, article proceeds
+    //     to 'ready' regardless, no remediation ever attempted.
     //   FAITHFULNESS_JUDGE_MODEL: the Workers AI model id to judge with,
     //     default "@cf/meta/llama-3.3-70b-instruct-fp8-fast" — same
     //     default as WORKERS_AI_MODEL above, but a separate setting since

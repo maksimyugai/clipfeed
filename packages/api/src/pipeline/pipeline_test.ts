@@ -321,6 +321,8 @@ class ControllableD1 {
         if (normalized.includes("SET status = 'failed'")) {
           row.status = "failed";
           row.error = values[0];
+        } else if (normalized === "UPDATE articles SET faithfulness_enforced_at = ? WHERE id = ?") {
+          row.faithfulness_enforced_at = values[0];
         } else if (normalized.includes("SET full_text = ?")) {
           this.lastReadySql = normalized;
           // Generic `col = ?` extraction (same approach as testing/fake_d1.ts)
@@ -383,6 +385,7 @@ Deno.test("runArticlePipeline: fetch stage throws -> row ends 'failed' with 'int
       url: "https://example.com/article",
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -413,6 +416,7 @@ Deno.test("runArticlePipeline: budget stage throws -> row ends 'failed' with 'in
     html: ARTICLE_HTML,
     requestTags: [],
     addedVia: "manual",
+    alreadyEnforced: false,
     source: null,
     addedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -436,6 +440,7 @@ Deno.test("runArticlePipeline: summarize stage throws -> row ends 'failed' with 
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -459,6 +464,7 @@ Deno.test("runArticlePipeline: persist stage throws -> row ends 'failed' with 'i
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -482,6 +488,7 @@ Deno.test("runArticlePipeline: 'internal:' error is capped at 200 chars total", 
       url: "https://example.com/article",
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -501,6 +508,7 @@ Deno.test("runArticlePipeline: daily-limit early return is NOT wrapped with 'int
     html: ARTICLE_HTML,
     requestTags: [],
     addedVia: "manual",
+    alreadyEnforced: false,
     source: null,
     addedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -531,6 +539,7 @@ Deno.test("runArticlePipeline: an exhausted daily budget logs a pipeline_stage l
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -573,6 +582,7 @@ Deno.test("runArticlePipeline: extraction under 300 chars -> 'failed' with a cle
     html: thinHtml,
     requestTags: [],
     addedVia: "manual",
+    alreadyEnforced: false,
     source: null,
     addedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -609,6 +619,7 @@ Deno.test("runArticlePipeline: extraction under 300 chars also records an auto-b
     html: thinHtml,
     requestTags: [],
     addedVia: "manual",
+    alreadyEnforced: false,
     source: null,
     addedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -637,6 +648,7 @@ Deno.test("runArticlePipeline: a 403 upstream response also records an auto-bloc
       url: "https://paywalled.example/article",
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -666,6 +678,7 @@ Deno.test("runArticlePipeline: a 500 upstream response records NO auto-block sig
       url: "https://flaky.example/article",
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -697,6 +710,7 @@ Deno.test("runArticlePipeline: extraction exactly at 300 chars passes the guard 
     html,
     requestTags: [],
     addedVia: "manual",
+    alreadyEnforced: false,
     source: null,
     addedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -728,6 +742,7 @@ Deno.test("runArticlePipeline: workers-ai mode caps summarization input at 24k c
     html,
     requestTags: [],
     addedVia: "manual",
+    alreadyEnforced: false,
     source: null,
     addedAt: "2026-01-01T00:00:00.000Z",
   });
@@ -761,6 +776,7 @@ Deno.test("runArticlePipeline: gateway/direct mode does NOT apply the 24k worker
       html,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -800,6 +816,7 @@ Deno.test("runArticlePipeline: FAITHFULNESS_CHECK=false -> no judge call, no fai
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -826,6 +843,7 @@ Deno.test("runArticlePipeline: FAITHFULNESS_CHECK enabled (default), judge says 
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -853,6 +871,7 @@ Deno.test("runArticlePipeline: judge says 'fail', FAITHFULNESS_ENFORCE=false (de
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -890,6 +909,7 @@ Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, first judge fails, ret
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -903,7 +923,7 @@ Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, first judge fails, ret
   }
 });
 
-Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, retry still fails -> permanent 'failed' with the faithfulness reason", async () => {
+Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, retry still fails, owner-added (manual) -> stays 'ready' and visible (Task 42 Part C)", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (() => Promise.resolve(anthropicSuccessResponse())) as typeof fetch;
   try {
@@ -914,17 +934,125 @@ Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, retry still fails -> p
       AI: { run: () => Promise.resolve(judgeResponse("contradicted")) },
     });
     await runArticlePipeline(env, {
-      id: "p-faith-enforce-discard",
+      id: "p-faith-enforce-owner-visible",
       url: "https://example.com/x",
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
-    const row = db.rows.get("p-faith-enforce-discard")!;
+    const row = db.rows.get("p-faith-enforce-owner-visible")!;
+    assertEquals(row.status, "ready");
+    assertEquals(row.faithfulness_verdict, "fail");
+    assert(typeof row.faithfulness_enforced_at === "string");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=true, retry still fails, agent-added -> permanent 'failed' + archived, faithfulness_enforced_at set", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(anthropicSuccessResponse())) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      FAITHFULNESS_ENFORCE: "true",
+      AI: { run: () => Promise.resolve(judgeResponse("contradicted")) },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-enforce-agent-archive",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+      addedVia: "agent",
+      alreadyEnforced: false,
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const row = db.rows.get("p-faith-enforce-agent-archive")!;
     assertEquals(row.status, "failed");
     assertEquals(row.error, "faithfulness: summary not supported by source");
+    assert(typeof row.faithfulness_enforced_at === "string");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: alreadyEnforced=true -> a fresh 'fail' verdict is recorded only, never re-attempts repair/regeneration (single-attempt cap)", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (() => {
+    fetchCalls += 1;
+    return Promise.resolve(anthropicSuccessResponse());
+  }) as typeof fetch;
+  let aiCalls = 0;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      FAITHFULNESS_ENFORCE: "true",
+      AI: {
+        run: () => {
+          aiCalls += 1;
+          return Promise.resolve(judgeResponse("contradicted"));
+        },
+      },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-already-enforced",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+      addedVia: "agent",
+      alreadyEnforced: true, // a previous run already spent the one attempt
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const row = db.rows.get("p-faith-already-enforced")!;
+    // Stays 'ready' (not archived) even though this IS an agent article and
+    // the verdict IS 'fail' — the cap is already spent, so the agent-archive
+    // decision from Part C never re-runs.
+    assertEquals(row.status, "ready");
+    assertEquals(row.faithfulness_verdict, "fail");
+    assertEquals(fetchCalls, 1); // only the initial summarize, no regeneration
+    assertEquals(aiCalls, 1); // only the initial judge call, no re-judge
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("runArticlePipeline: FAITHFULNESS_ENFORCE=false (explicit) -> old signal-only behavior preserved regardless of added_via", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = (() => {
+    fetchCalls += 1;
+    return Promise.resolve(anthropicSuccessResponse());
+  }) as typeof fetch;
+  try {
+    const db = new ControllableD1();
+    const env = makePipelineEnv({
+      DB: db as unknown as D1Database,
+      FAITHFULNESS_ENFORCE: "false",
+      AI: { run: () => Promise.resolve(judgeResponse("contradicted")) },
+    });
+    await runArticlePipeline(env, {
+      id: "p-faith-enforce-off",
+      url: "https://example.com/x",
+      html: ARTICLE_HTML,
+      requestTags: [],
+      addedVia: "agent",
+      alreadyEnforced: false,
+      source: null,
+      addedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const row = db.rows.get("p-faith-enforce-off")!;
+    assertEquals(row.status, "ready");
+    assertEquals(row.faithfulness_verdict, "fail");
+    assertEquals(row.faithfulness_enforced_at, undefined);
+    assertEquals(fetchCalls, 1); // no regeneration attempt at all
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -945,6 +1073,7 @@ Deno.test("runArticlePipeline: the judge call does NOT increment the summary cos
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -992,6 +1121,7 @@ Deno.test("runArticlePipeline: input.priorViolations reaches the summarize call'
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
       priorViolations: "bullets_ru[0] duplicates the tldr instead of adding new detail",
@@ -1024,6 +1154,7 @@ Deno.test("runArticlePipeline: no priorViolations on the input -> no corrective 
       html: ARTICLE_HTML,
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
     });
@@ -1052,6 +1183,7 @@ Deno.test("runResummarization: input.priorViolations reaches the summarize call'
         "Hello world, this is enough article text to clear the minimum length guard used elsewhere in these tests.",
       requestTags: [],
       addedVia: "manual",
+      alreadyEnforced: false,
       source: null,
       addedAt: "2026-01-01T00:00:00.000Z",
       priorViolations: "tldr_ru must be at least 150 characters (got 40)",

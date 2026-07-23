@@ -73,13 +73,19 @@ SUMMARY_BODY_TARGET_CHARS = "800"
 # regardless of which model wrote the summary, that verifies a summary
 # against its source after it validates but before the article is marked
 # ready. FAITHFULNESS_CHECK enabled by default (only the literal "false"
-# disables it); FAITHFULNESS_ENFORCE stays "false" (soft/signal-only) —
-# a 'fail' verdict is stored and shown as a badge but never blocks the
-# article until you've watched real false-positive rates and flip this to
-# "true", at which point a 'fail' triggers one resummarize retry, with a
-# permanent discard if that retry still fails.
+# disables it). FAITHFULNESS_ENFORCE also enabled by default (only the
+# literal "false" disables it, back to the old signal-only behavior) — Task
+# 42: the badge is no longer reader-facing (owner mode only), and a 'fail'
+# verdict now drives one single automatic remediation attempt instead of
+# staying purely observational: a deterministic no-LLM bullet-drop repair
+# when every unsupported/contradicted claim maps to a bullet, otherwise one
+# informed resummarize-and-reverify. Whatever that single attempt produces,
+# an agent-picked article that's still 'fail' auto-archives (the reader
+# never sees it); an owner-added article always stays visible regardless of
+# verdict (the owner decides). Never runs a second time on the same
+# article, even across a later resummarize or heal cycle.
 FAITHFULNESS_CHECK = "true"
-FAITHFULNESS_ENFORCE = "false"
+FAITHFULNESS_ENFORCE = "true"
 FAITHFULNESS_JUDGE_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
 # Embeddings — semantic dedup (agent-pool.ts) + semantic search

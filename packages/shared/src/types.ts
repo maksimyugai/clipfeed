@@ -142,6 +142,13 @@ export interface Article {
   // resummarize's own wait is measured fresh, not against a stale value from
   // a previous attempt.
   processing_started_at: string | null;
+  // Task 42 Part C: set once this article's ONE lifetime faithfulness
+  // remediation attempt (surgical bullet-repair or informed regeneration —
+  // see pipeline.ts's runFaithfulnessStage) has run, regardless of the
+  // outcome. NULL means no attempt spent yet. Owner-only bookkeeping (see
+  // PublicArticle below) — never rendered anywhere, just gates a later
+  // resummarize/heal cycle from restarting the cycle.
+  faithfulness_enforced_at: string | null;
 }
 
 export type ArticleListItem = Omit<Article, "full_text">;
@@ -157,7 +164,7 @@ export type ArticleListItem = Omit<Article, "full_text">;
 // just the owner. The full row (every field included) is only available to
 // the owner, via GET /api/admin/articles/:id.
 export type PublicArticle =
-  & Omit<Article, "full_text" | "error" | "faithfulness_json">
+  & Omit<Article, "full_text" | "error" | "faithfulness_json" | "faithfulness_enforced_at">
   & { has_error: boolean };
 
 export interface CreateArticleRequest {

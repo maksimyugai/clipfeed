@@ -71,6 +71,7 @@ const sampleListItem: ArticleListItem = {
   image_key: null,
   image_source_url: null,
   processing_started_at: null,
+  faithfulness_enforced_at: null,
 };
 
 Deno.test("LIST_COLUMNS: projects every ArticleListItem column (Article minus full_text)", () => {
@@ -1167,9 +1168,11 @@ Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verd
     image_key: null,
     image_source_url: null,
     processing_started_at: null,
+    faithfulness_enforced_at: "2026-01-01T00:05:00.000Z",
   };
   const pub = toPublicArticle(article);
   assertEquals("faithfulness_json" in pub, false);
+  assertEquals("faithfulness_enforced_at" in pub, false);
   assertEquals("full_text" in pub, false);
   assertEquals("error" in pub, false);
   assertEquals(pub.faithfulness_verdict, "weak");
@@ -1206,9 +1209,11 @@ Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_ver
     image_key: null,
     image_source_url: null,
     processing_started_at: null,
+    faithfulness_enforced_at: null,
   };
   const pub = toPublicListItem(item);
   assertEquals("faithfulness_json" in pub, false);
+  assertEquals("faithfulness_enforced_at" in pub, false);
   assertEquals("error" in pub, false);
   assertEquals(pub.faithfulness_verdict, "fail");
   assertEquals(pub.has_error, true);

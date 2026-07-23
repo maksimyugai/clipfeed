@@ -3,8 +3,10 @@ import type { FaithfulnessJson, FaithfulnessVerdict, SummaryJson } from "@clipfe
 import { safeFetchText } from "./ssrf.ts";
 import { extractArticle } from "./extract.ts";
 import {
+  deriveSummarySpec,
   generateEnglishFields,
   parseSummaryBodyTargetChars,
+  type PriorViolationsKind,
   renderSummaryMarkdown,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
@@ -14,6 +16,7 @@ import {
   markArticleFailed,
   markArticleReady,
   markEmbedded,
+  markFaithfulnessEnforced,
   markImageStored,
   mergeEnglishFields,
 } from "../articles/db.ts";
@@ -25,11 +28,13 @@ import {
   recordAutoBlockSignal,
 } from "../agent/autoblock.ts";
 import {
+  buildFaithfulnessRetryViolations,
   incrementFaithfulnessCallCounter,
   parseFaithfulnessCheckEnabled,
   parseFaithfulnessEnforceEnabled,
   resolveFaithfulnessJudgeModel,
   runFaithfulnessCheck,
+  tryRepairUnfaithfulBullets,
 } from "./faithfulness.ts";
 import {
   buildEmbeddingText,
@@ -57,6 +62,12 @@ export interface PipelineInput {
   addedVia: string;
   source: string | null;
   addedAt: string;
+  // articles.faithfulness_enforced_at !== null on the already-fetched row
+  // (see queue.ts) — Task 42 Part C's single-attempt cap: true means a
+  // PREVIOUS run already spent this article's one remediation attempt, so
+  // runFaithfulnessStage records a fresh verdict but never repairs/
+  // regenerates or re-evaluates the agent/owner archive decision again.
+  alreadyEnforced: boolean;
 }
 
 export function mergeTags(requestTags: string[], modelTags: string[]): string[] {
@@ -119,6 +130,7 @@ async function runSummarizationForMode(
   title: string,
   text: string,
   priorViolations?: string,
+  priorViolationsKind: PriorViolationsKind = "content",
 ): Promise<SummaryJson> {
   const targetTotalChars = parseSummaryBodyTargetChars(env.SUMMARY_BODY_TARGET_CHARS);
   if (mode === "gateway") {
@@ -133,6 +145,7 @@ async function runSummarizationForMode(
       text,
       targetTotalChars,
       priorViolations,
+      priorViolationsKind,
     );
   }
   if (mode === "direct") {
@@ -142,6 +155,7 @@ async function runSummarizationForMode(
       text,
       targetTotalChars,
       priorViolations,
+      priorViolationsKind,
     );
   }
   return await summarizeArticleWithWorkersAi(
@@ -151,6 +165,7 @@ async function runSummarizationForMode(
     text,
     targetTotalChars,
     priorViolations,
+    priorViolationsKind,
   );
 }
 
@@ -210,8 +225,9 @@ function logStage(
 }
 
 interface FaithfulnessStageOutcome {
-  // false means the article was already marked 'failed' (enforce-mode
-  // discard) — the caller must stop, never fall through to persist.
+  // false means the article was already terminally marked 'failed'
+  // (agent-picked article, still 'fail' after its one remediation attempt,
+  // auto-archived) — the caller must stop, never fall through to persist.
   proceed: boolean;
   summary: SummaryJson;
   // true only when the judge actually ran (check enabled) — distinguishes
@@ -222,18 +238,42 @@ interface FaithfulnessStageOutcome {
   verdict: FaithfulnessVerdict | null;
   json: FaithfulnessJson | null;
   checkedAt: string | null;
+  // true when THIS invocation actually spent the article's one lifetime
+  // remediation attempt (surgical repair or informed regeneration) — the
+  // caller persists this as articles.faithfulness_enforced_at so a later
+  // resummarize/heal cycle never restarts the cycle (see
+  // db.ts's markFaithfulnessEnforced / PipelineSuccessUpdate).
+  enforcementSpent: boolean;
 }
 
 // Runs AFTER a summary validates and BEFORE the article is marked 'ready' —
 // a SEPARATE, independent judge (always Workers AI Llama, regardless of
 // which model wrote the summary — see faithfulness.ts) checks whether the
-// summary is actually supported by the source text. First release is
-// signal-only: FAITHFULNESS_ENFORCE defaults to "false", so a 'fail'
-// verdict is stored and surfaced as a badge but does NOT block the
-// article — only once the owner flips FAITHFULNESS_ENFORCE=true (after
-// watching real false-positive rates) does a 'fail' trigger one
-// resummarize-and-reverify attempt, with a permanent discard if that retry
-// still fails.
+// summary is actually supported by the source text.
+//
+// Task 42 Part C: the badge is no longer reader-facing (owner mode only —
+// see ArticleCard.tsx), so a 'fail' verdict now drives ONE automatic
+// remediation attempt (FAITHFULNESS_ENFORCE defaults to "true"; "false"
+// reverts to the original signal-only behavior below):
+//   1. Surgical repair first, no LLM: if every unsupported/contradicted
+//      claim maps to a bullet (see tryRepairUnfaithfulBullets), drop just
+//      those bullets — no re-judge needed, the offending claims are known
+//      and removed by construction, so this counts as resolved (verdict
+//      recorded as 'pass').
+//   2. Otherwise, one informed regeneration: re-summarize with the flagged
+//      claim text fed back into the prompt (see
+//      buildFaithfulnessRetryViolations, summarize.ts's "faithfulness"
+//      priorViolationsKind), then re-judge once.
+// After that single attempt, whatever the verdict: an agent-picked article
+// still 'fail' auto-archives (the reader never sees it, consistent with
+// Task 34's policy for exhausted agent failures); an owner-added article
+// (manual/extension/telegram) always stays visible — the owner decides.
+// `alreadyEnforced` (read from articles.faithfulness_enforced_at by the
+// caller BEFORE this row's own current attempt) makes this a true
+// once-per-article cap: a later resummarize or heal cycle that reaches a
+// 'fail' verdict again just records it, exactly like the signal-only path,
+// never re-attempts repair/regeneration or re-evaluates the agent/owner
+// archive decision.
 async function runFaithfulnessStage(
   env: Env,
   id: string,
@@ -241,9 +281,19 @@ async function runFaithfulnessStage(
   title: string,
   text: string,
   summary: SummaryJson,
+  addedVia: string,
+  alreadyEnforced: boolean,
 ): Promise<FaithfulnessStageOutcome> {
   if (!parseFaithfulnessCheckEnabled(env.FAITHFULNESS_CHECK)) {
-    return { proceed: true, summary, ran: false, verdict: null, json: null, checkedAt: null };
+    return {
+      proceed: true,
+      summary,
+      ran: false,
+      verdict: null,
+      json: null,
+      checkedAt: null,
+      enforcementSpent: false,
+    };
   }
 
   const judgeModel = resolveFaithfulnessJudgeModel(env.FAITHFULNESS_JUDGE_MODEL);
@@ -254,7 +304,7 @@ async function runFaithfulnessStage(
   logStage(id, "faithfulness", firstStart, { verdict: first.verdict, ...first.counts });
 
   const enforce = parseFaithfulnessEnforceEnabled(env.FAITHFULNESS_ENFORCE);
-  if (!enforce || first.verdict !== "fail") {
+  if (!enforce || alreadyEnforced || first.verdict !== "fail") {
     return {
       proceed: true,
       summary,
@@ -262,10 +312,41 @@ async function runFaithfulnessStage(
       verdict: first.verdict,
       json: first.json,
       checkedAt: first.checkedAt,
+      enforcementSpent: false,
     };
   }
 
-  const retriedSummary = await runSummarizationForMode(mode, env, title, text);
+  // --- Single remediation attempt ---
+
+  const targetTotalChars = parseSummaryBodyTargetChars(env.SUMMARY_BODY_TARGET_CHARS);
+  const spec = deriveSummarySpec(targetTotalChars, mode === "workers-ai" ? "relaxed" : "strict");
+  const repaired = tryRepairUnfaithfulBullets(summary, first.json, spec.minBullets);
+  if (repaired) {
+    console.log(JSON.stringify({
+      event: "faithfulness_repaired",
+      id,
+      droppedBullets: repaired.droppedBullets,
+    }));
+    return {
+      proceed: true,
+      summary: repaired.summary,
+      ran: true,
+      verdict: "pass",
+      json: first.json,
+      checkedAt: first.checkedAt,
+      enforcementSpent: true,
+    };
+  }
+
+  const violations = buildFaithfulnessRetryViolations(summary, first.json);
+  const retriedSummary = await runSummarizationForMode(
+    mode,
+    env,
+    title,
+    text,
+    violations,
+    "faithfulness",
+  );
   const secondStart = performance.now();
   const second = await runFaithfulnessCheck(env.AI, judgeModel, text, retriedSummary);
   await incrementFaithfulnessCallCounter(env.CACHE);
@@ -275,9 +356,10 @@ async function runFaithfulnessStage(
     ...second.counts,
   });
 
-  if (second.verdict === "fail") {
+  if (second.verdict === "fail" && addedVia === "agent") {
     await markArticleFailed(env.DB, id, "faithfulness: summary not supported by source");
-    console.log(JSON.stringify({ event: "faithfulness_enforced_discard", id }));
+    await markFaithfulnessEnforced(env.DB, id, new Date().toISOString());
+    console.log(JSON.stringify({ event: "faithfulness_archived", id }));
     return {
       proceed: false,
       summary: retriedSummary,
@@ -285,6 +367,7 @@ async function runFaithfulnessStage(
       verdict: second.verdict,
       json: second.json,
       checkedAt: second.checkedAt,
+      enforcementSpent: true,
     };
   }
 
@@ -295,6 +378,7 @@ async function runFaithfulnessStage(
     verdict: second.verdict,
     json: second.json,
     checkedAt: second.checkedAt,
+    enforcementSpent: true,
   };
 }
 
@@ -463,7 +547,16 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
     });
 
     stage = "faithfulness";
-    const faithfulness = await runFaithfulnessStage(env, input.id, mode, title, text, summary);
+    const faithfulness = await runFaithfulnessStage(
+      env,
+      input.id,
+      mode,
+      title,
+      text,
+      summary,
+      input.addedVia,
+      input.alreadyEnforced,
+    );
     if (!faithfulness.proceed) return;
 
     stage = "persist";
@@ -486,6 +579,7 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
           checkedAt: faithfulness.checkedAt as string,
         }
         : undefined,
+      faithfulnessEnforcedAt: faithfulness.enforcementSpent ? new Date().toISOString() : undefined,
     });
     logStage(input.id, stage, persistStart);
 
@@ -540,6 +634,8 @@ export interface ResummarizeInput {
   addedVia: string;
   source: string | null;
   addedAt: string;
+  // See PipelineInput.alreadyEnforced.
+  alreadyEnforced: boolean;
 }
 
 // Re-runs ONLY the summarize -> persist stages against already-stored
@@ -596,6 +692,8 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
       input.title,
       text,
       summary,
+      input.addedVia,
+      input.alreadyEnforced,
     );
     if (!faithfulness.proceed) return;
 
@@ -619,6 +717,7 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
           checkedAt: faithfulness.checkedAt as string,
         }
         : undefined,
+      faithfulnessEnforcedAt: faithfulness.enforcementSpent ? new Date().toISOString() : undefined,
     });
     logStage(input.id, stage, persistStart);
 

@@ -46,6 +46,7 @@ interface ArticleRow {
   image_key: string | null;
   image_source_url: string | null;
   processing_started_at: string | null;
+  faithfulness_enforced_at: string | null;
 }
 
 type ArticleRowNoText = Omit<ArticleRow, "full_text">;
@@ -92,7 +93,13 @@ function rowToArticle(row: ArticleRow): Article {
 // caution badge is meant to be visible to every reader, not just the
 // owner).
 export function toPublicArticle(article: Article): PublicArticle {
-  const { full_text: _fullText, error, faithfulness_json: _faithfulnessJson, ...rest } = article;
+  const {
+    full_text: _fullText,
+    error,
+    faithfulness_json: _faithfulnessJson,
+    faithfulness_enforced_at: _faithfulnessEnforcedAt,
+    ...rest
+  } = article;
   return { ...rest, has_error: error !== null };
 }
 
@@ -102,7 +109,12 @@ export function toPublicArticle(article: Article): PublicArticle {
 // already avoided (see toPublicArticle above). GET /api/admin/articles
 // (owner-only) returns ArticleListItem rows unmodified, error included.
 export function toPublicListItem(item: ArticleListItem): PublicArticle {
-  const { error, faithfulness_json: _faithfulnessJson, ...rest } = item;
+  const {
+    error,
+    faithfulness_json: _faithfulnessJson,
+    faithfulness_enforced_at: _faithfulnessEnforcedAt,
+    ...rest
+  } = item;
   return { ...rest, has_error: error !== null };
 }
 
@@ -136,6 +148,7 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     image_key: row.image_key,
     image_source_url: row.image_source_url,
     processing_started_at: row.processing_started_at,
+    faithfulness_enforced_at: row.faithfulness_enforced_at,
   };
 }
 
@@ -257,6 +270,12 @@ export interface PipelineSuccessUpdate {
     json: FaithfulnessJson | null;
     checkedAt: string;
   };
+  // Task 42 Part C: set only when THIS run actually spent the article's
+  // one lifetime remediation attempt (see pipeline.ts's
+  // runFaithfulnessStage) — omitted (not just null) otherwise, so a run
+  // where enforcement never fired (check disabled, verdict not 'fail',
+  // already spent) never touches this column at all.
+  faithfulnessEnforcedAt?: string;
 }
 
 // Task 35 Part A: a fresh generation is always RU-only (see
@@ -304,6 +323,10 @@ export async function markArticleReady(
       update.faithfulness.json ? JSON.stringify(update.faithfulness.json) : null,
       update.faithfulness.checkedAt,
     );
+  }
+  if (update.faithfulnessEnforcedAt) {
+    sets.push("faithfulness_enforced_at = ?");
+    binds.push(update.faithfulnessEnforcedAt);
   }
   binds.push(id);
 
@@ -872,6 +895,21 @@ export async function markProcessingStarted(
     .bind(startedAtIso, id).run();
 }
 
+// Task 42 Part C: standalone write for the one branch of
+// runFaithfulnessStage that terminates via markArticleFailed (an
+// agent-picked article still 'fail' after its one remediation attempt)
+// rather than markArticleReady — every other branch persists this same
+// column through PipelineSuccessUpdate.faithfulnessEnforcedAt instead, in
+// the same write as the rest of the article.
+export async function markFaithfulnessEnforced(
+  db: D1Database,
+  id: string,
+  enforcedAtIso: string,
+): Promise<void> {
+  await db.prepare(`UPDATE articles SET faithfulness_enforced_at = ? WHERE id = ?`)
+    .bind(enforcedAtIso, id).run();
+}
+
 export async function getArticleById(db: D1Database, id: string): Promise<Article | null> {
   const row = await db.prepare("SELECT * FROM articles WHERE id = ?").bind(id).first<ArticleRow>();
   return row ? rowToArticle(row) : null;
@@ -921,7 +959,7 @@ export interface ListArticlesResult {
 // in production, invisible to FakeD1's tests since it returns whole stored
 // rows regardless of the projected column list).
 export const LIST_COLUMNS =
-  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at, en_generated_at, image_key, image_source_url, processing_started_at";
+  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at, en_generated_at, image_key, image_source_url, processing_started_at, faithfulness_enforced_at";
 
 export interface ListQuery {
   sql: string;

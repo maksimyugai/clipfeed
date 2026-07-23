@@ -90,6 +90,12 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
   // 'content'-classified failure (see resolvePriorViolations) — undefined
   // otherwise, so a brand-new article's summarization call is unaffected.
   const priorViolations = resolvePriorViolations(article.fail_class, article.error);
+  // Task 42 Part C: read once here (the row is already fetched) and passed
+  // to both runArticlePipeline/runResummarization below — a fresh article
+  // always has this NULL, so alreadyEnforced is only ever true for a
+  // resummarize/heal re-run of an article whose remediation attempt was
+  // already spent on a previous run.
+  const alreadyEnforced = article.faithfulness_enforced_at !== null;
 
   if (message.kind === "process") {
     const html = await takePendingHtml(env.CACHE, message.articleId);
@@ -103,6 +109,7 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
       addedVia: article.added_via,
       source: article.source,
       addedAt: article.added_at,
+      alreadyEnforced,
     });
   } else if (message.kind === "translate") {
     // Task 35 Part A §3: requires stored full_text to generate the EN
@@ -135,6 +142,7 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
         addedVia: article.added_via,
         source: article.source,
         addedAt: article.added_at,
+        alreadyEnforced,
       });
     } else {
       await runArticlePipeline(env, {
@@ -145,6 +153,7 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
         priorViolations,
         addedVia: article.added_via,
         source: article.source,
+        alreadyEnforced,
         addedAt: article.added_at,
       });
     }

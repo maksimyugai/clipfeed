@@ -1,10 +1,11 @@
 import "../env.d.ts";
 import { assert, assertEquals } from "@std/assert";
-import type { SummaryJson } from "@clipfeed/shared/types";
+import type { FaithfulnessJson, SummaryJson } from "@clipfeed/shared/types";
 import {
   aggregateFaithfulnessVerdict,
   buildFaithfulnessClaims,
   buildFaithfulnessJudgePrompt,
+  buildFaithfulnessRetryViolations,
   DEFAULT_FAITHFULNESS_JUDGE_MODEL,
   incrementFaithfulnessCallCounter,
   parseFaithfulnessCheckEnabled,
@@ -13,6 +14,7 @@ import {
   readFaithfulnessCallCount,
   resolveFaithfulnessJudgeModel,
   runFaithfulnessCheck,
+  tryRepairUnfaithfulBullets,
 } from "./faithfulness.ts";
 
 // --- config parsing ---
@@ -34,14 +36,20 @@ Deno.test("parseFaithfulnessCheckEnabled: garbage stays enabled (defensive defau
   assertEquals(parseFaithfulnessCheckEnabled("0"), true);
 });
 
-Deno.test("parseFaithfulnessEnforceEnabled: default false when unset/empty/garbage", () => {
-  assertEquals(parseFaithfulnessEnforceEnabled(undefined), false);
-  assertEquals(parseFaithfulnessEnforceEnabled(""), false);
-  assertEquals(parseFaithfulnessEnforceEnabled("false"), false);
-  assertEquals(parseFaithfulnessEnforceEnabled("yes"), false);
+Deno.test("parseFaithfulnessEnforceEnabled: default true when unset/empty/garbage (Task 42)", () => {
+  assertEquals(parseFaithfulnessEnforceEnabled(undefined), true);
+  assertEquals(parseFaithfulnessEnforceEnabled(""), true);
+  assertEquals(parseFaithfulnessEnforceEnabled("yes"), true);
+  assertEquals(parseFaithfulnessEnforceEnabled("0"), true);
 });
 
-Deno.test("parseFaithfulnessEnforceEnabled: only the literal 'true' (any case/whitespace) enables", () => {
+Deno.test("parseFaithfulnessEnforceEnabled: only the literal 'false' (any case/whitespace) disables", () => {
+  assertEquals(parseFaithfulnessEnforceEnabled("false"), false);
+  assertEquals(parseFaithfulnessEnforceEnabled("FALSE"), false);
+  assertEquals(parseFaithfulnessEnforceEnabled("  False  "), false);
+});
+
+Deno.test("parseFaithfulnessEnforceEnabled: the literal 'true' still enables (explicit, not just default)", () => {
   assertEquals(parseFaithfulnessEnforceEnabled("true"), true);
   assertEquals(parseFaithfulnessEnforceEnabled("TRUE"), true);
   assertEquals(parseFaithfulnessEnforceEnabled("  True  "), true);
@@ -210,8 +218,14 @@ Deno.test("aggregateFaithfulnessVerdict: any contradicted claim -> fail, regardl
   assertEquals(aggregateFaithfulnessVerdict(claims), "fail");
 });
 
-Deno.test("aggregateFaithfulnessVerdict: unsupported ratio > 0.5 -> fail", () => {
+// Task 42 Part D: thresholds moved from 0.5/0.25 to 0.6/0.34 — a modest
+// hedge against cross-lingual judge noise found in Part A's investigation
+// (a legitimate multi-sentence-synthesis claim mislabeled unsupported),
+// without weakening the disqualifying-contradiction rule above or requiring
+// a model/judge change.
+Deno.test("aggregateFaithfulnessVerdict: unsupported ratio > 0.6 -> fail", () => {
   const claims = [
+    claim("unsupported"),
     claim("unsupported"),
     claim("unsupported"),
     claim("unsupported"),
@@ -220,13 +234,24 @@ Deno.test("aggregateFaithfulnessVerdict: unsupported ratio > 0.5 -> fail", () =>
   assertEquals(aggregateFaithfulnessVerdict(claims), "fail");
 });
 
-Deno.test("aggregateFaithfulnessVerdict: unsupported ratio > 0.25 and <= 0.5 -> weak", () => {
-  const claims = [claim("unsupported"), claim("supported"), claim("supported")];
+Deno.test("aggregateFaithfulnessVerdict: unsupported ratio > 0.34 and <= 0.6 -> weak", () => {
+  const claims = [
+    claim("unsupported"),
+    claim("unsupported"),
+    claim("supported"),
+    claim("supported"),
+    claim("supported"),
+  ];
   assertEquals(aggregateFaithfulnessVerdict(claims), "weak");
 });
 
-Deno.test("aggregateFaithfulnessVerdict: unsupported ratio exactly 0.25 -> pass (boundary, not '>')", () => {
-  const claims = [claim("unsupported"), claim("supported"), claim("supported"), claim("supported")];
+Deno.test("aggregateFaithfulnessVerdict: unsupported ratio exactly 0.34 -> pass (boundary, not '>')", () => {
+  // 17/50 = 0.34 exactly — smallest whole-number ratio hitting the new
+  // threshold precisely, so generated rather than hand-listed.
+  const claims = [
+    ...Array.from({ length: 17 }, () => claim("unsupported")),
+    ...Array.from({ length: 33 }, () => claim("supported")),
+  ];
   assertEquals(aggregateFaithfulnessVerdict(claims), "pass");
 });
 
@@ -369,4 +394,110 @@ Deno.test("runFaithfulnessCheck: checkedAt is always set, even on judge failure"
     now,
   );
   assertEquals(result.checkedAt, "2026-03-01T12:00:00.000Z");
+});
+
+// --- Task 42 Part C: surgical repair (tryRepairUnfaithfulBullets) ---
+// SUMMARY has bullets_ru: ["б1", "б2"] — claim indices per
+// buildFaithfulnessClaims: i=1 tldr, i=2/i=3 bullets, i=4/i=5 body.
+
+function judgeJsonWith(
+  claims: { i: number; verdict: "supported" | "unsupported" | "contradicted" }[],
+): FaithfulnessJson {
+  return { claims: claims.map((c) => ({ ...c, evidence: "" })), notes: "" };
+}
+
+Deno.test("tryRepairUnfaithfulBullets: single bad bullet claim, enough remain -> drops just that bullet", () => {
+  const result = tryRepairUnfaithfulBullets(
+    SUMMARY,
+    judgeJsonWith([{ i: 1, verdict: "supported" }, { i: 2, verdict: "unsupported" }]),
+    1,
+  );
+  assertEquals(result?.summary.bullets_ru, ["б2"]);
+  assertEquals(result?.droppedBullets, 1);
+});
+
+Deno.test("tryRepairUnfaithfulBullets: contradicted bullet claim also counts as a bad claim to drop", () => {
+  const result = tryRepairUnfaithfulBullets(
+    SUMMARY,
+    judgeJsonWith([{ i: 3, verdict: "contradicted" }]),
+    1,
+  );
+  assertEquals(result?.summary.bullets_ru, ["б1"]);
+  assertEquals(result?.droppedBullets, 1);
+});
+
+Deno.test("tryRepairUnfaithfulBullets: dropping would leave fewer than minBullets -> declines (null)", () => {
+  const result = tryRepairUnfaithfulBullets(
+    SUMMARY,
+    judgeJsonWith([{ i: 2, verdict: "unsupported" }, { i: 3, verdict: "unsupported" }]),
+    1, // both bullets would be dropped, leaving 0 < minBullets(1)
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("tryRepairUnfaithfulBullets: a bad claim mapping to the tldr (not a bullet) -> declines (null)", () => {
+  const result = tryRepairUnfaithfulBullets(
+    SUMMARY,
+    judgeJsonWith([{ i: 1, verdict: "unsupported" }]),
+    0,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("tryRepairUnfaithfulBullets: a bad claim mapping to a body paragraph (not a bullet) -> declines (null)", () => {
+  const result = tryRepairUnfaithfulBullets(
+    SUMMARY,
+    judgeJsonWith([{ i: 4, verdict: "unsupported" }]),
+    0,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("tryRepairUnfaithfulBullets: mixed bullet + tldr bad claims -> declines entirely (not just the tldr one)", () => {
+  const result = tryRepairUnfaithfulBullets(
+    SUMMARY,
+    judgeJsonWith([{ i: 1, verdict: "unsupported" }, { i: 2, verdict: "unsupported" }]),
+    0,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("tryRepairUnfaithfulBullets: judge json is the unparseable {error} shape -> declines (null)", () => {
+  const result = tryRepairUnfaithfulBullets(SUMMARY, { error: "judge unparseable" }, 0);
+  assertEquals(result, null);
+});
+
+Deno.test("tryRepairUnfaithfulBullets: no bad claims at all -> declines (null, nothing to repair)", () => {
+  const result = tryRepairUnfaithfulBullets(
+    SUMMARY,
+    judgeJsonWith([{ i: 1, verdict: "supported" }, { i: 2, verdict: "supported" }]),
+    0,
+  );
+  assertEquals(result, null);
+});
+
+// --- Task 42 Part C: informed-regeneration violation text (buildFaithfulnessRetryViolations) ---
+
+Deno.test("buildFaithfulnessRetryViolations: joins the ORIGINAL claim text (not the verdict/evidence) for every bad claim", () => {
+  const violations = buildFaithfulnessRetryViolations(
+    SUMMARY,
+    judgeJsonWith([{ i: 1, verdict: "supported" }, { i: 2, verdict: "unsupported" }, {
+      i: 4,
+      verdict: "contradicted",
+    }]),
+  );
+  assertEquals(violations, "б1; п1");
+});
+
+Deno.test("buildFaithfulnessRetryViolations: all supported -> undefined (nothing to feed back)", () => {
+  const violations = buildFaithfulnessRetryViolations(
+    SUMMARY,
+    judgeJsonWith([{ i: 1, verdict: "supported" }, { i: 2, verdict: "supported" }]),
+  );
+  assertEquals(violations, undefined);
+});
+
+Deno.test("buildFaithfulnessRetryViolations: unparseable {error} judge json -> undefined", () => {
+  const violations = buildFaithfulnessRetryViolations(SUMMARY, { error: "judge unparseable" });
+  assertEquals(violations, undefined);
 });
