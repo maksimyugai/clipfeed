@@ -5,6 +5,7 @@ import { FakeD1 } from "./testing/fake_d1.ts";
 import { FakeQueue } from "./testing/fake_queue.ts";
 import type { TelegramMessage, TelegramUpdate } from "./telegram-client.ts";
 import { resetMissingTelegramSecretsWarningForTest } from "./telegram-webhook.ts";
+import { recordAgentRun } from "./agent-run-tracker.ts";
 
 const OWNER_CHAT_ID = "999";
 const OTHER_CHAT_ID = "555";
@@ -558,6 +559,61 @@ Deno.test("webhook: /scrape replies 'Запустил агента' immediately 
     // without throwing (all six real sources.json sources see the generic
     // ARTICLE_HTML fallback from stubFetch, so the job legitimately finds
     // zero real candidates and still finishes cleanly).
+    await settle();
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("webhook: /scrape when the agent already ran today replies with a warning naming the prior run, and still runs the job (Task 36 Part B)", async () => {
+  const stub = stubFetch();
+  try {
+    const env = makeEnv();
+    // Seeded against the real current time (readAgentRunHistory inside the
+    // handler always reads "today" off the real clock, not an injectable
+    // one) — an hour ago, at a fixed HH:00 so the expected warning text is
+    // deterministic regardless of exactly when this test runs.
+    const startedAt = new Date();
+    startedAt.setUTCMinutes(0, 0, 0);
+    startedAt.setUTCHours(startedAt.getUTCHours() - 1);
+    const expectedTime = `${String(startedAt.getUTCHours()).padStart(2, "0")}:00`;
+    await recordAgentRun(env.CACHE, {
+      startedAt: startedAt.toISOString(),
+      picks: 10,
+      trigger: "scheduled",
+    });
+    const { ctx, settle } = makeExecutionContext();
+
+    const res = await webhookRequest(env, ctx, messageUpdate({ text: "/scrape" }));
+    assertEquals(res.status, 200);
+    assertEquals(stub.telegramCalls.length, 1);
+    assertEquals(
+      stub.telegramCalls[0].body.text,
+      `Сегодня агент уже отработал: 10 статей в ${expectedTime} UTC. Запускаю ещё раз.`,
+    );
+
+    await settle();
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("webhook: '/scrape force' suppresses the warning even when the agent already ran today", async () => {
+  const stub = stubFetch();
+  try {
+    const env = makeEnv();
+    await recordAgentRun(env.CACHE, {
+      startedAt: new Date().toISOString(),
+      picks: 10,
+      trigger: "scheduled",
+    });
+    const { ctx, settle } = makeExecutionContext();
+
+    const res = await webhookRequest(env, ctx, messageUpdate({ text: "/scrape force" }));
+    assertEquals(res.status, 200);
+    assertEquals(stub.telegramCalls.length, 1);
+    assertEquals(stub.telegramCalls[0].body.text, "Запустил агента");
+
     await settle();
   } finally {
     stub.restore();

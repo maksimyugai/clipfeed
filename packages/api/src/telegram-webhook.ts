@@ -14,6 +14,7 @@ import { extractFirstUrl } from "./telegram-url.ts";
 import { buildDigestMessages } from "./telegram-digest.ts";
 import {
   AGENT_STARTED_TEXT,
+  agentAlreadyRanWarning,
   ALREADY_SAVED_TEXT,
   HELP_TEXT,
   NO_DIGEST_ARTICLES_TEXT,
@@ -29,6 +30,7 @@ import { findArticleIdByUrl, insertPendingArticle, listRecentReadyArticles } fro
 import { enqueueArticleJob } from "./queue.ts";
 import { sourceFromUrl } from "./validation.ts";
 import { runAgentJob } from "./agent.ts";
+import { formatUtcHourMinute, readAgentRunHistory } from "./agent-run-tracker.ts";
 import { publishNextArticle } from "./telegram-publish.ts";
 
 const SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token";
@@ -130,9 +132,21 @@ async function handleOwnerMessage(
     return c.json({ ok: true });
   }
 
-  if (text === "/scrape") {
-    c.executionCtx.waitUntil(runAgentJob(c.env));
-    await sendMessage(config.botToken, config.ownerChatId, AGENT_STARTED_TEXT).catch(() => {});
+  if (text === "/scrape" || text === "/scrape force") {
+    // Task 36 Part B §3: "/scrape force" bypasses the already-ran check
+    // (and thus the warning) entirely — same explicit-override semantics as
+    // the HTTP endpoint's ?force=1.
+    const forced = text === "/scrape force";
+    const previousRuns = forced ? [] : await readAgentRunHistory(c.env.CACHE);
+    c.executionCtx.waitUntil(runAgentJob(c.env, undefined, "manual"));
+
+    const reply = previousRuns.length > 0
+      ? agentAlreadyRanWarning(
+        previousRuns[previousRuns.length - 1].picks,
+        formatUtcHourMinute(previousRuns[previousRuns.length - 1].startedAt),
+      )
+      : AGENT_STARTED_TEXT;
+    await sendMessage(config.botToken, config.ownerChatId, reply).catch(() => {});
     return c.json({ ok: true });
   }
 

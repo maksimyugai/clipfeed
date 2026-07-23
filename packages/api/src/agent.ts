@@ -13,11 +13,31 @@ import { sourceFromUrl } from "./validation.ts";
 import { resolveEmbeddingModel } from "./embeddings.ts";
 import { loadBlocklistConfig } from "./curation.ts";
 import { listAutoBlocks } from "./autoblock.ts";
+import { type AgentRunTrigger, recordAgentRun } from "./agent-run-tracker.ts";
 
 // Structured, category-level stage log for the agent job — counts and ids
 // only, never candidate titles/snippets or credentials.
 function logAgentStage(stage: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ event: "agent_stage", stage, ...extra }));
+}
+
+// Task 36 Part B: records this run's completion for the day's idempotency
+// marker (see agent-run-tracker.ts) — best-effort, wrapped so a KV failure
+// here can't turn runAgentJob's documented "never throws" into a lie. A
+// missed marker write just means the next scheduled/manual trigger won't
+// see this run in its history, which degrades back to today's existing
+// (imperfect) behavior rather than crashing anything.
+async function recordRunCompletion(
+  env: Env,
+  startedAt: string,
+  picks: number,
+  trigger: AgentRunTrigger,
+): Promise<void> {
+  try {
+    await recordAgentRun(env.CACHE, { startedAt, picks, trigger });
+  } catch (err) {
+    console.warn(JSON.stringify({ event: "agent_run_record_failed", error: String(err) }));
+  }
 }
 
 // Runs the daily scraping agent end to end: fetch trusted sources -> build
@@ -27,8 +47,13 @@ function logAgentStage(stage: string, extra: Record<string, unknown> = {}): void
 // POST /api/admin/agent/run endpoint, or the Telegram /scrape command) —
 // never throws; a failure at any stage before execution just means zero
 // picks this run, not a crashed waitUntil task.
-export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): Promise<void> {
+export async function runAgentJob(
+  env: Env,
+  sources: SourceConfig[] = SOURCES,
+  trigger: AgentRunTrigger = "manual",
+): Promise<void> {
   const runStart = performance.now();
+  const startedAt = new Date().toISOString();
 
   const sourcesStart = performance.now();
   const { candidates, fetched, failed } = await fetchAllCandidates(sources);
@@ -73,6 +98,7 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
 
   if (pool.length === 0) {
     logAgentStage("done", { duration_ms: Math.round(performance.now() - runStart), picks_run: 0 });
+    await recordRunCompletion(env, startedAt, 0, trigger);
     return;
   }
 
@@ -125,4 +151,5 @@ export async function runAgentJob(env: Env, sources: SourceConfig[] = SOURCES): 
     duration_ms: Math.round(performance.now() - runStart),
     picks_run: picksRun,
   });
+  await recordRunCompletion(env, startedAt, picksRun, trigger);
 }
