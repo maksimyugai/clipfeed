@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
+  agentBatchPhrase,
   computeAgentBatchIndicator,
   computeTodayIsEmpty,
   isSectionVisiblyEmpty,
@@ -47,6 +48,24 @@ Deno.test("computeAgentBatchIndicator - non-agent items never contribute to read
 
 Deno.test("computeAgentBatchIndicator - empty section: hidden, zero/zero", () => {
   assertEquals(computeAgentBatchIndicator([]), { visible: false, ready: 0, total: 0 });
+});
+
+// --- agentBatchPhrase: Task 40 Part C wording states ---
+
+Deno.test("agentBatchPhrase - M = 0 -> preparing", () => {
+  assertEquals(agentBatchPhrase(0, 29), "preparing");
+});
+
+Deno.test("agentBatchPhrase - 0 < M < N -> partial", () => {
+  assertEquals(agentBatchPhrase(19, 29), "partial");
+});
+
+Deno.test("agentBatchPhrase - M = N (all ready) -> done", () => {
+  assertEquals(agentBatchPhrase(29, 29), "done");
+});
+
+Deno.test("agentBatchPhrase - N = 0 (nothing at all) -> done, not preparing", () => {
+  assertEquals(agentBatchPhrase(0, 0), "done");
 });
 
 // --- isSectionVisiblyEmpty ---

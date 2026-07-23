@@ -25,6 +25,19 @@ export function pendingCardVariant(item: Pick<AgentBatchItem, "added_via">): Pen
   return item.added_via === "agent" ? "hidden" : "skeleton";
 }
 
+// Task 40 Part C: which of the three indicator phrasings applies for a given
+// (ready, total) pair, independent of `visible` (which already hides the
+// indicator entirely once ready >= total — see Feed.tsx) so the phrasing
+// choice itself is directly testable across all three states, including the
+// one the mounted component never actually sees.
+export type AgentBatchPhrase = "preparing" | "partial" | "done";
+
+export function agentBatchPhrase(ready: number, total: number): AgentBatchPhrase {
+  if (ready >= total) return "done";
+  if (ready === 0) return "preparing";
+  return "partial";
+}
+
 export interface AgentBatchState {
   // True while ANY agent-added article in the section is still 'pending' —
   // this is the section's "a batch is actively in flight" signal, driving
