@@ -2,8 +2,8 @@ import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
-import { insertPendingArticle, markArticleReady } from "./db.ts";
-import { EMBEDDING_DIMENSIONS } from "./embeddings.ts";
+import { insertPendingArticle, markArticleReady } from "./articles/db.ts";
+import { EMBEDDING_DIMENSIONS } from "./search/embeddings.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";

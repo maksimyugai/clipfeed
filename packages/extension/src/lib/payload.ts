@@ -8,7 +8,7 @@ export interface HtmlPayloadResult {
 // Preferred ceiling for sending the full page's outerHTML. Kept below the
 // server's hard cap so there's room left for the JSON envelope around it.
 export const FULL_PAGE_THRESHOLD_BYTES = 1.8 * 1024 * 1024;
-// Server-enforced hard cap (packages/api/src/validation.ts MAX_HTML_BYTES).
+// Server-enforced hard cap (packages/api/src/articles/validation.ts MAX_HTML_BYTES).
 export const HARD_CAP_BYTES = 2 * 1024 * 1024;
 
 function byteLength(s: string): number {

@@ -1,7 +1,7 @@
 import "../env.d.ts";
 
 // A hand-rolled D1 test double — not a SQL engine, just enough pattern
-// matching to execute the exact statements packages/api/src/db.ts issues.
+// matching to execute the exact statements packages/api/src/articles/db.ts issues.
 // Kept in sync with db.ts by hand; if db.ts's queries change shape, extend
 // the branches below rather than generalizing this into a real parser.
 

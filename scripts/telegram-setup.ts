@@ -17,7 +17,7 @@ import {
   getUpdates,
   getWebhookInfo,
   setWebhook,
-} from "../packages/api/src/telegram-client.ts";
+} from "../packages/api/src/telegram/telegram-client.ts";
 
 const WEBHOOK_PATH = "/api/telegram/webhook";
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "preact/hooks";
 import type { AddedVia, ArticleListItem } from "@clipfeed/shared/types";
 import { dictionaries, type Lang, readStoredLang, writeStoredLang } from "./i18n.ts";
-import { useTheme } from "./theme.ts";
+import { useTheme } from "./lib/theme.ts";
 import {
   type ArticlesQueryParams,
   createArticle,
@@ -19,7 +19,7 @@ import {
 } from "./api.ts";
 import { readStoredSearchMode, type SearchMode, writeStoredSearchMode } from "./lib/searchMode.ts";
 import { computeLogoResetState } from "./lib/feedReset.ts";
-import { canMutate, classifyMeOutcome, resolveEffectiveLang } from "./ownerMode.ts";
+import { canMutate, classifyMeOutcome, resolveEffectiveLang } from "./lib/ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { EMPTY_FILTER_STATE, filterReducer } from "./lib/filterState.ts";
 import { bucketSection, type DateSection, groupArticlesBySection } from "./lib/dateGrouping.ts";

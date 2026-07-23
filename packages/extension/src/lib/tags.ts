@@ -1,4 +1,4 @@
-// Mirrors packages/api/src/validation.ts (MAX_TAGS, MAX_TAG_CHARS) so the
+// Mirrors packages/api/src/articles/validation.ts (MAX_TAGS, MAX_TAG_CHARS) so the
 // popup's tag input never produces a request the server would reject.
 const MAX_TAGS = 10;
 const MAX_TAG_CHARS = 50;

@@ -1,6 +1,6 @@
 import type { Dictionary, Lang } from "../i18n.ts";
 import type { SearchMode } from "../lib/searchMode.ts";
-import type { Theme } from "../theme.ts";
+import type { Theme } from "../lib/theme.ts";
 
 export interface HeaderProps {
   dict: Dictionary;
