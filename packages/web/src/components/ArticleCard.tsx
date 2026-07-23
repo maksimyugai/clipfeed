@@ -8,6 +8,11 @@ import { formatDate, hostnameFromUrl } from "../lib/format.ts";
 import { nextPollDelayMs, pollReducer, type PollState } from "../lib/pollSchedule.ts";
 import { translateQueue } from "../lib/translateQueue.ts";
 import {
+  hasEnglish,
+  shouldForgetTranslationRequest,
+  shouldRequestTranslation,
+} from "../lib/englishGate.ts";
+import {
   articleErrorText,
   failClassIsPermanent,
   isDailyLimitFailure,
@@ -187,8 +192,9 @@ function useJustReadyHighlight(status: ArticleListItem["status"]): boolean {
 }
 
 // Task 37 §6: in owner-only EN mode, a ready article missing its English
-// edition (en_generated_at is null) eventually renders a "preparing
-// English" skeleton — but ONLY once this specific card has actually been
+// edition (see hasEnglish in lib/englishGate.ts — en_generated_at set, or a
+// pre-Task-35 row that already carries _en fields) eventually renders a
+// "preparing English" skeleton — but ONLY once this specific card has actually been
 // reached, never for the whole fetched list at once (that was the reported
 // bug: every mounted card used to request a translation the instant
 // needsEnglish became true). "Reached" means either the card scrolled into
@@ -209,16 +215,21 @@ function useEnglishTranslation(
 ): boolean {
   const [isTranslating, setIsTranslating] = useState(false);
   const isTranslatingRef = useRef(false);
+  // Keyed on the article actually having English now, not on needsEnglish —
+  // see shouldForgetTranslationRequest's doc comment: needsEnglish also
+  // flips false on a plain lang-mode toggle away from "en", which must NOT
+  // forget that a request already went out.
+  const articleHasEnglish = hasEnglish(article);
 
   useEffect(() => {
-    if (!needsEnglish) {
+    if (shouldForgetTranslationRequest(articleHasEnglish)) {
       isTranslatingRef.current = false;
       setIsTranslating(false);
     }
-  }, [needsEnglish]);
+  }, [articleHasEnglish]);
 
   const requestTranslation = (priority: boolean) => {
-    if (isTranslatingRef.current) return;
+    if (!shouldRequestTranslation(needsEnglish, isTranslatingRef.current)) return;
     isTranslatingRef.current = true;
     setIsTranslating(true);
     translateQueue.request(
@@ -354,8 +365,13 @@ export function ArticleCard(props: ArticleCardProps) {
   // falling back to RU forever. Task 37 §6: that skeleton now only shows
   // once THIS card has actually been reached (see isTranslating below) —
   // until then it renders normally, in Russian (see effectiveContentLang).
+  // Task 40: "hasn't been translated yet" is hasEnglish(article), not just
+  // en_generated_at — a pre-Task-35 row can already carry real _en fields
+  // with a null en_generated_at (see englishGate.ts), and treating that as
+  // "needs English" caused a translate call to fire for every such row on
+  // every EN-mode viewport pass.
   const needsEnglish = isOwner && lang === "en" && article.status === "ready" &&
-    !article.en_generated_at;
+    !hasEnglish(article);
   const cardRef = useRef<HTMLElement>(null);
   const isTranslating = useEnglishTranslation(
     article,

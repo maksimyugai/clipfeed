@@ -92,10 +92,12 @@ export interface Dictionary {
   todayCountdownLessThanMinute: string;
   todayAgentDisabled: string;
   todayReadYesterdayLink: string;
-  agentBatchPreparingPrefix: string;
-  agentBatchPreparingSuffix: string;
-  agentBatchReadyLabel: string;
+  agentBatchPreparingVerb: string;
+  agentBatchPartialReadyLabel: string;
   agentBatchOfLabel: string;
+  agentBatchSummaryNounOne: string;
+  agentBatchSummaryNounFew: string;
+  agentBatchSummaryNounMany: string;
   pendingProcessingCaption: string;
   searchModeToggleAria: string;
   searchModeKeywordLabel: string;
@@ -208,10 +210,12 @@ const ru: Dictionary = {
   todayCountdownLessThanMinute: "Свежие статьи вот-вот появятся",
   todayAgentDisabled: "Автоподбор отключён",
   todayReadYesterdayLink: "Пока почитайте вчерашние",
-  agentBatchPreparingPrefix: "Готовится",
-  agentBatchPreparingSuffix: "свежих выжимок…",
-  agentBatchReadyLabel: "готово",
+  agentBatchPreparingVerb: "Готовятся",
+  agentBatchPartialReadyLabel: "Готово",
   agentBatchOfLabel: "из",
+  agentBatchSummaryNounOne: "выжимка",
+  agentBatchSummaryNounFew: "выжимки",
+  agentBatchSummaryNounMany: "выжимок",
   pendingProcessingCaption: "Обрабатывается…",
   searchModeToggleAria: "Режим поиска",
   searchModeKeywordLabel: "по словам",
@@ -325,10 +329,12 @@ const en: Dictionary = {
   todayCountdownLessThanMinute: "New articles any moment now",
   todayAgentDisabled: "Auto-picks are off",
   todayReadYesterdayLink: "Read yesterday's meanwhile",
-  agentBatchPreparingPrefix: "Preparing",
-  agentBatchPreparingSuffix: "fresh summaries…",
-  agentBatchReadyLabel: "ready",
+  agentBatchPreparingVerb: "Preparing",
+  agentBatchPartialReadyLabel: "ready",
   agentBatchOfLabel: "of",
+  agentBatchSummaryNounOne: "summary",
+  agentBatchSummaryNounFew: "summaries",
+  agentBatchSummaryNounMany: "summaries",
   pendingProcessingCaption: "Processing…",
   searchModeToggleAria: "Search mode",
   searchModeKeywordLabel: "by words",

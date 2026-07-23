@@ -32,33 +32,48 @@ import type { Article, ArticleListItem } from "@clipfeed/shared/types";
 // regardless of the projected column list), which is exactly how
 // faithfulness_verdict/embedded_at/telegram_published_at went missing from
 // GET /api/articles unnoticed until Task 34's live verification caught it.
+//
+// Task 40: `expected` used to be a hand-maintained string literal array —
+// which had itself silently fallen behind (missing en_generated_at,
+// image_key, image_source_url, all added by Task 35 after this test was
+// written), so it could never have caught the very class of drift it exists
+// to guard against. Deriving `expected` from Object.keys() of a real sample
+// typed as ArticleListItem instead means the compiler enforces completeness:
+// an added/renamed/removed Article field either breaks this sample's
+// type-check or is automatically reflected in `expected`, so a future
+// LIST_COLUMNS omission fails this test rather than silently degrading.
+const sampleListItem: ArticleListItem = {
+  id: "a1",
+  url: "https://example.com/a1",
+  canonical_url: null,
+  title: "Example",
+  source: "example.com",
+  author: null,
+  published_at: null,
+  added_at: "2026-01-01T00:00:00.000Z",
+  added_via: "manual",
+  lang_original: "en",
+  summary_ru: "summary",
+  summary_en: null,
+  summary_json: null,
+  tags: [],
+  status: "ready",
+  archived: false,
+  error: null,
+  fail_class: null,
+  heal_attempts: 0,
+  faithfulness_verdict: null,
+  faithfulness_json: null,
+  faithfulness_checked_at: null,
+  embedded_at: null,
+  telegram_published_at: null,
+  en_generated_at: null,
+  image_key: null,
+  image_source_url: null,
+};
+
 Deno.test("LIST_COLUMNS: projects every ArticleListItem column (Article minus full_text)", () => {
-  const expected: (keyof Omit<Article, "full_text">)[] = [
-    "id",
-    "url",
-    "canonical_url",
-    "title",
-    "source",
-    "author",
-    "published_at",
-    "added_at",
-    "added_via",
-    "lang_original",
-    "summary_ru",
-    "summary_en",
-    "summary_json",
-    "tags",
-    "status",
-    "archived",
-    "error",
-    "fail_class",
-    "heal_attempts",
-    "faithfulness_verdict",
-    "faithfulness_json",
-    "faithfulness_checked_at",
-    "embedded_at",
-    "telegram_published_at",
-  ];
+  const expected = Object.keys(sampleListItem);
   const columns = LIST_COLUMNS.split(",").map((c) => c.trim());
   for (const field of expected) {
     assertEquals(columns.includes(field), true, `LIST_COLUMNS is missing "${field}"`);
