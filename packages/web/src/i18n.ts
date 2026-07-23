@@ -108,6 +108,7 @@ export interface Dictionary {
   emptySearchHint: string;
   semanticMatchesPrefix: string;
   semanticMatchesSuffix: string;
+  semanticFallbackHeading: string;
   logoHomeAria: string;
   footerLicenseLabel: string;
   footerContentNotice: string;
@@ -226,6 +227,7 @@ const ru: Dictionary = {
   emptySearchHint: "Попробуйте другой режим поиска — «по словам» или «по смыслу»",
   semanticMatchesPrefix: "Найдено",
   semanticMatchesSuffix: "по смыслу",
+  semanticFallbackHeading: "Ничего не найдено по словам — вот похожее по смыслу",
   logoHomeAria: "На главную",
   footerLicenseLabel: "код под MIT",
   footerContentNotice: "Выжимки созданы ИИ. Права на исходные статьи принадлежат их авторам.",
@@ -345,6 +347,7 @@ const en: Dictionary = {
   emptySearchHint: 'Try the other search mode — "by words" or "by meaning"',
   semanticMatchesPrefix: "Found",
   semanticMatchesSuffix: "semantic matches",
+  semanticFallbackHeading: "No keyword matches — here's what's similar by meaning",
   logoHomeAria: "Go to home feed",
   footerLicenseLabel: "code under MIT",
   footerContentNotice:

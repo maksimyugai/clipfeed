@@ -18,6 +18,7 @@ import {
   searchArticles,
 } from "./api.ts";
 import { readStoredSearchMode, type SearchMode, writeStoredSearchMode } from "./lib/searchMode.ts";
+import { isShowingSemanticFallback, shouldRunSemanticFallback } from "./lib/searchFallback.ts";
 import { computeLogoResetState } from "./lib/feedReset.ts";
 import { canMutate, classifyMeOutcome, resolveEffectiveLang } from "./lib/ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
@@ -151,6 +152,20 @@ export function App() {
     writeStoredSearchMode(localStorage, next);
   };
 
+  // Task 43 Part 3: the query a currently-shown semantic result set came
+  // from via the automatic keyword->semantic fallback (null when not in a
+  // fallback state — e.g. the user picked semantic mode themselves). Drives
+  // Feed.tsx's "no keyword matches — here's what's similar by meaning"
+  // heading via isShowingSemanticFallback. fallbackAttemptedForRef tracks
+  // which query the fallback has already been tried for, so it only ever
+  // fires once per query (see shouldRunSemanticFallback); skipNextSemanticFetchRef
+  // tells the main data-fetch effect below to skip its own semantic fetch
+  // the one time the fallback itself just flipped searchMode — the results
+  // are already in `articles`, a second fetch would be redundant.
+  const [fallbackQuery, setFallbackQuery] = useState<string | null>(null);
+  const fallbackAttemptedForRef = useRef<string | null>(null);
+  const skipNextSemanticFetchRef = useRef(false);
+
   const [articles, setArticles] = useState<ArticleListItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -263,6 +278,15 @@ export function App() {
     setInitialLoadDone(false);
 
     if (query.trim() !== "" && searchMode === "semantic") {
+      // Task 43 Part 3: when the keyword->semantic fallback below just
+      // flipped searchMode itself, `articles` already holds its results —
+      // skip this effect's own fetch instead of firing a redundant second
+      // request for the exact same query.
+      if (skipNextSemanticFetchRef.current) {
+        skipNextSemanticFetchRef.current = false;
+        setInitialLoadDone(true);
+        return;
+      }
       fetchSemanticSearch(isOwner, query)
         .then((items) => {
           if (cancelled) return;
@@ -311,6 +335,49 @@ export function App() {
       cancelled = true;
     };
   }, [query, activeTag, activeSource, archivedView, isOwner, searchMode]);
+
+  // Task 43 Part 3: a KEYWORD search that comes back empty runs the same
+  // query once in SEMANTIC mode in the background; if that finds anything,
+  // flip into semantic mode with those results already in hand (see the
+  // skipNextSemanticFetchRef check above) and tag them via fallbackQuery so
+  // Feed.tsx shows the "no keyword matches — here's what's similar by
+  // meaning" heading instead of the normal semantic-matches count line. If
+  // semantic finds nothing either, this silently leaves the existing empty
+  // state alone — shouldRunSemanticFallback's alreadyAttemptedQuery check
+  // means it's never retried for the same query again.
+  useEffect(() => {
+    if (
+      !shouldRunSemanticFallback({
+        searchMode,
+        query,
+        initialLoadDone,
+        resultCount: articles.length,
+        alreadyAttemptedQuery: fallbackAttemptedForRef.current,
+      })
+    ) {
+      return;
+    }
+
+    const trimmed = query.trim();
+    fallbackAttemptedForRef.current = trimmed;
+    let cancelled = false;
+    fetchSemanticSearch(isOwner, query)
+      .then((items) => {
+        if (cancelled || items.length === 0) return;
+        skipNextSemanticFetchRef.current = true;
+        setArticles(items);
+        setNextCursor(null);
+        setFallbackQuery(trimmed);
+        setSearchMode("semantic");
+      })
+      .catch(() => {
+        // Best-effort convenience — a failed fallback just leaves the
+        // normal empty state showing, same as if it had found nothing.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchMode, query, initialLoadDone, articles.length, isOwner]);
 
   // Task 41 Part A: replaces what used to be one GET /api/articles/:id per
   // pending card, every 4s, independently (N pending == N requests/tick) —
@@ -812,6 +879,7 @@ export function App() {
                 forceOpenSection={forceOpenSection}
                 isSearching={query.trim() !== ""}
                 searchMode={searchMode}
+                isSemanticFallback={isShowingSemanticFallback(searchMode, query, fallbackQuery)}
                 agentHourUtc={agentHourUtc}
                 activeTag={activeTag}
                 activeSource={activeSource}
