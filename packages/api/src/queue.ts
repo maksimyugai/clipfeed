@@ -1,7 +1,12 @@
 import "./env.d.ts";
 import type { QueueMessage, QueueNotify } from "@clipfeed/shared/types";
 import { getArticleById, markArticleFailed } from "./db.ts";
-import { resolvePriorViolations, runArticlePipeline, runResummarization } from "./pipeline.ts";
+import {
+  resolvePriorViolations,
+  runArticlePipeline,
+  runEnglishTranslation,
+  runResummarization,
+} from "./pipeline.ts";
 import { editMessageText, readTelegramConfig } from "./telegram-client.ts";
 import { failedText, readySuccessText } from "./telegram-strings.ts";
 
@@ -91,6 +96,24 @@ export async function processQueueMessage(env: Env, message: QueueMessage): Prom
       source: article.source,
       addedAt: article.added_at,
     });
+  } else if (message.kind === "translate") {
+    // Task 35 Part A §3: requires stored full_text to generate the EN
+    // fields from — always present for the endpoint's real call sites
+    // (only a 'ready' article, which always has full_text, can be
+    // translated — see index.ts), but checked defensively here too.
+    if (!article.full_text) {
+      console.warn(JSON.stringify({
+        event: "queue_message_skipped",
+        reason: "no full_text to translate from",
+        id: message.articleId,
+      }));
+    } else {
+      await runEnglishTranslation(env, {
+        id: article.id,
+        title: article.title,
+        fullText: article.full_text,
+      });
+    }
   } else {
     const hasFullText = article.full_text !== null && article.full_text.trim().length > 0;
     if (hasFullText) {

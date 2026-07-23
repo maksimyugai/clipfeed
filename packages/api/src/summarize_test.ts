@@ -2,6 +2,7 @@ import "./env.d.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   buildAnthropicRequest,
+  buildEnglishSystemPrompt,
   buildSystemPrompt,
   callLlm,
   DEFAULT_RELAXED_SPEC,
@@ -9,14 +10,21 @@ import {
   DEFAULT_SUMMARY_BODY_TARGET_CHARS,
   deriveSummarySpec,
   FEW_SHOT_EXAMPLE_SUMMARY,
+  generateEnglishFields,
+  MAX_TRUNCATION_RETRY_TOKENS,
+  parseEnglishJsonWithDiagnostics,
   parseSummaryBodyTargetChars,
   parseSummaryJson,
+  parseSummaryJsonWithDiagnostics,
   parseWorkersAiResult,
+  parseWorkersAiResultWithDiagnostics,
   renderSummaryMarkdown,
   repairDuplicateBullets,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
   type SummarySpec,
+  TRUNCATION_ERROR_MESSAGE,
+  validateEnglishFields,
   validateSummary,
   withTimeout,
 } from "./summarize.ts";
@@ -30,37 +38,27 @@ function makeStubAi(handler: (model: string, input: Record<string, unknown>) => 
   };
 }
 
-// Meets validateSummary's content bar at the DEFAULT spec (>=180 char
-// tldrs, 4-7 bullets each 40-220 chars, 2-3 body paragraphs each 288-768
-// chars, none duplicating the tldr, 1-6 tags) so it round-trips through
-// both the shape-only parsers and the full summarizeArticle*
-// validate-and-retry path used throughout this file.
-const VALID_SUMMARY = {
+// Meets validateSummary's content bar at the DEFAULT spec (>=150 char tldr,
+// 4-7 bullets each 40-220 chars, 2 body paragraphs each 250-640 chars, none
+// duplicating the tldr, 1-6 tags) so it round-trips through both the
+// shape-only parsers and the full summarizeArticle* validate-and-retry path
+// used throughout this file. Task 35 Part A: RU-only — a fresh summary no
+// longer carries _en fields at all (see SummaryJson's doc comment; those
+// fields are now optional, populated only via the separate, lazy
+// generateEnglishFields path).
+const VALID_SUMMARY: SummaryJson = {
   title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
-  title_en: "Company Raises Subscription Price 60% Starting September 1",
   tldr_ru:
     "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса, а годовые подписчики получат отсрочку до продления плана.",
-  tldr_en:
-    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
   body_ru: [
     "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
     "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
-  ],
-  body_en: [
-    "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
-    "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
   ],
   bullets_ru: [
     "Те, кто уже на годовом плане, сохранят старую цену до момента продления плана.",
     "Компания откладывала повышение цены более года из опасений навредить малому бизнесу.",
     "Решение было принято только после того, как расходы на инфраструктуру продолжили расти.",
     "Ни один из конкурентов пока не объявлял о похожем шаге.",
-  ],
-  bullets_en: [
-    "Existing annual-plan subscribers keep their price until their plan comes up for renewal.",
-    "The company delayed the increase for over a year out of concern for small businesses.",
-    "Leadership only moved forward once infrastructure costs kept climbing regardless.",
-    "No competitor has announced a comparable price change so far.",
   ],
   tags: ["технологии", "google"],
   lang_original: "en",
@@ -93,8 +91,59 @@ Deno.test("parseSummaryJson: missing required field returns null", () => {
 });
 
 Deno.test("parseSummaryJson: wrong field type returns null", () => {
-  const broken = { ...VALID_SUMMARY, bullets_en: "not an array" };
+  const broken = { ...VALID_SUMMARY, bullets_ru: "not an array" };
   assertEquals(parseSummaryJson(JSON.stringify(broken)), null);
+});
+
+Deno.test("parseSummaryJson: a legacy row with _en fields still parses fine (extra fields are simply ignored)", () => {
+  // Task 35 Part A: a stored summary_json from before this task, or one
+  // already merged with generateEnglishFields output, has _en fields — this
+  // parser is only ever used on FRESH LLM output (which never includes
+  // them), but it must not choke if they happen to be present.
+  const withEn = { ...VALID_SUMMARY, title_en: "Title", tldr_en: "Tldr" };
+  const result = parseSummaryJson(JSON.stringify(withEn));
+  assertEquals(result, VALID_SUMMARY);
+});
+
+// --- Part B §2/§3: actionable schema diagnostics ---
+
+Deno.test("parseSummaryJsonWithDiagnostics: valid input has no missing/wrong-type fields", () => {
+  const { value, diagnostics } = parseSummaryJsonWithDiagnostics(JSON.stringify(VALID_SUMMARY));
+  assertEquals(value, VALID_SUMMARY);
+  assertEquals(diagnostics.missingFields, []);
+  assertEquals(diagnostics.wrongTypeFields, []);
+  assertEquals(diagnostics.endsWithBrace, true);
+});
+
+Deno.test("parseSummaryJsonWithDiagnostics: names each missing field", () => {
+  const { tags: _tags, lang_original: _lang, ...partial } = VALID_SUMMARY;
+  const { value, diagnostics } = parseSummaryJsonWithDiagnostics(JSON.stringify(partial));
+  assertEquals(value, null);
+  assertEquals(diagnostics.missingFields.includes("tags"), true);
+  assertEquals(diagnostics.missingFields.includes("lang_original"), true);
+  assertEquals(diagnostics.wrongTypeFields, []);
+});
+
+Deno.test("parseSummaryJsonWithDiagnostics: names each wrong-type field, distinguishing string vs array fields", () => {
+  const broken = { ...VALID_SUMMARY, bullets_ru: "not an array", title_ru: 42 };
+  const { value, diagnostics } = parseSummaryJsonWithDiagnostics(JSON.stringify(broken));
+  assertEquals(value, null);
+  assertEquals(diagnostics.wrongTypeFields.includes("bullets_ru"), true);
+  assertEquals(diagnostics.wrongTypeFields.includes("title_ru"), true);
+});
+
+Deno.test("parseSummaryJsonWithDiagnostics: totally unparseable text reports every RU field missing, and endsWithBrace reflects the raw text", () => {
+  const { value, diagnostics } = parseSummaryJsonWithDiagnostics('{"title_ru": "cut off mid');
+  assertEquals(value, null);
+  assertEquals(diagnostics.missingFields.length > 0, true);
+  assertEquals(diagnostics.endsWithBrace, false);
+  assertEquals(diagnostics.rawLength, '{"title_ru": "cut off mid'.length);
+});
+
+Deno.test("parseSummaryJsonWithDiagnostics: a non-object JSON value (e.g. a bare array) reports every field missing, not a crash", () => {
+  const { value, diagnostics } = parseSummaryJsonWithDiagnostics("[1,2,3]");
+  assertEquals(value, null);
+  assertEquals(diagnostics.missingFields.length > 0, true);
 });
 
 Deno.test("buildAnthropicRequest: direct mode targets api.anthropic.com with x-api-key", () => {
@@ -381,7 +430,7 @@ Deno.test("summarizeArticle: retries once on broken output, then succeeds", asyn
   }
 });
 
-Deno.test("summarizeArticle: fails after two broken responses", async () => {
+Deno.test("summarizeArticle: fails after two broken responses with an actionable, field-naming message (Part B)", async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = (() => {
@@ -398,7 +447,7 @@ Deno.test("summarizeArticle: fails after two broken responses", async () => {
     await assertRejects(
       () => summarizeArticle({ apiKey: "test-key", model: "test-model" }, "Title", "Body text"),
       Error,
-      "summary validation: response did not match the required JSON schema",
+      "schema: missing",
     );
     assertEquals(calls, 2);
   } finally {
@@ -429,7 +478,7 @@ Deno.test("summarizeArticle: retry-exhausted schema failure is reported the same
           "Body text",
         ),
       Error,
-      "summary validation: response did not match the required JSON schema",
+      "schema: missing",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -481,35 +530,132 @@ Deno.test("summarizeArticle: missing text content is prefixed per mode (gateway)
   }
 });
 
+// --- Task 35 Part B §1: truncation detection (Anthropic stop_reason) ---
+
+Deno.test("summarizeArticle: stop_reason 'max_tokens' auto-retries ONCE at 1.5x max_tokens, then succeeds — never reported as a schema error", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const capturedMaxTokens: number[] = [];
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    const body = JSON.parse(String(init?.body));
+    capturedMaxTokens.push(body.max_tokens);
+    if (calls === 1) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            content: [{ type: "text", text: '{"title_ru": "cut off mid' }],
+            stop_reason: "max_tokens",
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const result = await summarizeArticle(
+      { apiKey: "test-key", model: "test-model" },
+      "Title",
+      "Body text",
+    );
+    assertEquals(result, VALID_SUMMARY);
+    assertEquals(calls, 2);
+    const firstMaxTokens = capturedMaxTokens[0];
+    assertEquals(capturedMaxTokens[1], Math.round(firstMaxTokens * 1.5));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("deriveSummarySpec: the largest possible maxTokens (at the largest allowed target, 4000) times the 1.5x truncation-retry multiplier still fits under MAX_TRUNCATION_RETRY_TOKENS (8000) — the cap exists as a defensive ceiling, not one this repo's own numbers are expected to hit", () => {
+  const largestMaxTokens = deriveSummarySpec(4000, "strict").maxTokens;
+  assertEquals(Math.round(largestMaxTokens * 1.5) <= MAX_TRUNCATION_RETRY_TOKENS, true);
+});
+
+Deno.test("summarizeArticle: stop_reason 'max_tokens' on BOTH the original attempt and its truncation-retry is a terminal truncation error, not a schema error", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (() => {
+    calls += 1;
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: '{"title_ru": "cut off' }],
+          stop_reason: "max_tokens",
+        }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    await assertRejects(
+      () => summarizeArticle({ apiKey: "test-key", model: "test-model" }, "Title", "Body text"),
+      Error,
+      TRUNCATION_ERROR_MESSAGE,
+    );
+    // Only the truncation-retry's 2 calls happen — validateSummary's own
+    // corrective-retry loop is never reached, since the truncation error
+    // throws before parsing/validation ever runs.
+    assertEquals(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("summarizeArticle: stop_reason other than 'max_tokens' (e.g. 'end_turn') with genuinely malformed JSON is a normal schema-mismatch retry, not truncation", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (() => {
+    calls += 1;
+    const text = calls === 1 ? "not valid json at all" : JSON.stringify(VALID_SUMMARY);
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text }], stop_reason: "end_turn" }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const result = await summarizeArticle(
+      { apiKey: "test-key", model: "test-model" },
+      "Title",
+      "Body text",
+    );
+    assertEquals(result, VALID_SUMMARY);
+    assertEquals(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // --- Workers AI mode ---
 
 // Also meets validateSummary's content bar — see VALID_SUMMARY above for why.
-const VALID_SUMMARY_2 = {
+const VALID_SUMMARY_2: SummaryJson = {
   title_ru: "Разработчики выпустили новую версию с поддержкой офлайн-режима",
-  title_en: "Developers Ship New Version With Offline Mode Support",
   tldr_ru:
     "Команда выпустила версию 4.0 с поддержкой офлайн-режима, позволяющей работать без подключения к интернету. Синхронизация данных происходит автоматически при восстановлении сети, а конфликты правок разрешаются автоматически по времени сохранения.",
-  tldr_en:
-    "The team shipped version 4.0 with offline mode support, letting users work without an internet connection. Data syncs automatically once the connection is restored, and edit conflicts are resolved automatically by save time.",
   body_ru: [
     "Новая версия позволяет продолжать работу даже без подключения к интернету, сохраняя все изменения локально до восстановления связи. Как только соединение появляется снова, приложение автоматически синхронизирует накопленные изменения с сервером без участия пользователя, обычно в течение нескольких секунд после восстановления сети.",
     "Локальный кеш на устройстве ограничен объёмом в 500 мегабайт, чего разработчики считают достаточным для типичного сценария использования в течение нескольких дней офлайн-работы. Если во время автономной работы возникает конфликт правок между устройствами, система разрешает его в пользу версии с более поздней меткой сохранения.",
-  ],
-  body_en: [
-    "The new version lets people keep working even without an internet connection, storing every change locally until connectivity returns. As soon as the connection comes back, the app automatically syncs the accumulated changes to the server without any user action required, usually within a few seconds of the network coming back online.",
-    "The on-device local cache is capped at 500 megabytes, which the developers consider enough for a typical multi-day offline session. If an edit conflict arises between devices during offline work, the system resolves it in favor of whichever version has the later save timestamp. The update is available to all users at no cost and installs automatically.",
   ],
   bullets_ru: [
     "Локальный кеш ограничен объёмом 500 мегабайт на одно устройство.",
     "Конфликты правок разрешаются в пользу более поздней сохранённой версии.",
     "Синхронизация запускается автоматически сразу после восстановления связи.",
     "Обновление доступно всем пользователям бесплатно и без отдельной оплаты.",
-  ],
-  bullets_en: [
-    "The local cache is capped at 500 megabytes per device.",
-    "Edit conflicts resolve in favor of the most recently saved version.",
-    "Syncing kicks off automatically as soon as connectivity returns.",
-    "The update is available to every user at no additional cost.",
   ],
   tags: ["новости"],
   lang_original: "ru",
@@ -547,6 +693,14 @@ Deno.test("parseWorkersAiResult: non-object, non-string results are null", () =>
   assertEquals(parseWorkersAiResult(null), null);
   assertEquals(parseWorkersAiResult(undefined), null);
   assertEquals(parseWorkersAiResult(42), null);
+});
+
+Deno.test("parseWorkersAiResultWithDiagnostics: an object response missing fields names them (rawLength/endsWithBrace computed from the re-serialized object)", () => {
+  const { tags: _tags, ...withoutTags } = VALID_SUMMARY_2;
+  const { value, diagnostics } = parseWorkersAiResultWithDiagnostics({ response: withoutTags });
+  assertEquals(value, null);
+  assertEquals(diagnostics.missingFields.includes("tags"), true);
+  assertEquals(diagnostics.endsWithBrace, true);
 });
 
 Deno.test("summarizeArticleWithWorkersAi: succeeds with response_format honored (object response)", async () => {
@@ -596,17 +750,19 @@ Deno.test("summarizeArticleWithWorkersAi: retries once on broken output, then su
   assertEquals(calls, 2);
 });
 
-Deno.test("summarizeArticleWithWorkersAi: fails after two broken responses with a schema violation", async () => {
+Deno.test("summarizeArticleWithWorkersAi: fails after two broken responses with an actionable, field-naming message", async () => {
   let calls = 0;
   const ai = makeStubAi(() => {
     calls += 1;
-    return { response: "still not json" };
+    // Ends with '}' so the truncation heuristic doesn't misclassify this as
+    // truncated — this is a genuine schema mismatch, not a cut-off response.
+    return { response: "still not json {}" };
   });
 
   await assertRejects(
     () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
     Error,
-    "summary validation: response did not match the required JSON schema",
+    "schema: missing",
   );
   assertEquals(calls, 2);
 });
@@ -621,6 +777,71 @@ Deno.test("summarizeArticleWithWorkersAi: a hard binding failure surfaces as a w
     Error,
     "workers ai error: Error: binding call failed: model not found",
   );
+});
+
+// --- Task 35 Part B §1: workers-ai truncation heuristic (no real stop_reason
+// signal available, so this is inferred from the raw text shape) ---
+
+Deno.test("summarizeArticleWithWorkersAi: a plain-string response that looks truncated (unparseable + no trailing brace) auto-retries once at 1.5x max_tokens, then succeeds", async () => {
+  let calls = 0;
+  const capturedMaxTokens: number[] = [];
+  const ai = makeStubAi((_model, input) => {
+    calls += 1;
+    capturedMaxTokens.push(input.max_tokens as number);
+    if (calls === 1) return { response: '{"title_ru": "cut off mid' };
+    return { response: JSON.stringify(VALID_SUMMARY_2) };
+  });
+
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+  // 1 (truncated, schema attempt) + 1 (truncation retry, succeeds) = 2 total
+  // calls — no separate corrective-validation retry is needed since the
+  // truncation retry itself already returned a valid summary.
+  assertEquals(calls, 2);
+  assertEquals(capturedMaxTokens[1], Math.round(capturedMaxTokens[0] * 1.5));
+});
+
+Deno.test("summarizeArticleWithWorkersAi: a plain-string response that's simply malformed (but NOT truncated-looking, e.g. ends with '}') is treated as a normal schema mismatch, not truncation", async () => {
+  let calls = 0;
+  const capturedMaxTokens: number[] = [];
+  const ai = makeStubAi((_model, input) => {
+    calls += 1;
+    capturedMaxTokens.push(input.max_tokens as number);
+    if (calls === 1) return { response: '{"not_a_summary_field": "x"}' };
+    return { response: JSON.stringify(VALID_SUMMARY_2) };
+  });
+
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+  // No truncation-retry call happened — max_tokens stays the same across
+  // both calls, since this went through the ordinary corrective-validation
+  // retry path instead.
+  assertEquals(capturedMaxTokens[0], capturedMaxTokens[1]);
+});
+
+Deno.test("summarizeArticleWithWorkersAi: truncated-looking output on BOTH the original call and its truncation-retry is a terminal truncation error", async () => {
+  const ai = makeStubAi(() => ({ response: '{"title_ru": "still cut off' }));
+
+  await assertRejects(
+    () => summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text"),
+    Error,
+    TRUNCATION_ERROR_MESSAGE,
+  );
+});
+
+Deno.test("summarizeArticleWithWorkersAi: an object response (json_schema succeeded structurally) is never treated as truncated, even if incomplete", async () => {
+  // An object result can't be "truncated" in the string sense this heuristic
+  // checks for — it's already valid JSON. An incomplete/wrong-shape object
+  // still goes through the normal schema-mismatch path.
+  let calls = 0;
+  const ai = makeStubAi(() => {
+    calls += 1;
+    if (calls === 1) return { response: { title_ru: "only one field" } };
+    return { response: VALID_SUMMARY_2 };
+  });
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+  assertEquals(calls, 2);
 });
 
 // --- callLlm: shared transport used by both summarization and ranking ---
@@ -860,37 +1081,7 @@ Deno.test("runWorkersAi (via summarizeArticleWithWorkersAi): a timeout-shaped re
 // --- validateSummary: the content-quality bar applied after shape parsing ---
 
 function makeValidSummary(overrides: Partial<SummaryJson> = {}): SummaryJson {
-  return {
-    title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
-    title_en: "Company Raises Subscription Price 60% Starting September 1",
-    tldr_ru:
-      "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса, а годовые подписчики получат отсрочку до продления плана.",
-    tldr_en:
-      "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
-    body_ru: [
-      "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
-      "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
-    ],
-    body_en: [
-      "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
-      "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
-    ],
-    bullets_ru: [
-      "Те, кто уже на годовом плане, сохранят старую цену до момента продления плана.",
-      "Компания откладывала повышение цены более года из опасений навредить малому бизнесу.",
-      "Решение было принято только после того, как расходы на инфраструктуру продолжили расти.",
-      "Ни один из конкурентов пока не объявлял о похожем шаге.",
-    ],
-    bullets_en: [
-      "Existing annual-plan subscribers keep their price until their plan comes up for renewal.",
-      "The company delayed the increase for over a year out of concern for small businesses.",
-      "Leadership only moved forward once infrastructure costs kept climbing regardless.",
-      "No competitor has announced a comparable price change so far.",
-    ],
-    tags: ["technology", "pricing"],
-    lang_original: "en",
-    ...overrides,
-  };
+  return { ...VALID_SUMMARY, ...overrides };
 }
 
 Deno.test("validateSummary: a well-formed summary passes with no violations", () => {
@@ -898,11 +1089,37 @@ Deno.test("validateSummary: a well-formed summary passes with no violations", ()
   assertEquals(result.ok, true);
 });
 
-Deno.test("validateSummary: null (shape failure) is reported as a single schema violation", () => {
+Deno.test("validateSummary: null (shape failure), no diagnostics -> the generic fallback message (direct-unit-test-only path)", () => {
   const result = validateSummary(null);
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(result.violations, ["response did not match the required JSON schema"]);
+  }
+});
+
+Deno.test("validateSummary: null (shape failure) WITH diagnostics reports the specific fields and logs 'summarize_schema_mismatch'", () => {
+  const original = console.warn;
+  const logs: unknown[][] = [];
+  console.warn = (...args: unknown[]) => logs.push(args);
+  try {
+    const result = validateSummary(null, DEFAULT_STRICT_SPEC, {
+      missingFields: ["tags"],
+      wrongTypeFields: ["bullets_ru"],
+      rawLength: 42,
+      endsWithBrace: true,
+      stopReason: "end_turn",
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertEquals(result.violations, ["schema: missing tags; bullets_ru is not an array"]);
+    }
+    const parsed = logs.map((args) => JSON.parse(String(args[0])));
+    const mismatchLog = parsed.find((l) => l.event === "summarize_schema_mismatch");
+    assertEquals(mismatchLog?.missingFields, ["tags"]);
+    assertEquals(mismatchLog?.wrongTypeFields, ["bullets_ru"]);
+    assertEquals(mismatchLog?.stopReason, "end_turn");
+  } finally {
+    console.warn = original;
   }
 });
 
@@ -913,18 +1130,18 @@ Deno.test("validateSummary: empty title is a violation", () => {
 });
 
 Deno.test("validateSummary: title over 120 chars is a violation", () => {
-  const result = validateSummary(makeValidSummary({ title_en: "x".repeat(121) }));
+  const result = validateSummary(makeValidSummary({ title_ru: "x".repeat(121) }));
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("title_en") && v.includes("120")),
+      result.violations.some((v) => v.includes("title_ru") && v.includes("120")),
       true,
     );
   }
 });
 
 Deno.test("validateSummary: title at exactly 120 chars is fine (boundary)", () => {
-  const result = validateSummary(makeValidSummary({ title_en: "x".repeat(120) }));
+  const result = validateSummary(makeValidSummary({ title_ru: "x".repeat(120) }));
   assertEquals(result.ok, true);
 });
 
@@ -940,9 +1157,9 @@ Deno.test("validateSummary: tldr under the default STRICT minimum (150 chars) is
 });
 
 Deno.test("validateSummary: tldr at exactly 150 chars is fine, 149 is a violation (boundary)", () => {
-  const at150 = validateSummary(makeValidSummary({ tldr_en: "x".repeat(150) }));
+  const at150 = validateSummary(makeValidSummary({ tldr_ru: "x".repeat(150) }));
   assertEquals(at150.ok, true);
-  const at149 = validateSummary(makeValidSummary({ tldr_en: "x".repeat(149) }));
+  const at149 = validateSummary(makeValidSummary({ tldr_ru: "x".repeat(149) }));
   assertEquals(at149.ok, false);
 });
 
@@ -976,11 +1193,11 @@ Deno.test("validateSummary: more than 7 bullets is a violation", () => {
 Deno.test("validateSummary: exactly 4 and exactly 7 bullets are both fine (boundaries)", () => {
   const four = validateSummary(
     makeValidSummary({
-      bullets_en: [
-        "First concrete fact goes here now for the reader.",
-        "Second concrete fact goes here now for the reader.",
-        "Third concrete fact goes here now for the reader.",
-        "Fourth concrete fact goes here now for the reader.",
+      bullets_ru: [
+        "Первый конкретный факт представлен для читателя тут.",
+        "Второй конкретный факт представлен для читателя тут.",
+        "Третий конкретный факт представлен для читателя тут.",
+        "Четвёртый конкретный факт представлен для читателя.",
       ],
     }),
   );
@@ -988,9 +1205,9 @@ Deno.test("validateSummary: exactly 4 and exactly 7 bullets are both fine (bound
 
   const seven = validateSummary(
     makeValidSummary({
-      bullets_en: Array.from(
+      bullets_ru: Array.from(
         { length: 7 },
-        (_, i) => `Concrete fact number ${i} in the list for the reader to scan quickly.`,
+        (_, i) => `Конкретный факт номер ${i} в списке для быстрого просмотра читателем.`,
       ),
     }),
   );
@@ -1000,18 +1217,18 @@ Deno.test("validateSummary: exactly 4 and exactly 7 bullets are both fine (bound
 Deno.test("validateSummary: a bullet under 40 chars is a violation", () => {
   const result = validateSummary(
     makeValidSummary({
-      bullets_en: [
-        "Too short.",
-        "Second concrete fact goes here now for the reader.",
-        "Third concrete fact goes here now for the reader.",
-        "Fourth concrete fact goes here now for the reader.",
+      bullets_ru: [
+        "Слишком коротко.",
+        "Второй конкретный факт представлен для читателя тут.",
+        "Третий конкретный факт представлен для читателя тут.",
+        "Четвёртый конкретный факт представлен для читателя.",
       ],
     }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("40")),
+      result.violations.some((v) => v.includes("bullets_ru[0]") && v.includes("40")),
       true,
     );
   }
@@ -1023,11 +1240,11 @@ Deno.test("validateSummary: a bullet moderately over the 220-char soft max (221-
   // stays within the hard max (330).
   const result = validateSummary(
     makeValidSummary({
-      bullets_en: [
+      bullets_ru: [
         "x".repeat(221),
-        "Second concrete fact goes here now for the reader.",
-        "Third concrete fact goes here now for the reader.",
-        "Fourth concrete fact goes here now for the reader.",
+        "Второй конкретный факт представлен для читателя тут.",
+        "Третий конкретный факт представлен для читателя тут.",
+        "Четвёртый конкретный факт представлен для читателя.",
       ],
     }),
   );
@@ -1037,43 +1254,45 @@ Deno.test("validateSummary: a bullet moderately over the 220-char soft max (221-
 Deno.test("validateSummary: a bullet over the 330-char hard max (220 * 1.5) is a violation", () => {
   const result = validateSummary(
     makeValidSummary({
-      bullets_en: [
+      bullets_ru: [
         "x".repeat(331),
-        "Second concrete fact goes here now for the reader.",
-        "Third concrete fact goes here now for the reader.",
-        "Fourth concrete fact goes here now for the reader.",
+        "Второй конкретный факт представлен для читателя тут.",
+        "Третий конкретный факт представлен для читателя тут.",
+        "Четвёртый конкретный факт представлен для читателя.",
       ],
     }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("330")),
+      result.violations.some((v) => v.includes("bullets_ru[0]") && v.includes("330")),
       true,
     );
   }
 });
 
-Deno.test("validateSummary: a bullet duplicating the tldr (>=80% word overlap) is a violation", () => {
+Deno.test("validateSummary: a bullet duplicating the tldr (>=80% word overlap) is a violation, unless repair can drop it", () => {
   const tldr =
     "The company is raising its subscription price from five dollars to eight dollars a month starting soon, according to a statement released to reporters on Tuesday afternoon this week.";
   const duplicateBullet =
     "The company is raising its subscription price from five dollars to eight.";
+  // Exactly at STRICT's minimum (4) with one duplicate — dropping it would
+  // underflow, so repair gives up and the violation is reported as before.
   const result = validateSummary(
     makeValidSummary({
-      tldr_en: tldr,
-      bullets_en: [
+      tldr_ru: tldr,
+      bullets_ru: [
         duplicateBullet,
-        "Second concrete fact goes here now for the reader.",
-        "Third concrete fact goes here now for the reader.",
-        "Fourth concrete fact goes here now for the reader.",
+        "Второй конкретный факт представлен для читателя тут.",
+        "Третий конкретный факт представлен для читателя тут.",
+        "Четвёртый конкретный факт представлен для читателя.",
       ],
     }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("bullets_en[0]") && v.includes("duplicates")),
+      result.violations.some((v) => v.includes("bullets_ru[0]") && v.includes("duplicates")),
       true,
     );
   }
@@ -1151,22 +1370,19 @@ Deno.test("validateSummary: a repairable duplicate is dropped silently, summary 
   const logs: unknown[][] = [];
   console.log = (...args: unknown[]) => logs.push(args);
   try {
-    const tldr = makeValidSummary().tldr_en;
+    const tldr = VALID_SUMMARY.tldr_ru;
     const duplicate = tldr.slice(0, 90); // well over the 80% overlap threshold
-    const fiveBullets = [
-      ...makeValidSummary().bullets_en, // 4 genuinely distinct bullets
-      duplicate,
-    ];
-    const result = validateSummary(makeValidSummary({ bullets_en: fiveBullets }));
+    const fiveBullets = [...VALID_SUMMARY.bullets_ru, duplicate]; // 4 genuinely distinct bullets + 1 dup
+    const result = validateSummary(makeValidSummary({ bullets_ru: fiveBullets }));
     assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
     if (result.ok) {
-      assertEquals(result.value.bullets_en, makeValidSummary().bullets_en);
-      assertEquals(result.value.bullets_en.length, 4);
+      assertEquals(result.value.bullets_ru, VALID_SUMMARY.bullets_ru);
+      assertEquals(result.value.bullets_ru.length, 4);
     }
 
     const parsed = logs.map((args) => JSON.parse(String(args[0])));
     const repairLog = parsed.find((l) => l.event === "summary_repaired");
-    assertEquals(repairLog?.field, "bullets_en");
+    assertEquals(repairLog?.field, "bullets_ru");
     assertEquals(repairLog?.droppedIndexes, [4]);
     assertEquals(repairLog?.remaining, 4);
   } finally {
@@ -1174,40 +1390,17 @@ Deno.test("validateSummary: a repairable duplicate is dropped silently, summary 
   }
 });
 
-Deno.test("validateSummary: repair is applied INDEPENDENTLY per language — counts may legitimately differ afterward", () => {
-  const tldrEn = makeValidSummary().tldr_en;
-  const duplicateEn = tldrEn.slice(0, 90);
-  // bullets_ru: 7 distinct items, no duplicate at all -> untouched.
-  const bulletsRu = [
-    ...makeValidSummary().bullets_ru,
-    "Пятый отдельный факт со своей собственной лексикой о продукте.",
-    "Шестой отдельный факт со своей собственной лексикой о рынке.",
-    "Седьмой отдельный факт со своей собственной лексикой о планах.",
-  ];
-  // bullets_en: 5 items, 1 duplicate -> repaired down to 4.
-  const bulletsEn = [...makeValidSummary().bullets_en, duplicateEn];
-
-  const result = validateSummary(
-    makeValidSummary({ bullets_ru: bulletsRu, bullets_en: bulletsEn }),
-  );
-  assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
-  if (result.ok) {
-    assertEquals(result.value.bullets_ru.length, 7);
-    assertEquals(result.value.bullets_en.length, 4);
-  }
-});
-
 Deno.test("validateSummary: an UNREPAIRABLE duplicate (dropping would underflow the minimum) still reports the violation, unchanged from before this task", () => {
   // Exactly at the minimum (4) with one duplicate — dropping it would leave
   // 3, below STRICT's minBullets of 4 — repair must give up.
-  const tldr = makeValidSummary().tldr_en;
+  const tldr = VALID_SUMMARY.tldr_ru;
   const duplicate = tldr.slice(0, 90);
   const result = validateSummary(
     makeValidSummary({
-      bullets_en: [
-        makeValidSummary().bullets_en[0],
-        makeValidSummary().bullets_en[1],
-        makeValidSummary().bullets_en[2],
+      bullets_ru: [
+        VALID_SUMMARY.bullets_ru[0],
+        VALID_SUMMARY.bullets_ru[1],
+        VALID_SUMMARY.bullets_ru[2],
         duplicate,
       ],
     }),
@@ -1215,7 +1408,7 @@ Deno.test("validateSummary: an UNREPAIRABLE duplicate (dropping would underflow 
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("bullets_en[3]") && v.includes("duplicates")),
+      result.violations.some((v) => v.includes("bullets_ru[3]") && v.includes("duplicates")),
       true,
     );
   }
@@ -1224,21 +1417,21 @@ Deno.test("validateSummary: an UNREPAIRABLE duplicate (dropping would underflow 
 // --- validateSummary: body paragraph rules ---
 
 Deno.test("validateSummary: fewer than 2 body paragraphs is a violation", () => {
-  const result = validateSummary(makeValidSummary({ body_en: [makeValidSummary().body_en[0]] }));
+  const result = validateSummary(makeValidSummary({ body_ru: [VALID_SUMMARY.body_ru[0]] }));
   assertEquals(result.ok, false);
   if (!result.ok) {
-    assertEquals(result.violations.some((v) => v.includes("body_en") && v.includes("2")), true);
+    assertEquals(result.violations.some((v) => v.includes("body_ru") && v.includes("2")), true);
   }
 });
 
 Deno.test("validateSummary: more than 2 body paragraphs is a violation (default STRICT max at the 800 target)", () => {
   const paragraph = "x".repeat(400);
   const result = validateSummary(
-    makeValidSummary({ body_en: [paragraph, paragraph, paragraph] }),
+    makeValidSummary({ body_ru: [paragraph, paragraph, paragraph] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
-    assertEquals(result.violations.some((v) => v.includes("body_en") && v.includes("2")), true);
+    assertEquals(result.violations.some((v) => v.includes("body_ru") && v.includes("2")), true);
   }
 });
 
@@ -1250,24 +1443,24 @@ Deno.test("validateSummary: exactly 2 body paragraphs is fine, 3 is a violation 
     `padded out with a bit more filler text here so the whole thing comfortably clears the ` +
     `default minimum paragraph length with real headroom to spare for this boundary test case.`;
 
-  const two = validateSummary(makeValidSummary({ body_en: [paragraph(1), paragraph(2)] }));
+  const two = validateSummary(makeValidSummary({ body_ru: [paragraph(1), paragraph(2)] }));
   assertEquals(two.ok, true, JSON.stringify(!two.ok ? two.violations : []));
 
   const three = validateSummary(
-    makeValidSummary({ body_en: [paragraph(1), paragraph(2), paragraph(3)] }),
+    makeValidSummary({ body_ru: [paragraph(1), paragraph(2), paragraph(3)] }),
   );
   assertEquals(three.ok, false, JSON.stringify(three.ok ? "unexpectedly passed" : []));
 });
 
 Deno.test("validateSummary: a body paragraph under the default STRICT minimum (250 chars) is a violation", () => {
-  const short = makeValidSummary().body_en[0].slice(0, 100);
+  const short = VALID_SUMMARY.body_ru[0].slice(0, 100);
   const result = validateSummary(
-    makeValidSummary({ body_en: [short, makeValidSummary().body_en[1]] }),
+    makeValidSummary({ body_ru: [short, VALID_SUMMARY.body_ru[1]] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("body_en[0]") && v.includes("250")),
+      result.violations.some((v) => v.includes("body_ru[0]") && v.includes("250")),
       true,
     );
   }
@@ -1275,13 +1468,12 @@ Deno.test("validateSummary: a body paragraph under the default STRICT minimum (2
 
 Deno.test("validateSummary: a body paragraph moderately over the default STRICT soft max (640 at the 800 target) PASSES, not a violation", () => {
   // Task 19 Part A: the live incident this fixes — 854 chars failed outright
-  // against the pre-Task-19 hard ceiling (768 at the old 1200 default target
-  // this was originally observed against). At the new 800 default the soft
+  // against the pre-Task-19 hard ceiling. At the new 800 default the soft
   // max is 640, but moderate overshoot up to the hard max (640 * 1.5 = 960)
   // still doesn't fail — 854 remains a real, still-relevant regression case.
   const moderatelyLong = "x".repeat(854);
   const result = validateSummary(
-    makeValidSummary({ body_en: [moderatelyLong, makeValidSummary().body_en[1]] }),
+    makeValidSummary({ body_ru: [moderatelyLong, VALID_SUMMARY.body_ru[1]] }),
   );
   assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
 });
@@ -1289,13 +1481,13 @@ Deno.test("validateSummary: a body paragraph moderately over the default STRICT 
 Deno.test("validateSummary: a body paragraph over the default STRICT hard maximum (960 = 640 * 1.5 at the 800 target) is a violation", () => {
   const tooLong = "x".repeat(961);
   const result = validateSummary(
-    makeValidSummary({ body_en: [tooLong, makeValidSummary().body_en[1]] }),
+    makeValidSummary({ body_ru: [tooLong, VALID_SUMMARY.body_ru[1]] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
       result.violations.some((v) =>
-        v.includes("body_en[0]") && v.includes("extremely long") && v.includes("960")
+        v.includes("body_ru[0]") && v.includes("extremely long") && v.includes("960")
       ),
       true,
     );
@@ -1311,14 +1503,14 @@ Deno.test("validateSummary: a body paragraph duplicating the tldr (>=80% word ov
   const duplicateParagraph = `${tldr} ${tldr}`.slice(0, 380);
   const result = validateSummary(
     makeValidSummary({
-      tldr_en: tldr,
-      body_en: [duplicateParagraph, makeValidSummary().body_en[1]],
+      tldr_ru: tldr,
+      body_ru: [duplicateParagraph, VALID_SUMMARY.body_ru[1]],
     }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
-      result.violations.some((v) => v.includes("body_en[0]") && v.includes("duplicates")),
+      result.violations.some((v) => v.includes("body_ru[0]") && v.includes("duplicates")),
       true,
     );
   }
@@ -1347,60 +1539,56 @@ Deno.test("validateSummary: 1 and 6 tags are both fine (boundaries)", () => {
 Deno.test("validateSummary: RELAXED spec lowers the tldr bar relative to STRICT (same default target)", () => {
   // 130 chars: fails STRICT's default 150-char floor but clears RELAXED's 113.
   const midLengthTldr = "x".repeat(130);
-  const summary = makeValidSummary({ tldr_ru: midLengthTldr, tldr_en: midLengthTldr });
+  const summary = makeValidSummary({ tldr_ru: midLengthTldr });
   assertEquals(validateSummary(summary, DEFAULT_STRICT_SPEC).ok, false);
   assertEquals(validateSummary(summary, DEFAULT_RELAXED_SPEC).ok, true);
 });
 
 Deno.test("validateSummary: defaults to the default-target STRICT spec when omitted", () => {
   const midLengthTldr = "x".repeat(130);
-  const summary = makeValidSummary({ tldr_ru: midLengthTldr, tldr_en: midLengthTldr });
+  const summary = makeValidSummary({ tldr_ru: midLengthTldr });
   assertEquals(validateSummary(summary).ok, validateSummary(summary, DEFAULT_STRICT_SPEC).ok);
 });
 
 // --- RELAXED spec boundaries (workers-ai), at the default 800-char target ---
 
 Deno.test("validateSummary (RELAXED): tldr at exactly 113 chars is fine, 112 is a violation (boundary)", () => {
-  const tldr113 = "x".repeat(113);
   const at113 = validateSummary(
-    makeValidSummary({ tldr_ru: tldr113, tldr_en: tldr113 }),
+    makeValidSummary({ tldr_ru: "x".repeat(113) }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(at113.ok, true);
 
-  const tldr112 = "x".repeat(112);
   const at112 = validateSummary(
-    makeValidSummary({ tldr_ru: tldr112, tldr_en: tldr112 }),
+    makeValidSummary({ tldr_ru: "x".repeat(112) }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(at112.ok, false);
 });
 
 Deno.test("validateSummary (RELAXED): 3 bullets is fine, 2 is a violation (boundary)", () => {
-  const base = makeValidSummary();
   const threeBullets = validateSummary(
-    makeValidSummary({ bullets_en: base.bullets_en.slice(0, 3) }),
+    makeValidSummary({ bullets_ru: VALID_SUMMARY.bullets_ru.slice(0, 3) }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(threeBullets.ok, true);
 
   const twoBullets = validateSummary(
-    makeValidSummary({ bullets_en: base.bullets_en.slice(0, 2) }),
+    makeValidSummary({ bullets_ru: VALID_SUMMARY.bullets_ru.slice(0, 2) }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(twoBullets.ok, false);
 });
 
 Deno.test("validateSummary (RELAXED): a 30-char bullet is fine, 29 chars is a violation (boundary)", () => {
-  const base = makeValidSummary();
   const thirty = validateSummary(
-    makeValidSummary({ bullets_en: ["x".repeat(30), ...base.bullets_en.slice(1)] }),
+    makeValidSummary({ bullets_ru: ["x".repeat(30), ...VALID_SUMMARY.bullets_ru.slice(1)] }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(thirty.ok, true);
 
   const twentyNine = validateSummary(
-    makeValidSummary({ bullets_en: ["x".repeat(29), ...base.bullets_en.slice(1)] }),
+    makeValidSummary({ bullets_ru: ["x".repeat(29), ...VALID_SUMMARY.bullets_ru.slice(1)] }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(twentyNine.ok, false);
@@ -1411,31 +1599,19 @@ Deno.test("validateSummary (RELAXED): 3 body paragraphs is fine, 4 is a violatio
     `Paragraph number ${n} with enough distinct filler content padded out well past the default ` +
     "target minimum paragraph length so this boundary test isn't accidentally failing on length instead of count.";
   const three = validateSummary(
-    makeValidSummary({
-      body_en: [paragraph(1), paragraph(2), paragraph(3)],
-    }),
+    makeValidSummary({ body_ru: [paragraph(1), paragraph(2), paragraph(3)] }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(three.ok, true, JSON.stringify(!three.ok ? three.violations : []));
 
   const four = validateSummary(
-    makeValidSummary({
-      body_en: [paragraph(1), paragraph(2), paragraph(3), paragraph(4)],
-    }),
+    makeValidSummary({ body_ru: [paragraph(1), paragraph(2), paragraph(3), paragraph(4)] }),
     DEFAULT_RELAXED_SPEC,
   );
   assertEquals(four.ok, false);
 });
 
 Deno.test("validateSummary: RELAXED is genuinely more permissive than STRICT at every target — lower floor, wider paragraph range", () => {
-  // Task 16.5: a profile-agnostic formula (Task 16) converged RELAXED onto
-  // nearly the same bounds as STRICT at the default target, which is why
-  // Llama failed 2/2 live runs on paragraphs the OLD (pre-Task-16) RELAXED
-  // profile passed 4/4. This is the regression test for that: RELAXED's
-  // effective-target scaling (see RELAXED_EFFECTIVE_TARGET_RATIO) and wider
-  // paragraph-count range must produce a strictly lower minParagraphChars
-  // and a paragraph-count range that's a proper superset of STRICT's, at
-  // every target — not just the smallest one.
   for (const target of [400, 800, 1200, 2000, 4000] as const) {
     const strict = deriveSummarySpec(target, "strict");
     const relaxed = deriveSummarySpec(target, "relaxed");
@@ -1446,22 +1622,16 @@ Deno.test("validateSummary: RELAXED is genuinely more permissive than STRICT at 
 });
 
 Deno.test("validateSummary: a paragraph sample that the OLD RELAXED profile passed (240-290 chars x3) passes the NEW RELAXED profile at the default target", () => {
-  // The exact live-evidence shape from Task 16.5: Llama wrote 3 paragraphs
-  // in the 241-287 char range and failed against Task 16's profile-agnostic
-  // 288-char floor. The re-derived RELAXED profile must accept this again.
   const paragraphs = [241, 265, 287].map((len, i) =>
     `Paragraph ${i} content padded to an exact test length. `.padEnd(len, "x")
   );
-  const result = validateSummary(
-    makeValidSummary({ body_en: paragraphs }),
-    DEFAULT_RELAXED_SPEC,
-  );
+  const result = validateSummary(makeValidSummary({ body_ru: paragraphs }), DEFAULT_RELAXED_SPEC);
   assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
 });
 
 Deno.test("validateSummary: multiple simultaneous violations are all reported, not just the first", () => {
   const result = validateSummary(
-    makeValidSummary({ title_ru: "", tags: [], bullets_en: ["short"] }),
+    makeValidSummary({ title_ru: "", tags: [], bullets_ru: ["short"] }),
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
@@ -1480,6 +1650,20 @@ Deno.test("validateSummary: the prompt's own few-shot example ALSO passes RELAXE
 });
 
 // --- Prompt parameterization: no drift between the prompt text and the spec it was built from ---
+
+Deno.test("buildSystemPrompt: RU-only — no _en fields mentioned anywhere in the schema/instructions (Task 35 Part A)", () => {
+  const prompt = buildSystemPrompt(DEFAULT_STRICT_SPEC);
+  assertEquals(prompt.includes("title_en"), false);
+  assertEquals(prompt.includes("tldr_en"), false);
+  assertEquals(prompt.includes("body_en"), false);
+  assertEquals(prompt.includes("bullets_en"), false);
+  assertEquals(
+    prompt.includes(
+      '{"title_ru": string, "tldr_ru": string, "body_ru": string[], "bullets_ru": string[], "tags": string[], "lang_original": string}',
+    ),
+    true,
+  );
+});
 
 Deno.test("buildSystemPrompt: STRICT prompt at the default target states the spec's own numbers", () => {
   const prompt = buildSystemPrompt(DEFAULT_STRICT_SPEC);
@@ -1538,11 +1722,31 @@ Deno.test("buildSystemPrompt: a custom spec's numbers all flow into the rendered
   assertEquals(prompt.includes("77-888 characters each"), true);
 });
 
+Deno.test("buildEnglishSystemPrompt: RU-only fields never appear, and states this is an INDEPENDENT edition, not a translation", () => {
+  const prompt = buildEnglishSystemPrompt(DEFAULT_STRICT_SPEC);
+  assertEquals(prompt.includes("title_ru"), false);
+  assertEquals(prompt.includes("tldr_ru"), false);
+  assertEquals(
+    prompt.includes(
+      '{"title_en": string, "tldr_en": string, "body_en": string[], "bullets_en": string[]}',
+    ),
+    true,
+  );
+  assertEquals(prompt.toLowerCase().includes("do not translate"), true);
+});
+
+Deno.test("buildEnglishSystemPrompt: states the spec's own numbers, same source of truth as the RU prompt", () => {
+  const prompt = buildEnglishSystemPrompt(DEFAULT_STRICT_SPEC);
+  assertEquals(prompt.includes("at least 150 characters"), true);
+  assertEquals(prompt.includes("4-7 items"), true);
+  assertEquals(prompt.includes("40-220 characters each"), true);
+});
+
 // --- Profile selection is fixed per summarize function, not a caller option ---
 
 Deno.test("summarizeArticleWithWorkersAi accepts a summary that clears RELAXED but would fail STRICT", async () => {
   // 130-char tldr: fails STRICT's default 150-char floor, clears RELAXED's 113.
-  const relaxedOnly = { ...makeValidSummary(), tldr_ru: "x".repeat(130), tldr_en: "x".repeat(130) };
+  const relaxedOnly = { ...VALID_SUMMARY, tldr_ru: "x".repeat(130) };
   assertEquals(validateSummary(relaxedOnly, DEFAULT_STRICT_SPEC).ok, false);
   assertEquals(validateSummary(relaxedOnly, DEFAULT_RELAXED_SPEC).ok, true);
 
@@ -1552,7 +1756,7 @@ Deno.test("summarizeArticleWithWorkersAi accepts a summary that clears RELAXED b
 });
 
 Deno.test("summarizeArticle (gateway/direct) rejects a summary that only clears RELAXED, not STRICT", async () => {
-  const relaxedOnly = { ...makeValidSummary(), tldr_ru: "x".repeat(130), tldr_en: "x".repeat(130) };
+  const relaxedOnly = { ...VALID_SUMMARY, tldr_ru: "x".repeat(130) };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (() =>
     Promise.resolve(
@@ -1581,7 +1785,7 @@ Deno.test("summarizeArticle: a content-quality failure retries with the violatio
   globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
     if (calls === 1) {
-      const tooShort = { ...makeValidSummary(), tldr_ru: "Коротко.", tldr_en: "Short." };
+      const tooShort = { ...VALID_SUMMARY, tldr_ru: "Коротко." };
       return Promise.resolve(
         new Response(
           JSON.stringify({ content: [{ type: "text", text: JSON.stringify(tooShort) }] }),
@@ -1592,7 +1796,7 @@ Deno.test("summarizeArticle: a content-quality failure retries with the violatio
     capturedSecondBody = JSON.parse(String(init?.body));
     return Promise.resolve(
       new Response(
-        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
         { status: 200 },
       ),
     );
@@ -1604,11 +1808,10 @@ Deno.test("summarizeArticle: a content-quality failure retries with the violatio
       "Title",
       "Body",
     );
-    assertEquals(result, makeValidSummary());
+    assertEquals(result, VALID_SUMMARY);
     assertEquals(calls, 2);
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
     assertEquals(secondMessage.includes("tldr_ru must be at least 150 characters"), true);
-    assertEquals(secondMessage.includes("tldr_en must be at least 150 characters"), true);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1621,13 +1824,10 @@ Deno.test("summarizeArticle: a body-paragraph OVERSHOOT retries with a 'rewrite 
   globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
     if (calls === 1) {
-      // body_en[0] overshoots DEFAULT_STRICT_SPEC's 960-char HARD max
+      // body_ru[0] overshoots DEFAULT_STRICT_SPEC's 960-char HARD max
       // (640 soft max * 1.5) — moderate overshoot alone no longer triggers a
       // retry at all after Task 19 Part A.
-      const tooLong = {
-        ...makeValidSummary(),
-        body_en: ["x".repeat(961), makeValidSummary().body_en[1]],
-      };
+      const tooLong = { ...VALID_SUMMARY, body_ru: ["x".repeat(961), VALID_SUMMARY.body_ru[1]] };
       return Promise.resolve(
         new Response(
           JSON.stringify({ content: [{ type: "text", text: JSON.stringify(tooLong) }] }),
@@ -1638,7 +1838,7 @@ Deno.test("summarizeArticle: a body-paragraph OVERSHOOT retries with a 'rewrite 
     capturedSecondBody = JSON.parse(String(init?.body));
     return Promise.resolve(
       new Response(
-        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
         { status: 200 },
       ),
     );
@@ -1650,19 +1850,19 @@ Deno.test("summarizeArticle: a body-paragraph OVERSHOOT retries with a 'rewrite 
       "Title",
       "Body",
     );
-    assertEquals(result, makeValidSummary());
+    assertEquals(result, VALID_SUMMARY);
     assertEquals(calls, 2);
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
     assertEquals(
       secondMessage.includes(
-        "rewrite body_en paragraph 1 to 300-500 characters; keep the most important facts, cut examples first",
+        "rewrite body_ru paragraph 1 to 300-500 characters; keep the most important facts, cut examples first",
       ),
       true,
     );
     // Not the generic "is extremely long: must be at most X (got Y)" phrasing
     // repeated verbatim for this violation — the specific rewrite instruction
     // replaces it entirely.
-    assertEquals(secondMessage.includes("body_en[0] is extremely long"), false);
+    assertEquals(secondMessage.includes("body_ru[0] is extremely long"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1675,10 +1875,7 @@ Deno.test("summarizeArticle: a body-paragraph UNDERSHOOT still gets the generic 
   globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
     if (calls === 1) {
-      const tooShort = {
-        ...makeValidSummary(),
-        body_en: ["x".repeat(50), makeValidSummary().body_en[1]],
-      };
+      const tooShort = { ...VALID_SUMMARY, body_ru: ["x".repeat(50), VALID_SUMMARY.body_ru[1]] };
       return Promise.resolve(
         new Response(
           JSON.stringify({ content: [{ type: "text", text: JSON.stringify(tooShort) }] }),
@@ -1689,7 +1886,7 @@ Deno.test("summarizeArticle: a body-paragraph UNDERSHOOT still gets the generic 
     capturedSecondBody = JSON.parse(String(init?.body));
     return Promise.resolve(
       new Response(
-        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
         { status: 200 },
       ),
     );
@@ -1698,8 +1895,8 @@ Deno.test("summarizeArticle: a body-paragraph UNDERSHOOT still gets the generic 
   try {
     await summarizeArticle({ apiKey: "sk-direct", model: "test-model" }, "Title", "Body");
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
-    assertEquals(secondMessage.includes("body_en[0] must be at least 250 characters"), true);
-    assertEquals(secondMessage.includes("rewrite body_en paragraph"), false);
+    assertEquals(secondMessage.includes("body_ru[0] must be at least 250 characters"), true);
+    assertEquals(secondMessage.includes("rewrite body_ru paragraph"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1712,11 +1909,20 @@ Deno.test("summarizeArticle: a bullet duplicating the tldr retries with a 'repla
   globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
     calls += 1;
     if (calls === 1) {
-      // bullets_en[1] literally restates tldr_en — well over the 80% overlap
-      // threshold textDuplicatesTldr checks.
+      // bullets_ru[1] literally restates tldr_ru — well over the 80% overlap
+      // threshold textDuplicatesTldr checks. Also add a 5th bullet so
+      // dropping to 4 (via repair) is impossible only if repair alone were
+      // used — but since only 4 bullets are supplied here and one of them
+      // (index 1) is the tldr duplicate, repair would underflow below the
+      // minimum (4), so it gives up and the violation reaches validateSummary.
       const duplicateBullet = {
-        ...makeValidSummary(),
-        bullets_en: [makeValidSummary().bullets_en[0], makeValidSummary().tldr_en],
+        ...VALID_SUMMARY,
+        bullets_ru: [
+          VALID_SUMMARY.bullets_ru[0],
+          VALID_SUMMARY.tldr_ru,
+          VALID_SUMMARY.bullets_ru[2],
+          VALID_SUMMARY.bullets_ru[3],
+        ],
       };
       return Promise.resolve(
         new Response(
@@ -1728,7 +1934,7 @@ Deno.test("summarizeArticle: a bullet duplicating the tldr retries with a 'repla
     capturedSecondBody = JSON.parse(String(init?.body));
     return Promise.resolve(
       new Response(
-        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(makeValidSummary()) }] }),
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
         { status: 200 },
       ),
     );
@@ -1740,12 +1946,12 @@ Deno.test("summarizeArticle: a bullet duplicating the tldr retries with a 'repla
       "Title",
       "Body",
     );
-    assertEquals(result, makeValidSummary());
+    assertEquals(result, VALID_SUMMARY);
     assertEquals(calls, 2);
     const secondMessage = capturedSecondBody?.messages[0]?.content ?? "";
     assertEquals(
       secondMessage.includes(
-        "replace bullet 2 (bullets_en[1]) with a NEW fact from the article not mentioned in the TL;DR",
+        "replace bullet 2 (bullets_ru[1]) with a NEW fact from the article not mentioned in the TL;DR",
       ),
       true,
     );
@@ -1809,10 +2015,6 @@ Deno.test("deriveSummarySpec: minParagraphChars <= softMaxParagraphChars and the
 
 Deno.test("deriveSummarySpec: STRICT's 250-char paragraph floor binds only at the smallest allowed target (400) — an accepted edge case, see README", () => {
   const spec400 = deriveSummarySpec(400, "strict");
-  // At this one boundary, the floor (250) sits ABOVE the natural "aim for"
-  // low end (150) — the model is told to aim for 150-250 but the enforced
-  // minimum is 250; still self-consistent (250 <= max 280), just a narrow
-  // band. Every other target in the table doesn't hit this case.
   assertEquals(spec400.minParagraphChars, 250);
   assertEquals(spec400.paragraphTargetLow, 150);
   assertEquals(spec400.minParagraphChars > spec400.paragraphTargetLow, true);
@@ -1824,9 +2026,7 @@ Deno.test("deriveSummarySpec: STRICT's 250-char paragraph floor binds only at th
 });
 
 Deno.test("deriveSummarySpec: tldr floor clamp (150) and cap (350) both apply on the STRICT side", () => {
-  // 400 * 0.15 = 60, below the 150 floor.
   assertEquals(deriveSummarySpec(400, "strict").minTldrChars, 150);
-  // 4000 * 0.15 = 600, above the 350 cap.
   assertEquals(deriveSummarySpec(4000, "strict").minTldrChars, 350);
 });
 
@@ -1838,33 +2038,29 @@ Deno.test("deriveSummarySpec: RELAXED's tldr minimum is always 75% of STRICT's, 
   }
 });
 
-Deno.test("deriveSummarySpec: max_tokens is clamped to [2500, 6000] regardless of target", () => {
-  assertEquals(deriveSummarySpec(400, "strict").maxTokens >= 2500, true);
-  assertEquals(deriveSummarySpec(4000, "strict").maxTokens, 6000);
+// --- Task 35 Part A §2: the recomputed RU-only max_tokens formula ---
+
+Deno.test("deriveSummarySpec: max_tokens is clamped to [1500, 5000] regardless of target (RU-only formula, Task 35)", () => {
+  assertEquals(deriveSummarySpec(400, "strict").maxTokens >= 1500, true);
+  assertEquals(deriveSummarySpec(400, "strict").maxTokens <= 5000, true);
+  assertEquals(deriveSummarySpec(4000, "strict").maxTokens <= 5000, true);
 });
 
-Deno.test("deriveSummarySpec: bullet ranges are fixed per profile, independent of target", () => {
+Deno.test("deriveSummarySpec: max_tokens is profile-independent (same RU-only formula for strict and relaxed, as before this task)", () => {
   for (const target of TEST_TARGETS) {
-    const strict = deriveSummarySpec(target, "strict");
-    const relaxed = deriveSummarySpec(target, "relaxed");
-    assertEquals(strict.minBullets, 4);
-    assertEquals(strict.maxBullets, 7);
-    assertEquals(strict.minBulletChars, 40);
-    assertEquals(strict.softMaxBulletChars, 220);
-    assertEquals(relaxed.minBullets, 3);
-    assertEquals(relaxed.maxBullets, 7);
-    assertEquals(relaxed.minBulletChars, 30);
-    assertEquals(relaxed.softMaxBulletChars, 220);
+    assertEquals(
+      deriveSummarySpec(target, "strict").maxTokens,
+      deriveSummarySpec(target, "relaxed").maxTokens,
+      `target=${target}`,
+    );
   }
 });
 
-Deno.test("deriveSummarySpec: paragraph count widens in three steps as the target grows", () => {
-  assertEquals(deriveSummarySpec(400, "strict").maxBodyParagraphs, 2);
-  assertEquals(deriveSummarySpec(900, "strict").maxBodyParagraphs, 2);
-  assertEquals(deriveSummarySpec(901, "strict").maxBodyParagraphs, 3);
-  assertEquals(deriveSummarySpec(2000, "strict").maxBodyParagraphs, 3);
-  assertEquals(deriveSummarySpec(2001, "strict").maxBodyParagraphs, 4);
-  assertEquals(deriveSummarySpec(4000, "strict").maxBodyParagraphs, 4);
+Deno.test("deriveSummarySpec: the exact RU-only max_tokens values at the 4 documented targets (400/800/1200/2000, see README/summarize.ts's computeMaxTokens doc comment)", () => {
+  assertEquals(deriveSummarySpec(400, "strict").maxTokens, 1954);
+  assertEquals(deriveSummarySpec(800, "strict").maxTokens, 2266);
+  assertEquals(deriveSummarySpec(1200, "strict").maxTokens, 2579);
+  assertEquals(deriveSummarySpec(2000, "strict").maxTokens, 3204);
 });
 
 Deno.test("deriveSummarySpec: the exact spec table for the required test targets, both profiles (documents the derivation)", () => {
@@ -2023,7 +2219,7 @@ Deno.test("validateSummary: body-paragraph length boundary table (min-1/min/soft
     ];
     for (const [len, expectOk] of boundaries) {
       const result = validateSummary(
-        makeValidSummary({ body_en: ["x".repeat(len), other] }),
+        makeValidSummary({ body_ru: ["x".repeat(len), other] }),
         spec,
       );
       assertEquals(
@@ -2054,7 +2250,7 @@ Deno.test("validateSummary: bullet length boundary table (min-1/min/softMax/soft
     ];
     for (const [len, expectOk] of boundaries) {
       const result = validateSummary(
-        makeValidSummary({ bullets_en: ["x".repeat(len), ...filler] }),
+        makeValidSummary({ bullets_ru: ["x".repeat(len), ...filler] }),
         spec,
       );
       assertEquals(
@@ -2077,12 +2273,12 @@ Deno.test("validateSummary: a soft body-paragraph overshoot logs 'validation_sof
   try {
     const len = DEFAULT_STRICT_SPEC.softMaxParagraphChars + 10;
     const result = validateSummary(
-      makeValidSummary({ body_en: ["x".repeat(len), makeValidSummary().body_en[1]] }),
+      makeValidSummary({ body_ru: ["x".repeat(len), VALID_SUMMARY.body_ru[1]] }),
     );
     assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
     const parsed = logs.map((args) => JSON.parse(String(args[0])));
     const softOvershootLog = parsed.find((l) => l.event === "validation_soft_overshoot");
-    assertEquals(softOvershootLog?.field, "body_en[0]");
+    assertEquals(softOvershootLog?.field, "body_ru[0]");
     assertEquals(softOvershootLog?.got, len);
     assertEquals(softOvershootLog?.softMax, DEFAULT_STRICT_SPEC.softMaxParagraphChars);
   } finally {
@@ -2100,7 +2296,7 @@ Deno.test("validateSummary: a soft bullet overshoot logs 'validation_soft_oversh
     const len = DEFAULT_STRICT_SPEC.softMaxBulletChars + 9;
     const result = validateSummary(
       makeValidSummary({
-        bullets_en: [
+        bullets_ru: [
           "x".repeat(len),
           "Second concrete fact goes here now for the reader.",
           "Third concrete fact goes here now for the reader.",
@@ -2111,7 +2307,7 @@ Deno.test("validateSummary: a soft bullet overshoot logs 'validation_soft_oversh
     assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
     const parsed = logs.map((args) => JSON.parse(String(args[0])));
     const softOvershootLog = parsed.find((l) => l.event === "validation_soft_overshoot");
-    assertEquals(softOvershootLog?.field, "bullets_en[0]");
+    assertEquals(softOvershootLog?.field, "bullets_ru[0]");
     assertEquals(softOvershootLog?.got, len);
     assertEquals(softOvershootLog?.softMax, DEFAULT_STRICT_SPEC.softMaxBulletChars);
   } finally {
@@ -2119,14 +2315,15 @@ Deno.test("validateSummary: a soft bullet overshoot logs 'validation_soft_oversh
   }
 });
 
-Deno.test("validateSummary: the exact live-recorded failures (body_en 854, bullets_en 229 at the default target) now PASS", () => {
-  // The live incident motivating Part A, named exactly: a 3rd ceiling chase
-  // where body_en hit 854 (old hard max 768) and bullets_en hit 229 (old
-  // hard max 220) both failed validation over moderate, harmless overshoot.
+Deno.test("validateSummary: the exact live-recorded failures (body 854, bullets 229 at the default target) now PASS", () => {
+  // The live incident motivating Task 19 Part A, named exactly: a 3rd
+  // ceiling chase where a body paragraph hit 854 (old hard max 768) and a
+  // bullet hit 229 (old hard max 220), both failing validation over
+  // moderate, harmless overshoot.
   const result = validateSummary(
     makeValidSummary({
-      body_en: ["x".repeat(854), makeValidSummary().body_en[1]],
-      bullets_en: [
+      body_ru: ["x".repeat(854), VALID_SUMMARY.body_ru[1]],
+      bullets_ru: [
         "x".repeat(229),
         "Second concrete fact goes here now for the reader.",
         "Third concrete fact goes here now for the reader.",
@@ -2138,20 +2335,11 @@ Deno.test("validateSummary: the exact live-recorded failures (body_en 854, bulle
 });
 
 Deno.test("deriveSummarySpec: STRICT widens its ceiling more than its floor; RELAXED widens its floor more than its ceiling (the asymmetry is intentional and opposite per profile)", () => {
-  // Task 17: live Claude output overshot STRICT's old symmetric +-40%
-  // ceiling (709-716 chars vs a 672 max at the default target) — Claude
-  // overshoots, so STRICT now gets extra headroom on the high end (+60%)
-  // instead of the low end. Llama (RELAXED) undershoots instead, so its
-  // ceiling was never the problem and stays at +40%; it keeps the wider
-  // floor discount (-55%) from Task 16.5.
   for (const target of TEST_TARGETS) {
     const strict = deriveSummarySpec(target, "strict");
     const relaxed = deriveSummarySpec(target, "relaxed");
     const strictLowWidening = 1 - strict.minParagraphChars / strict.paragraphTargetLow;
     const strictHighWidening = strict.softMaxParagraphChars / strict.paragraphTargetHigh - 1;
-    // Only checked where the floor clamp doesn't dominate (see the 400-char
-    // boundary test above) — at every other target STRICT's high-side
-    // widening (+60%) is strictly greater than its low-side widening (40%).
     if (strict.minParagraphChars <= strict.paragraphTargetLow) {
       assertEquals(strictHighWidening > strictLowWidening, true, `strict@${target}`);
     }
@@ -2164,12 +2352,6 @@ Deno.test("deriveSummarySpec: STRICT widens its ceiling more than its floor; REL
 });
 
 Deno.test("deriveSummarySpec: RELAXED's absolute paragraph ceiling can be LOWER than STRICT's at the same target — each profile's bounds fit its own model, not a blanket 'RELAXED is always wider' rule", () => {
-  // The "RELAXED is more permissive" invariant above is about the FLOOR and
-  // the paragraph COUNT range, not the ceiling — RELAXED derives its ceiling
-  // from a smaller effective target (RELAXED_EFFECTIVE_TARGET_RATIO) AND a
-  // smaller high-side widening factor (+40% vs STRICT's +60%), so it ends up
-  // with a lower absolute ceiling despite being the "more forgiving" profile
-  // overall. Documented here so this isn't mistaken for a regression.
   for (const target of TEST_TARGETS) {
     const strict = deriveSummarySpec(target, "strict");
     const relaxed = deriveSummarySpec(target, "relaxed");
@@ -2182,16 +2364,6 @@ Deno.test("deriveSummarySpec: RELAXED's absolute paragraph ceiling can be LOWER 
 });
 
 Deno.test("deriveSummarySpec: STRICT's ceiling at target 1200 (768) covers the live-observed Claude overshoot (709-716 chars) with margin", () => {
-  // The exact live evidence motivating this task: real Claude output hit
-  // 709-716 char paragraphs (WITH this prompt's sizing block already in
-  // place) against the old, symmetric-widening ceiling of 672 — a genuine
-  // overshoot the old formula didn't cover. The new +60% ceiling must clear
-  // it. (Earlier live observations of 796/857 chars predate the sizing block
-  // and are not what this specific fix targets — see README.) This was
-  // captured at the 1200 target specifically (the default at the time) —
-  // fixed here rather than "the default" since Task 20 later moved the
-  // default to 800, which shouldn't invalidate this historical calibration
-  // data point.
   const spec = deriveSummarySpec(1200, "strict");
   assertEquals(spec.softMaxParagraphChars, 768);
   assertEquals(spec.softMaxParagraphChars > 716, true);
@@ -2243,4 +2415,230 @@ Deno.test("parseSummaryBodyTargetChars: non-numeric, below-min, and above-max al
 Deno.test("parseSummaryBodyTargetChars: the boundary values 400 and 4000 are both accepted", () => {
   assertEquals(parseSummaryBodyTargetChars("400"), 400);
   assertEquals(parseSummaryBodyTargetChars("4000"), 4000);
+});
+
+// --- Task 35 Part A §3: lazy English generation (generateEnglishFields,
+// validateEnglishFields) — a much smaller, separate schema (4 fields, no
+// tags/lang_original) generated directly from full_text, never a
+// translation of the RU summary. ---
+
+const VALID_ENGLISH_FIELDS = {
+  title_en: "Company Raises Subscription Price 60% Starting September 1",
+  tldr_en:
+    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
+  body_en: [
+    "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
+    "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
+  ],
+  bullets_en: [
+    "Existing annual-plan subscribers keep their price until their plan comes up for renewal.",
+    "The company delayed the increase for over a year out of concern for small businesses.",
+    "Leadership only moved forward once infrastructure costs kept climbing regardless.",
+    "No competitor has announced a comparable price change so far.",
+  ],
+};
+
+Deno.test("parseEnglishJsonWithDiagnostics: valid input parses cleanly", () => {
+  const { value, diagnostics } = parseEnglishJsonWithDiagnostics(
+    JSON.stringify(VALID_ENGLISH_FIELDS),
+  );
+  assertEquals(value, VALID_ENGLISH_FIELDS);
+  assertEquals(diagnostics.missingFields, []);
+  assertEquals(diagnostics.wrongTypeFields, []);
+});
+
+Deno.test("parseEnglishJsonWithDiagnostics: names each missing/wrong-type EN field", () => {
+  const broken = { title_en: 42, tldr_en: "ok", body_en: "not an array" };
+  const { value, diagnostics } = parseEnglishJsonWithDiagnostics(JSON.stringify(broken));
+  assertEquals(value, null);
+  assertEquals(diagnostics.wrongTypeFields.includes("title_en"), true);
+  assertEquals(diagnostics.wrongTypeFields.includes("body_en"), true);
+  assertEquals(diagnostics.missingFields.includes("bullets_en"), true);
+});
+
+Deno.test("validateEnglishFields: a well-formed set of EN fields passes with no violations", () => {
+  const result = validateEnglishFields(VALID_ENGLISH_FIELDS);
+  assertEquals(result.ok, true);
+});
+
+Deno.test("validateEnglishFields: null (shape failure) with diagnostics reports the specific fields", () => {
+  const result = validateEnglishFields(null, DEFAULT_STRICT_SPEC, {
+    missingFields: ["bullets_en"],
+    wrongTypeFields: ["title_en"],
+    rawLength: 10,
+    endsWithBrace: false,
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations, ["schema: missing bullets_en; title_en is not a string"]);
+  }
+});
+
+Deno.test("validateEnglishFields: content-quality bar applies the same as the RU path (tldr too short is a violation)", () => {
+  const result = validateEnglishFields({ ...VALID_ENGLISH_FIELDS, tldr_en: "Short." });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.violations.some((v) => v.includes("tldr_en")), true);
+  }
+});
+
+Deno.test("validateEnglishFields: a duplicate bullet is repaired the same way the RU path repairs bullets_ru", () => {
+  const original = console.log;
+  const logs: unknown[][] = [];
+  console.log = (...args: unknown[]) => logs.push(args);
+  try {
+    const duplicate = VALID_ENGLISH_FIELDS.tldr_en.slice(0, 90);
+    const result = validateEnglishFields({
+      ...VALID_ENGLISH_FIELDS,
+      bullets_en: [...VALID_ENGLISH_FIELDS.bullets_en, duplicate],
+    });
+    assertEquals(result.ok, true, JSON.stringify(!result.ok ? result.violations : []));
+    if (result.ok) assertEquals(result.value.bullets_en.length, 4);
+    const parsed = logs.map((args) => JSON.parse(String(args[0])));
+    assertEquals(
+      parsed.some((l) => l.event === "summary_repaired" && l.field === "bullets_en"),
+      true,
+    );
+  } finally {
+    console.log = original;
+  }
+});
+
+Deno.test("generateEnglishFields: gateway/direct mode succeeds on the first response, from the article's full_text", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedMessage = "";
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    capturedMessage = body.messages[0].content;
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_ENGLISH_FIELDS) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const env = makeLlmEnv({ ANTHROPIC_API_KEY: "sk-direct" });
+    const result = await generateEnglishFields(
+      "direct",
+      env,
+      "Title",
+      "The full article text goes here.",
+    );
+    assertEquals(result, VALID_ENGLISH_FIELDS);
+    assertEquals(capturedMessage.includes("The full article text goes here."), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("generateEnglishFields: workers-ai mode uses the RELAXED profile and succeeds via response_format", async () => {
+  let capturedSchema: unknown;
+  const ai = makeStubAi((_model, input) => {
+    capturedSchema = input.response_format;
+    return { response: VALID_ENGLISH_FIELDS };
+  });
+  const env = makeLlmEnv({ AI: ai });
+  const result = await generateEnglishFields("workers-ai", env, "Title", "Full text");
+  assertEquals(result, VALID_ENGLISH_FIELDS);
+  assertEquals(typeof capturedSchema, "object");
+});
+
+Deno.test("generateEnglishFields: retries once on a schema mismatch, corrective message names the missing fields", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  let capturedSecondMessage = "";
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    const body = JSON.parse(String(init?.body));
+    if (calls === 1) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: "not json" }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    capturedSecondMessage = body.messages[0].content;
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_ENGLISH_FIELDS) }] }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const env = makeLlmEnv({ ANTHROPIC_API_KEY: "sk-direct" });
+    const result = await generateEnglishFields("direct", env, "Title", "Full text");
+    assertEquals(result, VALID_ENGLISH_FIELDS);
+    assertEquals(calls, 2);
+    assertEquals(capturedSecondMessage.includes("schema: missing"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("generateEnglishFields: fails after two broken responses with an actionable, field-naming error", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({ content: [{ type: "text", text: "still not json" }] }),
+        { status: 200 },
+      ),
+    )) as typeof fetch;
+
+  try {
+    const env = makeLlmEnv({ ANTHROPIC_API_KEY: "sk-direct" });
+    await assertRejects(
+      () => generateEnglishFields("direct", env, "Title", "Full text"),
+      Error,
+      "schema: missing",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("generateEnglishFields: a truncated (stop_reason max_tokens) first response auto-retries at 1.5x, then succeeds", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const capturedMaxTokens: number[] = [];
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    calls += 1;
+    const body = JSON.parse(String(init?.body));
+    capturedMaxTokens.push(body.max_tokens);
+    if (calls === 1) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            content: [{ type: "text", text: '{"title_en": "cut off' }],
+            stop_reason: "max_tokens",
+          }),
+          { status: 200 },
+        ),
+      );
+    }
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          content: [{ type: "text", text: JSON.stringify(VALID_ENGLISH_FIELDS) }],
+          stop_reason: "end_turn",
+        }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+
+  try {
+    const env = makeLlmEnv({ ANTHROPIC_API_KEY: "sk-direct" });
+    const result = await generateEnglishFields("direct", env, "Title", "Full text");
+    assertEquals(result, VALID_ENGLISH_FIELDS);
+    assertEquals(calls, 2);
+    assertEquals(capturedMaxTokens[1], Math.round(capturedMaxTokens[0] * 1.5));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

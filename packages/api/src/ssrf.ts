@@ -119,17 +119,20 @@ async function readCapped(response: Response, maxBytes: number): Promise<string>
   return new TextDecoder().decode(combined);
 }
 
-// Fetches a URL under the SSRF guard, following up to MAX_REDIRECTS hops
-// while re-validating each Location header. Returns the response body text,
-// capped at MAX_BYTES.
-export async function safeFetchText(targetUrl: string): Promise<string> {
+// Shared redirect-following core: validates the URL, follows up to
+// MAX_REDIRECTS hops (re-validating each Location header the same way as
+// the initial URL), and returns the final, still-unread Response. Factored
+// out of safeFetchText below so safeFetchImageBytes (Task 35 Part C) can
+// reuse the exact same SSRF guarantees with its own timeout/body-reading
+// policy instead of duplicating the redirect loop.
+async function fetchGuardedResponse(targetUrl: string, timeoutMs: number): Promise<Response> {
   let current = new URL(targetUrl);
   assertSafeUrl(current);
 
   let redirects = 0;
   while (true) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
       response = await fetch(current.toString(), {
@@ -155,6 +158,65 @@ export async function safeFetchText(targetUrl: string): Promise<string> {
       throw new SsrfError(`upstream responded ${response.status}`);
     }
 
-    return await readCapped(response, MAX_BYTES);
+    return response;
   }
+}
+
+// Fetches a URL under the SSRF guard, following up to MAX_REDIRECTS hops
+// while re-validating each Location header. Returns the response body text,
+// capped at MAX_BYTES.
+export async function safeFetchText(targetUrl: string): Promise<string> {
+  const response = await fetchGuardedResponse(targetUrl, TIMEOUT_MS);
+  return await readCapped(response, MAX_BYTES);
+}
+
+async function readCappedBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
+  const body = response.body;
+  if (!body) return new Uint8Array(0);
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        throw new SsrfError("response exceeded size cap");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
+}
+
+// Task 35 Part C: SSRF-safe binary fetch for article preview images (see
+// images.ts) — same network-boundary guarantees as safeFetchText (private/
+// reserved IP literals blocked, redirects re-validated at every hop) but a
+// shorter timeout (images are small; no reason to wait as long as a full
+// article page) and its own byte cap. Content-Type is validated by the
+// caller (images.ts rejects non-image/* and SVG specifically, since SVG can
+// carry scripts) — this function only enforces the network/size boundary,
+// not the content policy.
+const IMAGE_FETCH_TIMEOUT_MS = 10_000;
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+export interface SafeImageFetchResult {
+  bytes: Uint8Array;
+  contentType: string;
+}
+
+export async function safeFetchImageBytes(targetUrl: string): Promise<SafeImageFetchResult> {
+  const response = await fetchGuardedResponse(targetUrl, IMAGE_FETCH_TIMEOUT_MS);
+  const contentType = response.headers.get("content-type") ?? "";
+  const bytes = await readCappedBytes(response, IMAGE_MAX_BYTES);
+  return { bytes, contentType };
 }

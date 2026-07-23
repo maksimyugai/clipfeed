@@ -32,29 +32,32 @@ const MAX_EMBEDDING_INPUT_CHARS = 1800;
 const EMBEDDING_CALL_TIMEOUT_MS = 30_000;
 
 export interface EmbeddingTextInput {
-  title_en: string | null;
-  tldr_en: string | null;
-  bullets_en: string[] | null;
+  title_ru: string | null;
+  tldr_ru: string | null;
+  bullets_ru: string[] | null;
 }
 
-// The canonical text embedded for one article — EN only, never RU. Same
-// reasoning as faithfulness.ts's EN-only claim set: RU/EN are
-// independently-written parallel translations of the same underlying
-// facts (see summarize.ts's prompt), so embedding one language captures
-// equivalent semantic content to embedding both, at half the Workers AI
-// calls, and — more importantly for this specific use — keeps every
-// article in ONE shared embedding space regardless of lang_original,
-// instead of a RU article and an EN article about the identical story
-// landing in different regions of vector space purely from language
-// rather than content. title_en first (highest signal density, shortest),
-// then tldr_en, then every bullet — order roughly follows decreasing
-// information density per character, though cosine similarity on a mean-
-// pooled embedding is not order-sensitive in practice.
+// The canonical text embedded for one article — RU only, never EN. Task 35
+// Part A: switched from EN to RU (the reverse of the pre-Task-35 choice)
+// because a fresh, default RU-only summary (see summarize.ts) no longer
+// carries _en fields at all — EN is now lazy/optional, so it can't be the
+// one field every article is guaranteed to have. RU is now that field.
+// bge-m3 (see EMBEDDING_MODEL) is documented multilingual (100+ languages,
+// including ru/en), so this still keeps every article in ONE shared
+// embedding space regardless of lang_original, same invariant as before —
+// just anchored on RU instead of EN. Caveat: SEMANTIC_DEDUP_THRESHOLD
+// (0.82, see README) was originally tuned against EN embeddings; RU
+// embeddings may cluster at a slightly different similarity scale, so this
+// is worth re-tuning against live data if dedup/search quality looks off
+// (see README "Semantic dedup & search"). title_ru first (highest signal
+// density, shortest), then tldr_ru, then every bullet — order roughly
+// follows decreasing information density per character, though cosine
+// similarity on a mean-pooled embedding is not order-sensitive in practice.
 export function buildEmbeddingText(input: EmbeddingTextInput): string {
   const parts = [
-    input.title_en?.trim(),
-    input.tldr_en?.trim(),
-    ...(input.bullets_en ?? []).map((b) => b.trim()),
+    input.title_ru?.trim(),
+    input.tldr_ru?.trim(),
+    ...(input.bullets_ru ?? []).map((b) => b.trim()),
   ].filter((p): p is string => Boolean(p));
   return parts.join("\n").slice(0, MAX_EMBEDDING_INPUT_CHARS);
 }

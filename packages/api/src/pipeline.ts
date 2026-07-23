@@ -3,13 +3,21 @@ import type { FaithfulnessJson, FaithfulnessVerdict, SummaryJson } from "@clipfe
 import { safeFetchText } from "./ssrf.ts";
 import { extractArticle } from "./extract.ts";
 import {
+  generateEnglishFields,
   parseSummaryBodyTargetChars,
   renderSummaryMarkdown,
   summarizeArticle,
   summarizeArticleWithWorkersAi,
 } from "./summarize.ts";
 import { tryConsumeSummaryBudget } from "./cost-guard.ts";
-import { markArticleFailed, markArticleReady, markEmbedded } from "./db.ts";
+import {
+  markArticleFailed,
+  markArticleReady,
+  markEmbedded,
+  markImageStored,
+  mergeEnglishFields,
+} from "./db.ts";
+import { downloadAndStoreImage, extractOgImage } from "./images.ts";
 import { classifyFailure } from "../../shared/src/classify-failure.ts";
 import {
   parseAutoblockThreshold,
@@ -298,8 +306,9 @@ interface PipelineArticleMeta {
 
 // Runs AFTER the article is already 'ready' (markArticleReady has already
 // committed) — semantic dedup/search's raw material, computed from the
-// just-persisted summary (see embeddings.ts's buildEmbeddingText: EN
-// fields only). Deliberately its own try/catch that NEVER rethrows: embed
+// just-persisted summary (see embeddings.ts's buildEmbeddingText: RU
+// fields only, since a fresh summary is RU-only by default — see Task 35
+// Part A). Deliberately its own try/catch that NEVER rethrows: embed
 // is auxiliary (Task 27's own requirement), so any failure here — a
 // Workers AI error, a Vectorize error, a dimension mismatch — must never
 // turn an already-successful article back into a failure. embedded_at
@@ -324,9 +333,9 @@ async function runEmbedStage(
       return;
     }
     const text = buildEmbeddingText({
-      title_en: summary.title_en,
-      tldr_en: summary.tldr_en,
-      bullets_en: summary.bullets_en,
+      title_ru: summary.title_ru,
+      tldr_ru: summary.tldr_ru,
+      bullets_ru: summary.bullets_ru,
     });
     if (text.length === 0) {
       logStage(id, "embed", embedStart, { outcome: "skipped_empty_text" });
@@ -345,6 +354,40 @@ async function runEmbedStage(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(JSON.stringify({ event: "embed_stage_failed", id, error: message }));
+  }
+}
+
+// Task 35 Part C: reads the source page's own og:image/twitter:image tag
+// from the ALREADY-FETCHED html (no extra fetch to get the tag) and, if
+// present, downloads + stores it — auxiliary and strictly best-effort, same
+// "own try/catch, never rethrows" contract as runEmbedStage above: an image
+// is never required for an article to be considered successfully
+// processed. Only meaningful for a full pipeline run (runArticlePipeline) —
+// a resummarize has no freshly-fetched html to read a tag from, so it never
+// calls this.
+async function runImageStage(
+  env: Env,
+  id: string,
+  html: string,
+  articleUrl: string,
+): Promise<void> {
+  const imageStart = performance.now();
+  try {
+    const imageUrl = extractOgImage(html, articleUrl);
+    if (!imageUrl) {
+      logStage(id, "image", imageStart, { outcome: "skipped_no_image_tag" });
+      return;
+    }
+    const stored = await downloadAndStoreImage(env, id, imageUrl);
+    if (!stored) {
+      logStage(id, "image", imageStart, { outcome: "skipped_download_failed" });
+      return;
+    }
+    await markImageStored(env.DB, id, stored.key, stored.sourceUrl);
+    logStage(id, "image", imageStart, { outcome: "stored" });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(JSON.stringify({ event: "image_stage_failed", id, error: message }));
   }
 }
 
@@ -434,10 +477,6 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
         faithfulness.summary.tldr_ru,
         faithfulness.summary.bullets_ru,
       ),
-      summary_en: renderSummaryMarkdown(
-        faithfulness.summary.tldr_en,
-        faithfulness.summary.bullets_en,
-      ),
       summary_json: faithfulness.summary,
       tags: mergeTags(input.requestTags, faithfulness.summary.tags),
       faithfulness: faithfulness.ran
@@ -455,6 +494,7 @@ export async function runArticlePipeline(env: Env, input: PipelineInput): Promis
       source: input.source,
       addedAt: input.addedAt,
     });
+    await runImageStage(env, input.id, html, input.url);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const reason = `internal: ${stage}: ${message}`.slice(0, 200);
@@ -570,10 +610,6 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
         faithfulness.summary.tldr_ru,
         faithfulness.summary.bullets_ru,
       ),
-      summary_en: renderSummaryMarkdown(
-        faithfulness.summary.tldr_en,
-        faithfulness.summary.bullets_en,
-      ),
       summary_json: faithfulness.summary,
       tags: mergeTags(input.requestTags, faithfulness.summary.tags),
       faithfulness: faithfulness.ran
@@ -595,5 +631,51 @@ export async function runResummarization(env: Env, input: ResummarizeInput): Pro
     const message = err instanceof Error ? err.message : String(err);
     const reason = `internal: ${stage}: ${message}`.slice(0, 200);
     await markArticleFailed(env.DB, input.id, reason);
+  }
+}
+
+export interface EnglishTranslationInput {
+  id: string;
+  title: string;
+  fullText: string;
+}
+
+// Task 35 Part A §3: generates and merges ONLY the EN summary fields for
+// an already-'ready' article, from its stored full_text (never a
+// translation of the RU summary — see summarize.ts's generateEnglishFields)
+// — the queue-consumer side of POST /api/admin/articles/:id/translate (see
+// index.ts, queue.ts). Never changes `status` and never throws: a failure
+// here just leaves en_generated_at null exactly as it was before the
+// attempt (same "auxiliary, log-and-continue" contract as runEmbedStage/
+// runImageStage above), so the owner can simply call the same endpoint
+// again — no separate retry/healing machinery needed for this job kind.
+export async function runEnglishTranslation(
+  env: Env,
+  input: EnglishTranslationInput,
+): Promise<void> {
+  const startedAt = performance.now();
+  try {
+    const mode = selectProviderMode({
+      aiGatewayUrl: env.AI_GATEWAY_URL,
+      cfAigToken: env.CF_AIG_TOKEN,
+      anthropicApiKey: env.ANTHROPIC_API_KEY,
+    });
+    const targetTotalChars = parseSummaryBodyTargetChars(env.SUMMARY_BODY_TARGET_CHARS);
+    const text = mode === "workers-ai"
+      ? input.fullText.slice(0, MAX_TEXT_CHARS_WORKERS_AI)
+      : input.fullText;
+
+    const fields = await generateEnglishFields(mode, env, input.title, text, targetTotalChars);
+    await mergeEnglishFields(
+      env.DB,
+      input.id,
+      fields,
+      renderSummaryMarkdown(fields.tldr_en, fields.bullets_en),
+      new Date().toISOString(),
+    );
+    logStage(input.id, "translate", startedAt, { mode });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(JSON.stringify({ event: "translate_failed", id: input.id, error: message }));
   }
 }

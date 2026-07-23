@@ -42,6 +42,9 @@ interface ArticleRow {
   faithfulness_checked_at: string | null;
   embedded_at: string | null;
   telegram_published_at: string | null;
+  en_generated_at: string | null;
+  image_key: string | null;
+  image_source_url: string | null;
 }
 
 type ArticleRowNoText = Omit<ArticleRow, "full_text">;
@@ -128,6 +131,9 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     faithfulness_checked_at: row.faithfulness_checked_at,
     embedded_at: row.embedded_at,
     telegram_published_at: row.telegram_published_at,
+    en_generated_at: row.en_generated_at,
+    image_key: row.image_key,
+    image_source_url: row.image_source_url,
   };
 }
 
@@ -235,7 +241,6 @@ export interface PipelineSuccessUpdate {
   author: string | null;
   lang_original: string | null;
   summary_ru: string;
-  summary_en: string;
   summary_json: SummaryJson;
   tags: string[];
   // Omitted entirely (not just null) when the faithfulness check is
@@ -252,6 +257,15 @@ export interface PipelineSuccessUpdate {
   };
 }
 
+// Task 35 Part A: a fresh generation is always RU-only (see
+// summarize.ts) — this always resets summary_en/en_generated_at to NULL,
+// even on a resummarize of a previously-translated article. That's
+// deliberate, not a regression of "existing rows keep their EN, no
+// backfill, no deletion" (which is about never retroactively stripping EN
+// from rows this task doesn't touch): once the RU content is regenerated,
+// any EN translation of the OLD content would describe a different summary
+// than what's now stored, so it's cleared rather than left stale — the
+// owner can re-request POST /api/admin/articles/:id/translate afterward.
 export async function markArticleReady(
   db: D1Database,
   id: string,
@@ -263,13 +277,14 @@ export async function markArticleReady(
     "author = ?",
     "lang_original = ?",
     "summary_ru = ?",
-    "summary_en = ?",
+    "summary_en = NULL",
     "summary_json = ?",
     "tags = ?",
     "status = 'ready'",
     "error = NULL",
     "fail_class = NULL",
     "heal_attempts = 0",
+    "en_generated_at = NULL",
   ];
   const binds: unknown[] = [
     update.full_text,
@@ -277,7 +292,6 @@ export async function markArticleReady(
     update.author,
     update.lang_original,
     update.summary_ru,
-    update.summary_en,
     JSON.stringify(update.summary_json),
     JSON.stringify(normalizeTags(update.tags)),
   ];
@@ -322,11 +336,51 @@ export async function markEmbedded(db: D1Database, id: string, embeddedAt: strin
   await db.prepare("UPDATE articles SET embedded_at = ? WHERE id = ?").bind(embeddedAt, id).run();
 }
 
+// Task 35 Part A §3: merges a lazily-generated EnglishFields result into an
+// already-'ready' article's summary_json and sets both summary_en (the
+// rendered markdown, same shape summary_ru already has — see
+// renderSummaryMarkdown) and en_generated_at in one write. Called from
+// POST /api/admin/articles/:id/translate's queue consumer path (see
+// queue.ts) — never touches summary_ru/status/anything else, since the RU
+// content is untouched by this operation.
+export async function mergeEnglishFields(
+  db: D1Database,
+  id: string,
+  fields: { title_en: string; tldr_en: string; body_en: string[]; bullets_en: string[] },
+  summaryEnMarkdown: string,
+  generatedAtIso: string,
+): Promise<void> {
+  const article = await getArticleById(db, id);
+  if (!article || !article.summary_json) return;
+  const mergedSummaryJson: SummaryJson = { ...article.summary_json, ...fields };
+  await db.prepare(
+    `UPDATE articles SET summary_json = ?, summary_en = ?, en_generated_at = ? WHERE id = ?`,
+  ).bind(JSON.stringify(mergedSummaryJson), summaryEnMarkdown, generatedAtIso, id).run();
+}
+
+// Task 35 Part C: records the R2 object key + original source URL for an
+// article's optional thumbnail/preview image (see images.ts) — a
+// best-effort, standalone write from the pipeline's own image stage, which
+// never blocks or fails the article itself (see pipeline.ts). Called only
+// on a successful download+store; a failure at any point in that pipeline
+// simply leaves both columns null (already their default), so there's no
+// separate "clear image" write needed.
+export async function markImageStored(
+  db: D1Database,
+  id: string,
+  imageKey: string,
+  imageSourceUrl: string,
+): Promise<void> {
+  await db.prepare(
+    "UPDATE articles SET image_key = ?, image_source_url = ? WHERE id = ?",
+  ).bind(imageKey, imageSourceUrl, id).run();
+}
+
 export interface UnembeddedArticle {
   id: string;
-  title_en: string | null;
-  tldr_en: string | null;
-  bullets_en: string[] | null;
+  title_ru: string | null;
+  tldr_ru: string | null;
+  bullets_ru: string[] | null;
   source: string | null;
   added_via: string;
   lang_original: string | null;
@@ -365,9 +419,9 @@ export async function listUnembeddedArticles(
     const summary = parseSummaryJsonColumn(row.summary_json);
     return {
       id: row.id,
-      title_en: summary?.title_en ?? null,
-      tldr_en: summary?.tldr_en ?? null,
-      bullets_en: summary?.bullets_en ?? null,
+      title_ru: summary?.title_ru ?? null,
+      tldr_ru: summary?.tldr_ru ?? null,
+      bullets_ru: summary?.bullets_ru ?? null,
       source: row.source,
       added_via: row.added_via,
       lang_original: row.lang_original,
@@ -759,7 +813,7 @@ export interface ListArticlesResult {
 // in production, invisible to FakeD1's tests since it returns whole stored
 // rows regardless of the projected column list).
 export const LIST_COLUMNS =
-  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at";
+  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at, en_generated_at, image_key, image_source_url";
 
 export interface ListQuery {
   sql: string;

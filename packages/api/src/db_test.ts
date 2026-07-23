@@ -343,7 +343,6 @@ Deno.test("markArticleReady: normalizes tags on the pipeline's success write", a
     author: null,
     lang_original: "en",
     summary_ru: "summary",
-    summary_en: "summary",
     summary_json: {
       title_ru: "t",
       title_en: "t",
@@ -543,7 +542,6 @@ Deno.test("markArticleReady: faithfulness omitted -> the 3 columns are not touch
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
   });
@@ -570,7 +568,6 @@ Deno.test("markArticleReady: faithfulness present -> all 3 columns written, JSON
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
     faithfulness: {
@@ -606,7 +603,6 @@ Deno.test("markArticleReady: faithfulness with a null verdict (judge unparseable
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
     faithfulness: {
@@ -638,7 +634,6 @@ Deno.test("updateFaithfulnessOnly: updates only the 3 faithfulness columns, leav
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
   });
@@ -707,7 +702,6 @@ Deno.test("markEmbedded: writes embedded_at, leaves everything else untouched", 
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
   });
@@ -737,7 +731,6 @@ Deno.test("listUnembeddedArticles/countUnembeddedArticles: only 'ready', non-arc
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
   });
@@ -757,7 +750,6 @@ Deno.test("listUnembeddedArticles/countUnembeddedArticles: only 'ready', non-arc
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
   });
@@ -777,7 +769,6 @@ Deno.test("listUnembeddedArticles/countUnembeddedArticles: only 'ready', non-arc
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
   });
@@ -797,9 +788,9 @@ Deno.test("listUnembeddedArticles/countUnembeddedArticles: only 'ready', non-arc
 
   const page = await listUnembeddedArticles(db, 10);
   assertEquals(page.map((a) => a.id), ["ready-unembedded-old", "ready-unembedded-new"]);
-  assertEquals(page[0].title_en, "t");
-  assertEquals(page[0].tldr_en, "t");
-  assertEquals(page[0].bullets_en, []);
+  assertEquals(page[0].title_ru, "t");
+  assertEquals(page[0].tldr_ru, "t");
+  assertEquals(page[0].bullets_ru, []);
   assertEquals(page[0].added_via, "manual");
   assertEquals(page[0].lang_original, "en");
 
@@ -826,7 +817,6 @@ Deno.test("getArticlesByIds: returns full rows (including full_text) for every m
     author: null,
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
     summary_json: MINIMAL_SUMMARY_JSON,
     tags: [],
   });
@@ -883,7 +873,7 @@ Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verd
     lang_original: "en",
     full_text: "full text",
     summary_ru: "s",
-    summary_en: "s",
+    summary_en: null,
     summary_json: null,
     tags: [],
     status: "ready",
@@ -896,6 +886,9 @@ Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verd
     faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
     embedded_at: null,
     telegram_published_at: null,
+    en_generated_at: null,
+    image_key: null,
+    image_source_url: null,
   };
   const pub = toPublicArticle(article);
   assertEquals("faithfulness_json" in pub, false);
@@ -918,7 +911,7 @@ Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_ver
     added_via: "manual",
     lang_original: "en",
     summary_ru: "s",
-    summary_en: "s",
+    summary_en: null,
     summary_json: null,
     tags: [],
     status: "ready",
@@ -931,6 +924,9 @@ Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_ver
     faithfulness_checked_at: "2026-01-01T00:05:00.000Z",
     embedded_at: null,
     telegram_published_at: null,
+    en_generated_at: null,
+    image_key: null,
+    image_source_url: null,
   };
   const pub = toPublicListItem(item);
   assertEquals("faithfulness_json" in pub, false);

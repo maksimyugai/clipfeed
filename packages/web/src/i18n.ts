@@ -111,6 +111,9 @@ export interface Dictionary {
   footerContentNotice: string;
   backToFeedLink: string;
   resetFiltersAction: string;
+  preparingEnglishLabel: string;
+  imageSourcePrefix: string;
+  imageAlt: string;
 }
 
 const ru: Dictionary = {
@@ -224,6 +227,9 @@ const ru: Dictionary = {
   footerContentNotice: "Выжимки созданы ИИ. Права на исходные статьи принадлежат их авторам.",
   backToFeedLink: "показать всю ленту",
   resetFiltersAction: "Сбросить фильтры",
+  preparingEnglishLabel: "Готовим английскую версию…",
+  imageSourcePrefix: "Изображение",
+  imageAlt: "Изображение к статье",
 };
 
 const en: Dictionary = {
@@ -339,6 +345,9 @@ const en: Dictionary = {
     "Summaries are AI-generated. Rights to the source articles belong to their authors.",
   backToFeedLink: "back to feed",
   resetFiltersAction: "Reset filters",
+  preparingEnglishLabel: "Preparing English version…",
+  imageSourcePrefix: "Image",
+  imageAlt: "Article image",
 };
 
 export const dictionaries: Record<Lang, Dictionary> = { ru, en };

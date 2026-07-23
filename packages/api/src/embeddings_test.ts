@@ -30,39 +30,39 @@ Deno.test("resolveEmbeddingModel: a real override is used as-is, trimmed", () =>
 
 Deno.test("buildEmbeddingText: title, tldr, and bullets joined with newlines, in order", () => {
   const text = buildEmbeddingText({
-    title_en: "Title",
-    tldr_en: "TLDR sentence.",
-    bullets_en: ["Bullet one.", "Bullet two."],
+    title_ru: "Title",
+    tldr_ru: "TLDR sentence.",
+    bullets_ru: ["Bullet one.", "Bullet two."],
   });
   assertEquals(text, "Title\nTLDR sentence.\nBullet one.\nBullet two.");
 });
 
 Deno.test("buildEmbeddingText: missing/empty fields are simply omitted, not blank lines", () => {
   assertEquals(
-    buildEmbeddingText({ title_en: "Title only", tldr_en: null, bullets_en: null }),
+    buildEmbeddingText({ title_ru: "Title only", tldr_ru: null, bullets_ru: null }),
     "Title only",
   );
   assertEquals(
-    buildEmbeddingText({ title_en: "", tldr_en: "  ", bullets_en: [] }),
+    buildEmbeddingText({ title_ru: "", tldr_ru: "  ", bullets_ru: [] }),
     "",
   );
 });
 
 Deno.test("buildEmbeddingText: every part is trimmed", () => {
   assertEquals(
-    buildEmbeddingText({ title_en: "  Title  ", tldr_en: "  TLDR  ", bullets_en: ["  B  "] }),
+    buildEmbeddingText({ title_ru: "  Title  ", tldr_ru: "  TLDR  ", bullets_ru: ["  B  "] }),
     "Title\nTLDR\nB",
   );
 });
 
 Deno.test("buildEmbeddingText: an all-empty input yields an empty string, no throw", () => {
-  assertEquals(buildEmbeddingText({ title_en: null, tldr_en: null, bullets_en: null }), "");
-  assertEquals(buildEmbeddingText({ title_en: null, tldr_en: null, bullets_en: [] }), "");
+  assertEquals(buildEmbeddingText({ title_ru: null, tldr_ru: null, bullets_ru: null }), "");
+  assertEquals(buildEmbeddingText({ title_ru: null, tldr_ru: null, bullets_ru: [] }), "");
 });
 
 Deno.test("buildEmbeddingText: truncates to the model's conservative input cap (1800 chars)", () => {
   const longBullet = "x".repeat(3000);
-  const text = buildEmbeddingText({ title_en: "T", tldr_en: null, bullets_en: [longBullet] });
+  const text = buildEmbeddingText({ title_ru: "T", tldr_ru: null, bullets_ru: [longBullet] });
   assertEquals(text.length, 1800);
 });
 

@@ -266,7 +266,11 @@ Deno.test("POST /api/admin/articles: 202 immediately, then row becomes ready wit
     assertEquals(getRes.status, 200);
     const article = await getRes.json();
     assertEquals(article.status, "ready");
-    assertEquals(article.summary_en.includes("Short summary."), true);
+    // Task 35 Part A: RU-only by default — summary_en/en_generated_at stay
+    // null until a separate POST .../translate call generates them.
+    assertEquals(article.summary_en, null);
+    assertEquals(article.en_generated_at, null);
+    assertEquals(article.summary_json.title_en, undefined);
     assertEquals(article.summary_ru.includes("Кратко."), true);
     assertEquals(article.summary_json.tags[0], "technology");
     assertEquals(article.tags.includes("reading"), true);
@@ -911,6 +915,153 @@ Deno.test("GET /a/:id vs GET /api/articles vs unmatched paths: route ordering do
   assertEquals((await unmatchedRes.text()).includes("<!--OG-->"), true);
 });
 
+// --- Task 35 Part C: og:image only when the article has one, GET /img/:id ---
+
+Deno.test("GET /a/:id: an article with an image adds og:image + summary_large_image twitter:card", async () => {
+  const { env, ctx } = {
+    env: makeEnv({
+      ASSETS: assetsStub(FAKE_SHELL_HTML),
+      PUBLIC_BASE_URL: "https://clipfeed.example.com",
+    }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({
+    id: "og-img-1",
+    summary_json: JSON.stringify({ title_ru: "T", tldr_ru: "D" }),
+    image_key: "articles/og-img-1.png",
+  }));
+
+  const res = await app.request("/a/og-img-1", {}, env, ctx);
+  const html = await res.text();
+  assertEquals(
+    html.includes('og:image" content="https://clipfeed.example.com/img/og-img-1"'),
+    true,
+  );
+  assertEquals(html.includes('twitter:card" content="summary_large_image"'), true);
+});
+
+Deno.test("GET /a/:id: an article with no image has no og:image tag, twitter:card is 'summary'", async () => {
+  const { env, ctx } = {
+    env: makeEnv({
+      ASSETS: assetsStub(FAKE_SHELL_HTML),
+      PUBLIC_BASE_URL: "https://clipfeed.example.com",
+    }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({
+    id: "og-noimg-1",
+    summary_json: JSON.stringify({ title_ru: "T", tldr_ru: "D" }),
+  }));
+
+  const res = await app.request("/a/og-noimg-1", {}, env, ctx);
+  const html = await res.text();
+  assertEquals(html.includes("og:image"), false);
+  assertEquals(html.includes('twitter:card" content="summary"'), true);
+});
+
+function makeFakeImagesBucket(objects: Map<string, { body: string; contentType?: string }>) {
+  return {
+    get(key: string) {
+      const stored = objects.get(key);
+      if (!stored) return Promise.resolve(null);
+      return Promise.resolve({
+        key,
+        httpMetadata: stored.contentType ? { contentType: stored.contentType } : undefined,
+        body: new Response(stored.body).body,
+      });
+    },
+    put(key: string, value: unknown) {
+      objects.set(key, { body: String(value) });
+      return Promise.resolve();
+    },
+    delete(key: string) {
+      objects.delete(key);
+      return Promise.resolve();
+    },
+  } as unknown as R2Bucket;
+}
+
+Deno.test("GET /img/:id: 404 when the IMAGES binding isn't configured (fork hasn't run setup yet)", async () => {
+  const { env, ctx } = { env: makeEnv(), ...makeExecutionContext() };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "img-nobinding", image_key: "articles/img-nobinding.png" }));
+
+  const res = await app.request("/img/img-nobinding", {}, env, ctx);
+  assertEquals(res.status, 404);
+});
+
+Deno.test("GET /img/:id: 404 for an article with no stored image", async () => {
+  const objects = new Map<string, { body: string; contentType?: string }>();
+  const { env, ctx } = {
+    env: makeEnv({ IMAGES: makeFakeImagesBucket(objects) }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "img-none" }));
+
+  const res = await app.request("/img/img-none", {}, env, ctx);
+  assertEquals(res.status, 404);
+});
+
+Deno.test("GET /img/:id: 404 for an unknown article id", async () => {
+  const objects = new Map<string, { body: string; contentType?: string }>();
+  const { env, ctx } = {
+    env: makeEnv({ IMAGES: makeFakeImagesBucket(objects) }),
+    ...makeExecutionContext(),
+  };
+  const res = await app.request("/img/does-not-exist", {}, env, ctx);
+  assertEquals(res.status, 404);
+});
+
+Deno.test("GET /img/:id: 404 when image_key is set but the R2 object itself is missing", async () => {
+  const objects = new Map<string, { body: string; contentType?: string }>();
+  const { env, ctx } = {
+    env: makeEnv({ IMAGES: makeFakeImagesBucket(objects) }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "img-orphan", image_key: "articles/img-orphan.png" }));
+
+  const res = await app.request("/img/img-orphan", {}, env, ctx);
+  assertEquals(res.status, 404);
+});
+
+Deno.test("GET /img/:id: 200, streams the R2 object with the stored content-type and a 1-year immutable cache header", async () => {
+  const objects = new Map<string, { body: string; contentType?: string }>([
+    ["articles/img-hit.jpg", { body: "fake-jpeg-bytes", contentType: "image/jpeg" }],
+  ]);
+  const { env, ctx } = {
+    env: makeEnv({ IMAGES: makeFakeImagesBucket(objects) }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "img-hit", image_key: "articles/img-hit.jpg" }));
+
+  const res = await app.request("/img/img-hit", {}, env, ctx);
+  assertEquals(res.status, 200);
+  assertEquals(res.headers.get("content-type"), "image/jpeg");
+  assertEquals(res.headers.get("cache-control"), "public, max-age=31536000, immutable");
+  assertEquals(await res.text(), "fake-jpeg-bytes");
+});
+
+Deno.test("GET /img/:id: falls back to application/octet-stream when the R2 object has no recorded content-type", async () => {
+  const objects = new Map<string, { body: string; contentType?: string }>([
+    ["articles/img-notype.png", { body: "bytes" }],
+  ]);
+  const { env, ctx } = {
+    env: makeEnv({ IMAGES: makeFakeImagesBucket(objects) }),
+    ...makeExecutionContext(),
+  };
+  const db = env.DB as unknown as FakeD1;
+  db.rows.push(readyRow({ id: "img-notype", image_key: "articles/img-notype.png" }));
+
+  const res = await app.request("/img/img-notype", {}, env, ctx);
+  assertEquals(res.status, 200);
+  assertEquals(res.headers.get("content-type"), "application/octet-stream");
+});
+
 Deno.test("PATCH /api/admin/articles/:id: updates archived and tags", async () => {
   const restoreFetch = stubFetch();
   const { env, authHeaders } = await makeOwnerContext();
@@ -1183,7 +1334,11 @@ Deno.test("POST /api/admin/articles/:id/resummarize: ready -> resummarize -> rea
     ).json();
     assertEquals(updated.status, "ready");
     assertEquals(updated.summary_ru.includes("Обновлённый пересказ"), true);
-    assertEquals(updated.summary_json.title_en, "Updated Title");
+    assertEquals(updated.summary_json.title_ru, "Обновлённый заголовок");
+    // Task 35 Part A: a resummarize always regenerates RU-only content —
+    // any previously-merged EN edition is cleared, not carried over stale.
+    assertEquals(updated.summary_json.title_en, undefined);
+    assertEquals(updated.en_generated_at, null);
     // full_text (extracted once, up front) is preserved across resummarize.
     assertEquals(updated.full_text.length > 0, true);
   } finally {

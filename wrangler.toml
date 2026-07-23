@@ -85,6 +85,15 @@ SEMANTIC_DEDUP_THRESHOLD = "0.82"
 SEARCH_RATE_PER_MIN = "30"
 SEARCH_MIN_SCORE = "0.5"
 
+# Article images (Task 35, README "Article images"): downloads each
+# article's og:image/twitter:image (if any) through the SSRF-safe fetch
+# guard and stores it in R2 (see the [[r2_buckets]] binding below), served
+# publicly at GET /img/:id. IMAGES_ENABLED enabled by default — only the
+# literal "false" disables the whole feature (no extraction, no download, no
+# R2 write); the IMAGES binding being absent (fork hasn't run
+# `deno task setup` yet) already degrades the same way on its own.
+IMAGES_ENABLED = "true"
+
 [ai]
 binding = "AI"
 
@@ -97,6 +106,16 @@ binding = "AI"
 [[vectorize]]
 binding = "VECTORS"
 index_name = "clipfeed-embeddings"
+
+# Provisioned by `deno task setup` (or `wrangler r2 bucket create
+# clipfeed-images`) — optional article-thumbnail storage (Task 35, README
+# "Article images"). Same graceful-degradation story as Vectorize above: no
+# IMAGES binding simply means downloadAndStoreImage (images.ts) skips
+# storing an image, the pipeline proceeds unchanged with no image on the
+# article.
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "clipfeed-images"
 
 # Single hourly cron (see packages/api/src/scheduled.ts):
 #   - AGENT_HOUR_UTC (default 5, empty/invalid disables it): the scraping

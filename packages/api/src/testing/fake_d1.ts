@@ -66,6 +66,9 @@ export class FakeD1 implements D1Database {
         faithfulness_checked_at: null,
         embedded_at: null,
         telegram_published_at: null,
+        en_generated_at: null,
+        image_key: null,
+        image_source_url: null,
       };
       let vi = 0;
       for (const col of cols) {

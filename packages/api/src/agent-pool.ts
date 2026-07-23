@@ -218,9 +218,9 @@ interface TitleEntry {
 // { title, tldr, bullets } input, with bullets omitted.
 function candidateEmbeddingText(candidate: Candidate): string {
   return buildEmbeddingText({
-    title_en: candidate.title,
-    tldr_en: candidate.snippet,
-    bullets_en: null,
+    title_ru: candidate.title,
+    tldr_ru: candidate.snippet,
+    bullets_ru: null,
   });
 }
 

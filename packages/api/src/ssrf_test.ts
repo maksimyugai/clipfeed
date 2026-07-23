@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { assertSafeUrl, safeFetchText, SsrfError } from "./ssrf.ts";
+import { assertSafeUrl, safeFetchImageBytes, safeFetchText, SsrfError } from "./ssrf.ts";
 
 Deno.test("assertSafeUrl: allows public https URL", () => {
   assertSafeUrl(new URL("https://example.com/article"));
@@ -100,6 +100,84 @@ Deno.test("safeFetchText: rejects a response body over the 5MB cap", async () =>
 
   try {
     await assertRejects(() => safeFetchText("https://example.com/"), SsrfError);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// --- safeFetchImageBytes (Task 35 Part C §2) — shares fetchGuardedResponse's
+// redirect/host-validation core with safeFetchText above, so this focuses on
+// the pieces specific to the image path: bytes+contentType returned, its own
+// 5MB cap, and reusing the SSRF redirect guard. ---
+
+Deno.test("safeFetchImageBytes: returns the body bytes and content-type on a direct 200", async () => {
+  const originalFetch = globalThis.fetch;
+  const bytes = new Uint8Array([1, 2, 3, 4]);
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(bytes, { status: 200, headers: { "content-type": "image/png" } }),
+    )) as typeof fetch;
+
+  try {
+    const result = await safeFetchImageBytes("https://example.com/photo.png");
+    assertEquals(result.contentType, "image/png");
+    assertEquals(result.bytes, bytes);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("safeFetchImageBytes: rejects a redirect into a private address", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(null, { status: 302, headers: { location: "http://127.0.0.1/admin" } }),
+    )) as typeof fetch;
+
+  try {
+    await assertRejects(() => safeFetchImageBytes("https://example.com/photo.png"), SsrfError);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("safeFetchImageBytes: follows a safe redirect and returns the final body", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  const bytes = new Uint8Array([9, 9, 9]);
+  globalThis.fetch = ((input: string | URL | Request) => {
+    calls += 1;
+    const url = input.toString();
+    if (url === "https://example.com/photo.png") {
+      return Promise.resolve(
+        new Response(null, { status: 301, headers: { location: "https://cdn.example.com/p.png" } }),
+      );
+    }
+    return Promise.resolve(
+      new Response(bytes, { status: 200, headers: { "content-type": "image/jpeg" } }),
+    );
+  }) as typeof fetch;
+
+  try {
+    const result = await safeFetchImageBytes("https://example.com/photo.png");
+    assertEquals(result.bytes, bytes);
+    assertEquals(result.contentType, "image/jpeg");
+    assertEquals(calls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("safeFetchImageBytes: rejects a body over its own 5MB cap", async () => {
+  const originalFetch = globalThis.fetch;
+  const bigBody = new Uint8Array(5 * 1024 * 1024 + 1);
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(bigBody, { status: 200, headers: { "content-type": "image/png" } }),
+    )) as typeof fetch;
+
+  try {
+    await assertRejects(() => safeFetchImageBytes("https://example.com/huge.png"), SsrfError);
   } finally {
     globalThis.fetch = originalFetch;
   }

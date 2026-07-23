@@ -162,3 +162,13 @@
 # SEMANTIC_DEDUP_THRESHOLD=0.82
 # SEARCH_RATE_PER_MIN=30
 # SEARCH_MIN_SCORE=0.5
+
+# Article images (see README "Article images"): downloads each article's
+# og:image/twitter:image (if any) through the SSRF-safe fetch guard and
+# stores it in R2 (`deno task setup` provisions the bucket, or
+# `wrangler r2 bucket create clipfeed-images`), served publicly at
+# GET /img/:id. Optional — without the IMAGES binding provisioned, this
+# degrades gracefully (no image, article proceeds unchanged).
+# IMAGES_ENABLED defaults to "true"; only the literal "false" disables the
+# whole feature.
+# IMAGES_ENABLED=true

@@ -953,6 +953,36 @@ ul {
   flex-wrap: wrap;
 }
 
+/* --- Collapsed card thumbnail (Task 35 Part C §4) — only rendered when the
+   article has an image; the text column (title/tldr/footer-row) reflows to
+   the left of it. Absent entirely with no image, so that layout is
+   untouched. --- */
+.card-collapsed-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.card-collapsed-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.card-thumb {
+  flex: none;
+  width: 112px;
+  height: 84px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+@media (max-width: 640px) {
+  .card-thumb {
+    width: 88px;
+    height: 66px;
+  }
+}
+
 .card-pills {
   display: flex;
   flex-wrap: wrap;
@@ -998,6 +1028,23 @@ ul {
 
 .card-expanded-body {
   margin-top: 4px;
+}
+
+/* Task 35 Part C §4: full-width image above the TL;DR, only when the
+   article has one — see ArticleCard.tsx's needsEnglish/hasImage guards. */
+.card-expanded-image {
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  border-radius: 10px;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.card-image-caption {
+  font-size: 0.78rem;
+  color: var(--mut);
+  margin: 0 0 14px;
 }
 
 .tldr-label {

@@ -32,23 +32,34 @@ export type FaithfulnessJson =
 // rows from before this column existed, or a row that isn't 'failed').
 export type FailureClass = "transient" | "permanent" | "unknown" | "content";
 
-// body_ru/body_en: 2-4 self-contained prose paragraphs (what happened,
-// how/why, key context, implications) — the readable digest a reader can
-// stop at instead of opening the source. Required for every NEW summary
-// (see validateSummary in summarize.ts), but rows saved before this field
-// existed have no body_ru/body_en in their stored JSON at all — callers
-// reading summary_json back out of D1 must not assume these arrays are
-// present (see selectSummaryFields in packages/web/src/lib/summaryFields.ts
-// for the defensive read); there's no migration backfilling old rows.
+// body_ru: 2-4 self-contained prose paragraphs (what happened, how/why, key
+// context, implications) — the readable digest a reader can stop at instead
+// of opening the source. Required for every NEW summary (see validateSummary
+// in summarize.ts), but rows saved before this field existed have no body_ru
+// in their stored JSON at all — callers reading summary_json back out of D1
+// must not assume this array is present (see selectSummaryFields in
+// packages/web/src/lib/summaryFields.ts for the defensive read); there's no
+// migration backfilling old rows.
+//
+// Task 35 Part A ("Russian-first"): the *_en fields are no longer generated
+// by default — a fresh summary carries ONLY the _ru fields (+ tags/
+// lang_original), roughly halving output tokens and avoiding max_tokens
+// truncation for the owner, who reads Russian only. The _en fields are now
+// OPTIONAL, populated lazily and independently (never translated from the
+// _ru text — see summarize.ts's generateEnglishFields) via
+// POST /api/admin/articles/:id/translate, which also sets
+// Article.en_generated_at. Existing rows summarized before this task keep
+// whatever _en fields they already have — no backfill, no deletion — so
+// this type has to tolerate both shapes at once.
 export interface SummaryJson {
   title_ru: string;
-  title_en: string;
+  title_en?: string;
   tldr_ru: string;
-  tldr_en: string;
+  tldr_en?: string;
   body_ru: string[];
-  body_en: string[];
+  body_en?: string[];
   bullets_ru: string[];
-  bullets_en: string[];
+  bullets_en?: string[];
   tags: string[];
   lang_original: string;
 }
@@ -96,6 +107,26 @@ export interface Article {
   // being sent (see telegram-publish.ts's doc comment) so the drip queue
   // advances past it instead of retrying the same skip forever.
   telegram_published_at: string | null;
+  // Task 35 Part A: set once POST /api/admin/articles/:id/translate has
+  // successfully generated and merged the _en summary fields (see
+  // summarize.ts's generateEnglishFields) — null means "no EN yet" for a
+  // RU-only summary. The endpoint is idempotent on this field (already-set
+  // means 200 no-op, never a second translate). Distinct from the pre-Task-35
+  // rows that already carry _en fields from the old RU+EN-by-default
+  // generation — those rows are never backfilled with this field, so a
+  // non-null title_en/tldr_en with a null en_generated_at is a normal,
+  // expected combination for old rows, not a bug.
+  en_generated_at: string | null;
+  // Task 35 Part C: R2 object key for this article's thumbnail/preview
+  // image (`articles/<id>.<ext>`), scraped from the source page's own
+  // og:image/twitter:image meta tag — see packages/api/src/images.ts. null
+  // means no image (none found, download/validation failed, or the feature
+  // is disabled) — images are strictly optional and never fail a summary.
+  image_key: string | null;
+  // The original (source-page) image URL this was downloaded from — shown
+  // as attribution ("Image: <domain>", see ArticleCard.tsx) and re-checked
+  // if the image is ever re-fetched; null whenever image_key is null.
+  image_source_url: string | null;
 }
 
 export type ArticleListItem = Omit<Article, "full_text">;
@@ -177,13 +208,18 @@ export interface QueueNotify {
 // Body of a message on the "clipfeed-jobs" queue (see wrangler.toml
 // [[queues.producers/consumers]], queue.ts, index.ts's `queue` export).
 // 'process' runs the full fetch -> extract -> summarize pipeline for a
-// pending article; 'resummarize' re-runs only the summarize step. Kept
-// intentionally small (well under the 128KB Queues message-size limit) —
-// large payloads like extension-submitted HTML are handed off via KV
-// instead (see queue.ts's stashPendingHtml/takePendingHtml), and everything
-// else the consumer needs is re-read from the D1 row by articleId.
+// pending article; 'resummarize' re-runs only the summarize step.
+// 'translate' (Task 35 Part A) generates ONLY the _en summary fields from
+// the article's stored full_text (never a translation of the _ru text —
+// see summarize.ts's generateEnglishFields) and merges them into
+// summary_json, setting en_generated_at — see
+// POST /api/admin/articles/:id/translate. Kept intentionally small (well
+// under the 128KB Queues message-size limit) — large payloads like
+// extension-submitted HTML are handed off via KV instead (see queue.ts's
+// stashPendingHtml/takePendingHtml), and everything else the consumer needs
+// is re-read from the D1 row by articleId.
 export interface QueueMessage {
-  kind: "process" | "resummarize";
+  kind: "process" | "resummarize" | "translate";
   articleId: string;
   notify?: QueueNotify;
 }

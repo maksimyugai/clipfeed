@@ -27,6 +27,9 @@ function article(overrides: Partial<ArticleListItem> & { id: string }): ArticleL
     faithfulness_checked_at: null,
     embedded_at: null,
     telegram_published_at: null,
+    en_generated_at: null,
+    image_key: null,
+    image_source_url: null,
     ...overrides,
   };
 }
