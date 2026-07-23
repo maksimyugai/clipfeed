@@ -1,0 +1,14 @@
+swagger-ui-dist@5.32.11
+
+Vendored (not npm-installed) for Task 39's self-hosted /docs page — see
+scripts/build.ts (copies swagger-ui-bundle.js + swagger-ui.css into
+dist/web/docs-assets/) and packages/api/src/index.ts's GET /docs route.
+Only swagger-ui-bundle.js and swagger-ui.css are needed: the bundle's
+built-in BaseLayout renders the full spec explorer, including "Try it
+out", without swagger-ui-standalone-preset.js (that file only adds the
+top navbar / URL-entry UI, which this deployment doesn't use since the
+spec URL is hardcoded to /openapi.json).
+
+To update: download swagger-ui-dist from npm, verify the version, and
+replace swagger-ui-bundle.js + swagger-ui.css here (LICENSE/NOTICE are
+Apache-2.0, from the same package).

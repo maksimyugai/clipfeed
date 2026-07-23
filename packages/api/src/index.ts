@@ -80,6 +80,7 @@ import { loadBlocklistConfig, loadCurationConfig } from "./agent/curation.ts";
 import { normalizeDomainInput, resolveDomainPrecedence } from "./agent/domain-block.ts";
 import { hostname } from "./lib/url-host.ts";
 import { clearAutoBlock, isAutoBlocked, listAutoBlocks } from "./agent/autoblock.ts";
+import openApiSpec from "../openapi.json" with { type: "json" };
 
 const app = new Hono<AppEnv>();
 
@@ -114,6 +115,52 @@ app.get("/api/config", (c) => {
 
 app.get("/api/health", (c) => {
   return c.json({ ok: true, ts: new Date().toISOString() });
+});
+
+// Task 39: the hand-maintained OpenAPI 3.1 spec (packages/api/openapi.json,
+// source of truth — MUST be updated in the same PR as any route change, see
+// CLAUDE.md). Imported at build time (same static JSON-import convention as
+// curation.json/sources.json/blocklist.json elsewhere in this file) rather
+// than read from disk at request time. Short cache since the spec only
+// changes on deploy, not at runtime.
+app.get("/openapi.json", (c) => {
+  return c.json(openApiSpec, 200, { "Cache-Control": "public, max-age=300" });
+});
+
+// Self-hosted Swagger UI (never a CDN — see packages/web/vendor/swagger-ui/
+// VERSION for provenance). The vendored swagger-ui-bundle.js/swagger-ui.css
+// are served by the ASSETS catch-all below like any other static file (see
+// scripts/build.ts, which copies them into dist/web/docs-assets/); this
+// route only needs to return the tiny HTML shell that loads them and points
+// SwaggerUIBundle at GET /openapi.json above — same origin, so "Try it out"
+// needs no CORS configuration for the public routes. Admin routes will
+// simply 401 without a Cloudflare Access session, same as calling them any
+// other way.
+app.get("/docs", (c) => {
+  return c.html(
+    `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ClipFeed API</title>
+<link rel="icon" href="/favicon-32.png">
+<link rel="stylesheet" href="/docs-assets/swagger-ui.css">
+<style>body { margin: 0; }</style>
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="/docs-assets/swagger-ui-bundle.js"></script>
+<script>
+  window.ui = SwaggerUIBundle({
+    url: "/openapi.json",
+    dom_id: "#swagger-ui",
+    presets: [SwaggerUIBundle.presets.apis],
+  });
+</script>
+</body>
+</html>
+`,
+  );
 });
 
 // Public by design, same as the routes above — Telegram delivers updates

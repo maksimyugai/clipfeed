@@ -38,6 +38,23 @@ packages/shared/src/types.ts    Types shared between API, SPA, and extension
 migrations/                     D1 schema migrations
 ```
 
+## API documentation
+
+Once deployed (or under `deno task dev`), visit `/docs` for interactive Swagger UI covering every
+route — public, admin, and the Telegram webhook integration. It reads the spec from `/openapi.json`,
+served straight from `packages/api/openapi.json`. "Try it out" works for the public routes without
+any extra setup (same-origin, no CORS needed); admin routes will 401 unless your browser already
+holds a Cloudflare Access session.
+
+The spec is **hand-maintained**, not generated from code — it's a plain, committed JSON file, not a
+build artifact. **Any route change (new endpoint, new field, new status code) must update
+`packages/api/openapi.json` in the same PR** — see CLAUDE.md's conventions section, and
+`packages/api/openapi_drift_test.ts` for the (intentionally limited) automated check that keeps the
+spec's schemas roughly honest against `packages/shared/src/types.ts`.
+
+Swagger UI itself is self-hosted (vendored under `packages/web/vendor/swagger-ui/`, never loaded
+from a CDN) — same privacy/fork-friendliness reasoning as the self-hosted fonts.
+
 ## LLM modes
 
 ClipFeed picks a summarization backend at request time, in this priority order:

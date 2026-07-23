@@ -1,0 +1,1391 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ClipFeed API",
+    "version": "1.0.0",
+    "description": "ClipFeed's public read API, owner-only admin API, and the Telegram webhook integration. This spec is hand-maintained (packages/api/openapi.json) and MUST be updated in the same PR as any route change — see CLAUDE.md.\n\nThe public routes (tag `public`) require no authentication and are safe for external consumption. The admin routes (tag `admin`) require a Cloudflare Access session and are meant for the owner's own tooling, not third-party integrations."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Same-origin — relative to wherever this Worker is deployed (see PUBLIC_BASE_URL in your fork's wrangler.toml)."
+    }
+  ],
+  "tags": [
+    {
+      "name": "public",
+      "description": "No authentication required. Safe for external clients to consume."
+    },
+    {
+      "name": "admin",
+      "description": "Requires a Cloudflare Access session (browser SSO cookie or a service token's headers). Owner-only."
+    },
+    {
+      "name": "integrations",
+      "description": "Machine-to-machine endpoints authenticated by their own scheme, not Cloudflare Access."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "cloudflareAccess": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "CF_Authorization",
+        "description": "Cloudflare Access — externally managed by Cloudflare, not issued by this API. A request must arrive with either a browser session established via Cloudflare Access's own hosted login (the `CF_Authorization` cookie, set automatically after sign-in at GET /api/admin/login) or, for machine clients, the `CF-Access-Client-Id` / `CF-Access-Client-Secret` service-token headers configured in your Cloudflare Zero Trust dashboard. This API never issues, validates format of, or refreshes any token itself — it only verifies the JWT Cloudflare's edge already attached to the request (see packages/api/src/auth/access-middleware.ts). Without a valid session, every /api/admin/* route returns 401 with `{\"error\": \"auth_not_configured\"}` (Access isn't configured on this deployment at all) or `{\"error\": \"unauthorized\"}` (configured, but this request isn't authenticated)."
+      },
+      "telegramWebhookSecret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Telegram-Bot-Api-Secret-Token",
+        "description": "Verified in constant time against TELEGRAM_WEBHOOK_SECRET. Only Telegram itself (configured via `deno task telegram:setup`) should ever call this route."
+      }
+    },
+    "schemas": {
+      "ArticleStatus": {
+        "type": "string",
+        "enum": ["pending", "ready", "failed"]
+      },
+      "AddedVia": {
+        "type": "string",
+        "enum": ["extension", "manual", "agent", "telegram"]
+      },
+      "FaithfulnessVerdict": {
+        "type": ["string", "null"],
+        "enum": ["pass", "weak", "fail", null],
+        "description": "null means the faithfulness check hasn't run yet (disabled, or a pre-existing row)."
+      },
+      "FailureClass": {
+        "type": ["string", "null"],
+        "enum": ["transient", "permanent", "unknown", "content", null]
+      },
+      "SummaryJson": {
+        "type": "object",
+        "description": "The LLM-generated summary, stored as JSON in the `summary_json` column. Russian-first: every summary carries the _ru fields; the _en fields are optional and populated lazily/independently via POST /api/admin/articles/{id}/translate, never as a translation of the _ru text.",
+        "required": ["title_ru", "tldr_ru", "body_ru", "bullets_ru", "tags", "lang_original"],
+        "properties": {
+          "title_ru": { "type": "string" },
+          "title_en": {
+            "type": "string",
+            "description": "Present only once /translate has run for this article."
+          },
+          "tldr_ru": { "type": "string" },
+          "tldr_en": { "type": "string" },
+          "body_ru": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "2-4 self-contained prose paragraphs."
+          },
+          "body_en": { "type": "array", "items": { "type": "string" } },
+          "bullets_ru": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "3-6 key-point bullets."
+          },
+          "bullets_en": { "type": "array", "items": { "type": "string" } },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "lang_original": {
+            "type": "string",
+            "description": "Best-effort language code of the source article (not necessarily ru or en)."
+          }
+        }
+      },
+      "FaithfulnessClaimResult": {
+        "type": "object",
+        "required": ["i", "verdict", "evidence"],
+        "properties": {
+          "i": { "type": "integer" },
+          "verdict": { "type": "string", "enum": ["supported", "unsupported", "contradicted"] },
+          "evidence": { "type": "string" }
+        }
+      },
+      "FaithfulnessJson": {
+        "description": "Owner-only diagnostic detail from the faithfulness judge — either every claim it checked, or a marker that its own output couldn't be parsed.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["claims", "notes"],
+            "properties": {
+              "claims": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/FaithfulnessClaimResult" }
+              },
+              "notes": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["error"],
+            "properties": { "error": { "type": "string" } }
+          }
+        ]
+      },
+      "ArticleListItem": {
+        "type": "object",
+        "description": "An article row (Article minus full_text) as returned by the owner-only list/search endpoints — includes the real `error` field. See PublicArticle for the redacted public shape.",
+        "required": [
+          "id",
+          "url",
+          "canonical_url",
+          "title",
+          "source",
+          "author",
+          "published_at",
+          "added_at",
+          "added_via",
+          "lang_original",
+          "summary_ru",
+          "summary_en",
+          "summary_json",
+          "tags",
+          "status",
+          "archived",
+          "error",
+          "fail_class",
+          "heal_attempts",
+          "faithfulness_verdict",
+          "faithfulness_json",
+          "faithfulness_checked_at",
+          "embedded_at",
+          "telegram_published_at",
+          "en_generated_at",
+          "image_key",
+          "image_source_url"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "url": { "type": "string", "format": "uri" },
+          "canonical_url": { "type": ["string", "null"], "format": "uri" },
+          "title": { "type": "string" },
+          "source": {
+            "type": ["string", "null"],
+            "description": "Bare hostname, e.g. \"example.com\"."
+          },
+          "author": { "type": ["string", "null"] },
+          "published_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "The source article's own publish date, if known."
+          },
+          "added_at": { "type": "string", "format": "date-time" },
+          "added_via": { "$ref": "#/components/schemas/AddedVia" },
+          "lang_original": { "type": ["string", "null"] },
+          "summary_ru": {
+            "type": ["string", "null"],
+            "description": "Legacy flat rendering of the RU summary; prefer summary_json."
+          },
+          "summary_en": { "type": ["string", "null"] },
+          "summary_json": {
+            "oneOf": [{ "$ref": "#/components/schemas/SummaryJson" }, { "type": "null" }]
+          },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "status": { "$ref": "#/components/schemas/ArticleStatus" },
+          "archived": { "type": "boolean" },
+          "error": {
+            "type": ["string", "null"],
+            "description": "Raw pipeline error detail — may include upstream URLs/stack fragments. Owner-only; never sent to public callers."
+          },
+          "fail_class": { "$ref": "#/components/schemas/FailureClass" },
+          "heal_attempts": { "type": "integer" },
+          "faithfulness_verdict": { "$ref": "#/components/schemas/FaithfulnessVerdict" },
+          "faithfulness_json": {
+            "oneOf": [{ "$ref": "#/components/schemas/FaithfulnessJson" }, { "type": "null" }]
+          },
+          "faithfulness_checked_at": { "type": ["string", "null"], "format": "date-time" },
+          "embedded_at": { "type": ["string", "null"], "format": "date-time" },
+          "telegram_published_at": {
+            "type": ["string", "null"],
+            "description": "An ISO publish timestamp, the sentinel string \"skipped-stale\" (this article aged out of the drip's today-only publish window), or null (not yet published)."
+          },
+          "en_generated_at": { "type": ["string", "null"], "format": "date-time" },
+          "image_key": {
+            "type": ["string", "null"],
+            "description": "R2 object key; fetch the image itself via GET /img/{id}, never this key directly."
+          },
+          "image_source_url": { "type": ["string", "null"], "format": "uri" }
+        }
+      },
+      "Article": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ArticleListItem" },
+          {
+            "type": "object",
+            "required": ["full_text"],
+            "properties": {
+              "full_text": {
+                "type": ["string", "null"],
+                "description": "The full extracted article text. Only ever returned by GET /api/admin/articles/{id} (never the list endpoints, never the public routes)."
+              }
+            }
+          }
+        ],
+        "description": "The complete owner-only row, including full_text. Returned only by GET /api/admin/articles/{id}."
+      },
+      "PublicArticle": {
+        "type": "object",
+        "description": "The public-safe article shape: Article minus full_text, error, and faithfulness_json, plus has_error. faithfulness_verdict IS still public — the caution badge is meant to be visible to every reader, not just the owner.",
+        "required": [
+          "id",
+          "url",
+          "canonical_url",
+          "title",
+          "source",
+          "author",
+          "published_at",
+          "added_at",
+          "added_via",
+          "lang_original",
+          "summary_ru",
+          "summary_en",
+          "summary_json",
+          "tags",
+          "status",
+          "archived",
+          "fail_class",
+          "heal_attempts",
+          "faithfulness_verdict",
+          "faithfulness_checked_at",
+          "embedded_at",
+          "telegram_published_at",
+          "en_generated_at",
+          "image_key",
+          "image_source_url",
+          "has_error"
+        ],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "url": { "type": "string", "format": "uri" },
+          "canonical_url": { "type": ["string", "null"], "format": "uri" },
+          "title": { "type": "string" },
+          "source": { "type": ["string", "null"] },
+          "author": { "type": ["string", "null"] },
+          "published_at": { "type": ["string", "null"], "format": "date-time" },
+          "added_at": { "type": "string", "format": "date-time" },
+          "added_via": { "$ref": "#/components/schemas/AddedVia" },
+          "lang_original": { "type": ["string", "null"] },
+          "summary_ru": { "type": ["string", "null"] },
+          "summary_en": { "type": ["string", "null"] },
+          "summary_json": {
+            "oneOf": [{ "$ref": "#/components/schemas/SummaryJson" }, { "type": "null" }]
+          },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "status": { "$ref": "#/components/schemas/ArticleStatus" },
+          "archived": { "type": "boolean" },
+          "fail_class": { "$ref": "#/components/schemas/FailureClass" },
+          "heal_attempts": { "type": "integer" },
+          "faithfulness_verdict": { "$ref": "#/components/schemas/FaithfulnessVerdict" },
+          "faithfulness_checked_at": { "type": ["string", "null"], "format": "date-time" },
+          "embedded_at": { "type": ["string", "null"], "format": "date-time" },
+          "telegram_published_at": { "type": ["string", "null"] },
+          "en_generated_at": { "type": ["string", "null"], "format": "date-time" },
+          "image_key": { "type": ["string", "null"] },
+          "image_source_url": { "type": ["string", "null"], "format": "uri" },
+          "has_error": {
+            "type": "boolean",
+            "description": "True when this failed article has a stored error a retry might fix — the raw string itself is owner-only."
+          }
+        }
+      },
+      "PublicArticleListResponse": {
+        "type": "object",
+        "required": ["items", "next_cursor"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/PublicArticle" } },
+          "next_cursor": {
+            "type": ["string", "null"],
+            "description": "Pass as the `cursor` query param to fetch the next page; null when this is the last page."
+          }
+        }
+      },
+      "ArticleListResponse": {
+        "type": "object",
+        "required": ["items", "next_cursor"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/ArticleListItem" } },
+          "next_cursor": { "type": ["string", "null"] }
+        }
+      },
+      "CreateArticleRequest": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": { "type": "string", "format": "uri", "description": "Must be http(s)." },
+          "html": {
+            "type": "string",
+            "description": "Pre-fetched page HTML (e.g. from the browser extension) — up to 2MB. When omitted, the pipeline fetches the URL itself."
+          },
+          "title": { "type": "string", "maxLength": 500 },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 50 },
+            "maxItems": 10
+          },
+          "added_via": {
+            "$ref": "#/components/schemas/AddedVia",
+            "description": "Defaults to \"manual\" when omitted."
+          }
+        }
+      },
+      "CreateArticleResponse": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": { "$ref": "#/components/schemas/ArticleStatus" },
+          "warning": {
+            "type": "string",
+            "enum": ["blocked_domain"],
+            "description": "Advisory only — the save still proceeds. Present when this URL's host matches the curation blocklist (config or KV auto-learned)."
+          }
+        }
+      },
+      "DuplicateArticleResponse": {
+        "type": "object",
+        "required": ["id", "error"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The id of the existing article this duplicates."
+          },
+          "error": { "type": "string", "enum": ["duplicate"] },
+          "reason": {
+            "type": "string",
+            "enum": ["similar_title"],
+            "description": "Present when this is a normalized-title match against a DIFFERENT URL added in the last 72h, rather than an exact URL re-add (which omits `reason` entirely)."
+          }
+        }
+      },
+      "PatchArticleRequest": {
+        "type": "object",
+        "properties": {
+          "archived": { "type": "boolean" },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string", "maxLength": 50 },
+            "maxItems": 10
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" }
+        }
+      },
+      "SearchResultItem": {
+        "type": "object",
+        "required": ["article", "score"],
+        "properties": {
+          "article": { "$ref": "#/components/schemas/PublicArticle" },
+          "score": {
+            "type": "number",
+            "description": "Cosine similarity, 0-1. This repo's own SPA doesn't display it, but it's here for callers that want it."
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/SearchResultItem" } }
+        }
+      },
+      "AdminSearchResultItem": {
+        "type": "object",
+        "required": ["article", "score"],
+        "properties": {
+          "article": { "$ref": "#/components/schemas/ArticleListItem" },
+          "score": { "type": "number" }
+        }
+      },
+      "AdminSearchResponse": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AdminSearchResultItem" }
+          }
+        }
+      },
+      "ConfigResponse": {
+        "type": "object",
+        "required": ["turnstile_site_key", "agent_hour_utc", "agent_daily_picks", "repo_url"],
+        "properties": {
+          "turnstile_site_key": {
+            "type": ["string", "null"],
+            "description": "Present only if this fork has configured Turnstile — the middleware exists but is currently unmounted from every route."
+          },
+          "agent_hour_utc": {
+            "type": ["integer", "null"],
+            "description": "UTC hour (0-23) the daily scraping agent runs; null when disabled."
+          },
+          "agent_daily_picks": { "type": "integer" },
+          "repo_url": {
+            "type": "string",
+            "description": "Empty string when this fork hasn't set REPO_URL."
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["ok", "ts"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "ts": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MeResponse": {
+        "type": "object",
+        "required": ["sub", "email"],
+        "properties": {
+          "sub": {
+            "type": "string",
+            "description": "The Cloudflare Access identity's subject claim."
+          },
+          "email": { "type": ["string", "null"] }
+        }
+      },
+      "AgentRunResponse": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "warning": {
+            "type": "string",
+            "description": "Present when the agent already completed a run today (scheduled or manual) — names the prior run's pick count and UTC time. Omit `?force=1` to see it; the run proceeds either way."
+          }
+        }
+      },
+      "PendingStatusResponse": {
+        "type": "object",
+        "description": "Shared shape for the retry/resummarize/translate/reverify actions: the article transitions to a working state and the actual pipeline stage runs asynchronously (queue or waitUntil).",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "already-translated", "reverify-queued"]
+          }
+        }
+      },
+      "LearnedThinHost": {
+        "type": "object",
+        "required": ["host", "count"],
+        "properties": {
+          "host": { "type": "string" },
+          "count": { "type": "integer" }
+        }
+      },
+      "AgentRunRecord": {
+        "type": "object",
+        "required": ["startedAt", "picks", "trigger"],
+        "properties": {
+          "startedAt": { "type": "string", "format": "date-time" },
+          "picks": { "type": "integer" },
+          "trigger": { "type": "string", "enum": ["scheduled", "manual"] }
+        }
+      },
+      "AutoBlockEntry": {
+        "type": "object",
+        "required": ["domain", "score", "reason", "firstSeen", "expiresAt"],
+        "properties": {
+          "domain": { "type": "string" },
+          "score": { "type": "integer" },
+          "reason": { "type": "string" },
+          "firstSeen": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "CurationConflict": {
+        "type": "object",
+        "required": ["domain", "layer"],
+        "properties": {
+          "domain": { "type": "string" },
+          "layer": {
+            "type": "string",
+            "enum": ["config", "auto"],
+            "description": "Which layer is doing the blocking that conflicts with this domain also being preferred."
+          }
+        }
+      },
+      "CurationBlockedReport": {
+        "type": "object",
+        "required": ["config", "auto", "conflicts"],
+        "properties": {
+          "config": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Domains blocked via the committed blocklist.json (fork-editable)."
+          },
+          "auto": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AutoBlockEntry" },
+            "description": "Domains auto-learned at runtime via KV (AUTOBLOCK_THRESHOLD/AUTOBLOCK_TTL_DAYS)."
+          },
+          "conflicts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CurationConflict" },
+            "description": "A preferred domain that is ALSO blocked — the whitelist never overrides a block, so these are surfaced rather than silently resolved."
+          }
+        }
+      },
+      "SourceStat": {
+        "type": "object",
+        "required": ["sourceId", "picks", "successes", "failures", "autoblockScore"],
+        "properties": {
+          "sourceId": { "type": "string" },
+          "picks": { "type": "integer" },
+          "successes": { "type": "integer" },
+          "failures": { "type": "integer" },
+          "autoblockScore": {
+            "type": "integer",
+            "description": "0 when this source's domain isn't currently autoblocked."
+          }
+        }
+      },
+      "HealthReport": {
+        "type": "object",
+        "description": "Owner-only visibility into the self-healing/curation/faithfulness/agent systems. No SPA UI consumes this yet — intended for curl or owner tooling.",
+        "required": [
+          "failed_by_class",
+          "heal_attempts_totals",
+          "learned_thinhosts",
+          "last_agent_run",
+          "agent_runs_today",
+          "llm_calls",
+          "faithfulness",
+          "curation"
+        ],
+        "properties": {
+          "failed_by_class": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "Count of 'failed' articles per FailureClass (or \"unclassified\")."
+          },
+          "heal_attempts_totals": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "Sum of heal_attempts per FailureClass (or \"unclassified\")."
+          },
+          "learned_thinhosts": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/LearnedThinHost" }
+          },
+          "last_agent_run": {
+            "type": "object",
+            "required": ["last_added_at"],
+            "properties": { "last_added_at": { "type": ["string", "null"], "format": "date-time" } }
+          },
+          "agent_runs_today": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AgentRunRecord" },
+            "description": "Every completed agent run (scheduled and/or manual) for the current UTC day."
+          },
+          "llm_calls": {
+            "type": "object",
+            "required": ["used", "limit"],
+            "properties": {
+              "used": {
+                "type": "integer",
+                "description": "Summarization calls made today against DAILY_SUMMARY_LIMIT."
+              },
+              "limit": { "type": "integer" }
+            }
+          },
+          "faithfulness": {
+            "type": "object",
+            "required": ["pass", "weak", "fail", "null", "judge_calls_today"],
+            "properties": {
+              "pass": { "type": "integer" },
+              "weak": { "type": "integer" },
+              "fail": { "type": "integer" },
+              "null": { "type": "integer", "description": "Articles where the check hasn't run." },
+              "judge_calls_today": {
+                "type": "integer",
+                "description": "Uncapped observability counter, distinct from llm_calls (the paid summarization budget)."
+              }
+            }
+          },
+          "curation": {
+            "type": "object",
+            "required": ["blocked", "sources"],
+            "properties": {
+              "blocked": { "$ref": "#/components/schemas/CurationBlockedReport" },
+              "sources": { "type": "array", "items": { "$ref": "#/components/schemas/SourceStat" } }
+            }
+          }
+        }
+      },
+      "EmbeddingsBackfillResponse": {
+        "type": "object",
+        "required": ["processed", "remaining"],
+        "properties": {
+          "processed": { "type": "integer" },
+          "remaining": { "type": "integer", "description": "Repeat the call while this is > 0." }
+        }
+      },
+      "TagsNormalizeResponse": {
+        "type": "object",
+        "required": ["updated"],
+        "properties": { "updated": { "type": "integer" } }
+      },
+      "RevalidateFailedResponse": {
+        "type": "object",
+        "required": ["count"],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "Rows re-enqueued for a fresh pipeline run."
+          }
+        }
+      },
+      "AutoblockClearResponse": {
+        "type": "object",
+        "required": ["domain", "cleared", "note"],
+        "properties": {
+          "domain": { "type": "string" },
+          "cleared": { "type": "boolean" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "parameters": {
+      "ArticleId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "ListLimit": {
+        "name": "limit",
+        "in": "query",
+        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+        "description": "Invalid/out-of-range values silently fall back to the default."
+      },
+      "ListCursor": {
+        "name": "cursor",
+        "in": "query",
+        "schema": { "type": "string" },
+        "description": "Opaque — pass back the `next_cursor` value from a previous page."
+      },
+      "ListTag": {
+        "name": "tag",
+        "in": "query",
+        "schema": { "type": "string" }
+      },
+      "ListSource": {
+        "name": "source",
+        "in": "query",
+        "schema": { "type": "string" }
+      },
+      "ListQuery": {
+        "name": "q",
+        "in": "query",
+        "schema": { "type": "string" },
+        "description": "Keyword search (multi-word: AND-of-terms over title/summary). Omit for the plain unfiltered list."
+      },
+      "ListArchived": {
+        "name": "archived",
+        "in": "query",
+        "schema": { "type": "string", "enum": ["0", "1"] },
+        "description": "Filter to archived (1) or non-archived (0) only; omit for both."
+      },
+      "SearchQuery": {
+        "name": "q",
+        "in": "query",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "An empty/missing value returns `{\"items\": []}` immediately, before the rate limit is even checked."
+      },
+      "SearchLimit": {
+        "name": "limit",
+        "in": "query",
+        "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+      }
+    },
+    "responses": {
+      "NotFound": {
+        "description": "No article with this id.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "error": "not found" }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Validation failed.",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "Request body, or the `html` field within it, exceeds its size cap (3MB total body / 2MB html).",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "Unauthorized": {
+        "description": "No/invalid Cloudflare Access session, or Access isn't configured on this deployment at all.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "examples": {
+              "not-configured": { "value": { "error": "auth_not_configured" } },
+              "unauthenticated": { "value": { "error": "unauthorized" } }
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "The article isn't in a state this action can apply to (see the specific error message).",
+        "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+        }
+      },
+      "RateLimited": {
+        "description": "SEARCH_RATE_PER_MIN exceeded for the current UTC minute (instance-wide, not per-caller).",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" },
+            "example": { "error": "rate_limited" }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Liveness check",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Always ok when the Worker is running.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Public runtime configuration",
+        "description": "Feature-flag-shaped config the SPA and other clients need before making any other call — e.g. whether Turnstile is configured, the agent's schedule (to render a countdown), and the fork's own repo URL.",
+        "operationId": "getConfig",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ConfigResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/api/articles": {
+      "get": {
+        "tags": ["public"],
+        "summary": "List articles (public)",
+        "description": "Cursor-paginated, oldest-`next_cursor`-first. Rows are redacted (PublicArticle) — no raw `error` string, no faithfulness_json.",
+        "operationId": "listPublicArticles",
+        "parameters": [
+          { "$ref": "#/components/parameters/ListLimit" },
+          { "$ref": "#/components/parameters/ListCursor" },
+          { "$ref": "#/components/parameters/ListTag" },
+          { "$ref": "#/components/parameters/ListSource" },
+          { "$ref": "#/components/parameters/ListQuery" },
+          { "$ref": "#/components/parameters/ListArchived" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PublicArticleListResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/articles/{id}": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Get one article (public)",
+        "operationId": "getPublicArticle",
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PublicArticle" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/search": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Semantic search (public)",
+        "description": "\"Ask your feed\" — embeds `q` and finds nearest articles by cosine similarity, filtered to a minimum score. Falls back to the plain keyword LIKE search (see GET /api/articles?q=) when Vectorize isn't configured or the embed call fails — never a dead end, just less precise. Rate-limited instance-wide (SEARCH_RATE_PER_MIN, default 30/min) because a hit here costs a Workers AI embedding call; GET /api/articles?q= is not rate-limited since it's a plain SQL LIKE query.",
+        "operationId": "searchPublicArticles",
+        "parameters": [
+          { "$ref": "#/components/parameters/SearchQuery" },
+          { "$ref": "#/components/parameters/SearchLimit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK — empty `items` for an empty/missing `q`, or when nothing clears the score threshold.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/SearchResponse" } }
+            }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/a/{id}": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Article link-preview page",
+        "description": "Serves the SPA shell, with per-article Open Graph/Twitter Card meta tags injected into `<head>` when the article is `ready` and PUBLIC_BASE_URL is set (otherwise the plain, un-modified shell — never a 404). Exists as a real path (not a hash fragment) because link-preview crawlers (Telegram's included) only ever fetch a URL's raw HTML. The SPA's own client-side routing then boots normally and expands this article's card.",
+        "operationId": "getArticleLinkPreview",
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "200": {
+            "description": "The SPA shell HTML, OG-tag-injected when possible.",
+            "content": { "text/html": { "schema": { "type": "string" } } },
+            "headers": {
+              "Cache-Control": {
+                "schema": { "type": "string" },
+                "description": "public, max-age=300 when OG tags were injected."
+              }
+            }
+          }
+        }
+      }
+    },
+    "/img/{id}": {
+      "get": {
+        "tags": ["public"],
+        "summary": "Article preview image",
+        "description": "The article's scraped og:image/twitter:image, stored in R2 and keyed by article id (not the raw R2 key). Immutable once stored — no image-replace endpoint exists.",
+        "operationId": "getArticleImage",
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "200": {
+            "description": "The image bytes, content-type as stored.",
+            "content": { "image/*": { "schema": { "type": "string", "format": "binary" } } },
+            "headers": {
+              "Cache-Control": {
+                "schema": { "type": "string" },
+                "description": "public, max-age=31536000, immutable"
+              }
+            }
+          },
+          "404": {
+            "description": "No image for this article (none found, disabled, or the IMAGES binding isn't configured on this fork)."
+          }
+        }
+      }
+    },
+    "/api/telegram/webhook": {
+      "post": {
+        "tags": ["integrations"],
+        "summary": "Telegram Bot API webhook",
+        "description": "Receives Telegram's own Update object (see the Telegram Bot API documentation — not redefined here, since it's Telegram's schema, not ours). Authenticated by the X-Telegram-Bot-Api-Secret-Token header, never Cloudflare Access, since Telegram's servers can't complete an Access login. 404s (rather than 401) when the three TELEGRAM_* secrets aren't all configured, so the route's existence isn't even observable to a prober.",
+        "operationId": "telegramWebhook",
+        "security": [{ "telegramWebhookSecret": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "description": "A Telegram Bot API Update object." }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Always {\"ok\": true} once the secret header checks out — Telegram is never made to retry-storm on an unparseable/unexpected body."
+          },
+          "401": { "description": "Missing/wrong secret header." },
+          "404": {
+            "description": "TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET / TELEGRAM_OWNER_CHAT_ID aren't all set on this deployment."
+          }
+        }
+      }
+    },
+    "/api/admin/me": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Current Access identity",
+        "operationId": "getMe",
+        "security": [{ "cloudflareAccess": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/MeResponse" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/login": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Sign-in landing page",
+        "description": "Navigation target (not a fetch() target — Cloudflare Access's hosted login can't complete over fetch) for the SPA's \"sign in\" link. By the time this handler runs, Access has already completed its redirect dance and the browser holds a valid session; this just shows a brief confirmation and bounces back to `/`.",
+        "operationId": "adminLoginLanding",
+        "security": [{ "cloudflareAccess": [] }],
+        "responses": {
+          "200": {
+            "description": "A tiny HTML confirmation page.",
+            "content": { "text/html": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/api/admin/articles": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "List articles (owner)",
+        "description": "Same filters/pagination as GET /api/articles, but full rows including the real `error` field (still without full_text).",
+        "operationId": "listAdminArticles",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/ListLimit" },
+          { "$ref": "#/components/parameters/ListCursor" },
+          { "$ref": "#/components/parameters/ListTag" },
+          { "$ref": "#/components/parameters/ListSource" },
+          { "$ref": "#/components/parameters/ListQuery" },
+          { "$ref": "#/components/parameters/ListArchived" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ArticleListResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["admin"],
+        "summary": "Save an article",
+        "description": "Used by the browser extension, manual SPA add, and (indirectly, same validation) the Telegram save flow. Never blocked by the curation blocklist (owner intent overrides it) — a blocked domain just gets an advisory `warning` in the response.",
+        "operationId": "createArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateArticleRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted — the pipeline runs asynchronously.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CreateArticleResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": {
+            "description": "This exact URL, or a normalized-title match against a different URL added in the last 72h, already exists.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DuplicateArticleResponse" }
+              }
+            }
+          },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/articles/{id}": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Get one article (owner, full row)",
+        "description": "The only route that returns full_text.",
+        "operationId": "getAdminArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Article" } }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "patch": {
+        "tags": ["admin"],
+        "summary": "Update archived/tags",
+        "operationId": "patchArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/PatchArticleRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated row.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Article" } }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "delete": {
+        "tags": ["admin"],
+        "summary": "Delete an article",
+        "description": "Also removes its Vectorize embedding, if any (a no-op when VECTORS isn't configured on this fork).",
+        "operationId": "deleteArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "204": { "description": "Deleted." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/articles/{id}/retry": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Retry a stuck/failed article",
+        "description": "Re-runs the full fetch->extract->summarize pipeline from scratch. Rejected for an already-`ready` article — use /resummarize instead.",
+        "operationId": "retryArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "html": {
+                    "type": "string",
+                    "description": "Optional replacement HTML, up to 2MB."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PendingStatusResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "413": { "$ref": "#/components/responses/PayloadTooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/articles/{id}/resummarize": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Re-run only the summarization stage",
+        "description": "Allowed for `ready` or `failed` articles. Skips fetch/extract when full_text is already stored (the normal case).",
+        "operationId": "resummarizeArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "202": {
+            "description": "Accepted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PendingStatusResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/articles/{id}/translate": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Generate the English edition",
+        "description": "The default summary is Russian-only; this lazily generates ONLY the _en fields from the article's stored full_text (never a translation of the _ru text) and merges them into summary_json. Idempotent — already-translated is a 200 no-op, safe to call without checking en_generated_at first.",
+        "operationId": "translateArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "200": {
+            "description": "Already translated — no-op.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PendingStatusResponse" },
+                "example": { "id": "...", "status": "already-translated" }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted — the translate job runs asynchronously.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PendingStatusResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "Article isn't ready, or has no stored text to translate from.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/articles/{id}/reverify": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Re-run only the faithfulness check",
+        "description": "A cheap diagnostic — no fetch/extract/summarize, doesn't touch status or content, ignores FAITHFULNESS_ENFORCE entirely (never discards the article regardless of verdict).",
+        "operationId": "reverifyArticle",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/ArticleId" }],
+        "responses": {
+          "202": {
+            "description": "Queued.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PendingStatusResponse" },
+                "example": { "id": "...", "status": "reverify-queued" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": {
+            "description": "Article has no stored summary to verify.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/search": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Semantic search (owner)",
+        "description": "Same underlying search as GET /api/search, but rows keep the real `error` field. Not separately rate-limited (already behind Cloudflare Access).",
+        "operationId": "searchAdminArticles",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/SearchQuery" },
+          { "$ref": "#/components/parameters/SearchLimit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AdminSearchResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/agent/run": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Manually trigger the scraping agent",
+        "description": "Runs the same job the hourly AGENT_HOUR_UTC dispatch runs. Always proceeds regardless of whether the agent already ran today, but the response carries a `warning` naming the most recent prior run unless `?force=1` is passed (which skips the history check and the warning entirely).",
+        "operationId": "runAgent",
+        "security": [{ "cloudflareAccess": [] }],
+        "parameters": [
+          {
+            "name": "force",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["1"] },
+            "description": "Skips the already-ran-today check and warning."
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted — runs via waitUntil.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AgentRunResponse" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/health-report": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Self-healing/curation/faithfulness/agent visibility",
+        "description": "No article content — counts, classifications, and small config snapshots only. Intended for curl/owner tooling, not the SPA.",
+        "operationId": "getHealthReport",
+        "security": [{ "cloudflareAccess": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/HealthReport" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/curation/blocked": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Curation blocklist snapshot",
+        "description": "The manual/config layer lives in blocklist.json (edit your fork, no endpoint needed); this exists for the KV-learned side, which changes at runtime with no deploy.",
+        "operationId": "getCurationBlocked",
+        "security": [{ "cloudflareAccess": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CurationBlockedReport" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/curation/autoblock": {
+      "delete": {
+        "tags": ["admin"],
+        "summary": "Clear one auto-learned block",
+        "description": "False-positive relief without a deploy. Normalizes free-form input (lowercase, strips scheme/path/www).",
+        "operationId": "clearAutoblock",
+        "security": [{ "cloudflareAccess": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["domain"],
+                "properties": { "domain": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AutoblockClearResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/heal/revalidate-failed": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Re-enqueue summary-validation failures",
+        "description": "One-time rescue for rows that failed against now-superseded validation bounds — resets heal_attempts and re-enqueues through the normal pipeline. Meant to be run once, by the owner, not a general-purpose retry-everything button.",
+        "operationId": "revalidateFailed",
+        "security": [{ "cloudflareAccess": [] }],
+        "responses": {
+          "202": {
+            "description": "Accepted.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RevalidateFailedResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/tags/normalize": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Backfill tag normalization",
+        "description": "Idempotent one-time backfill for rows written before tag normalization shipped — every new write already normalizes automatically. A second run always returns {\"updated\": 0}.",
+        "operationId": "normalizeTagsBackfill",
+        "security": [{ "cloudflareAccess": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TagsNormalizeResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/admin/embeddings/backfill": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Backfill embeddings for un-embedded articles",
+        "description": "Synchronous-paginated: one batch of 20 per call. Repeat until `remaining` is 0. A no-op batch (processed: 0) when VECTORS isn't configured on this fork.",
+        "operationId": "backfillEmbeddings",
+        "security": [{ "cloudflareAccess": [] }],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EmbeddingsBackfillResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  }
+}
