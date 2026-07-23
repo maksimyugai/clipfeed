@@ -1411,18 +1411,45 @@ a Workers AI call — over the limit returns `429 {error: "rate_limited"}` with 
 localized copy for it. In the SPA, once the search box has a query, a small toggle appears — **по
 словам** (keyword, the default, today's `LIKE` behavior) / **по смыслу** (semantic) — and the choice
 persists in `localStorage`. Deliberately no visible relevance score anywhere; ordering alone carries
-the ranking. An empty result set shows the existing empty-feed layout with a hint to try the other
-mode.
+the ranking.
+
+**Adaptive score threshold by query length (Task 43).** `SEARCH_MIN_SCORE` (default `0.5`) is a
+fixed cosine floor, but article embeddings are built from title + tldr + bullets (hundreds of
+characters — see `buildEmbeddingText` above), so a one- or two-word query produces a much shorter
+vector whose cosine similarity against that long text is mathematically lower even for a perfect
+topical match — live numbers against the owner's real corpus confirmed this: single-word queries for
+an article actually about undersea cables ("кабели", "кабель") scored only 0.490–0.497, just under
+the 0.5 floor, while an unrelated single-word query topped out at 0.390 — a genuine match and noise
+are ~0.10 apart, comfortable room for a per-length floor. `adaptiveMinScore` in `search.ts` now
+discounts the base by `0.05` for a 1-word query and `0.02` for 2 words, and uses the base unchanged
+for 3+ words; `SEARCH_MIN_SCORE` stays the one tunable var an owner adjusts, since every discount is
+taken off of it. A neutral query-expansion template ("новости про {query}") was also tried for short
+queries: it raised one test query's score but lowered another's, so — per this task's own bar of
+"keep it only if it demonstrably helps" — it was **not** adopted.
+
+**Keyword search stemming (Task 43).** Query terms for `GET /api/articles?q=...` /
+`GET /api/admin/articles?q=...` (and the keyword fallback inside semantic search above) are run
+through a compact Russian stemmer (`ru-stemmer.ts`, the classic Porter/Snowball algorithm for
+Russian) before becoming a `LIKE` pattern — so a query for "кабели" also matches an article that
+only contains "кабеля"/"кабелей"/"кабелем", instead of missing it on a literal-substring
+technicality. Guarded against over-stemming: a term is never reduced below 4 characters (if stemming
+would produce something shorter, the original term is used as-is instead). Latin/other non-Cyrillic
+terms are only lowercased, never stemmed — English stemming isn't attempted, since it would mangle
+product names ("Windows", "Gemini") that need an exact match. An empty result set shows a hint to
+try the other search mode; a keyword search with a non-empty query that comes back completely empty
+automatically retries once in semantic mode in the background, and if that finds anything, the
+results are shown under a "no keyword matches — here's what's similar by meaning" heading with the
+mode toggle flipped to reflect it — never retried more than once for the same query.
 
 **Keyword search semantics (`GET /api/articles?q=...` / `GET /api/admin/articles?q=...`) —
 AND-of-terms.** The query is whitespace-tokenized into individual terms (repeated/leading/trailing
-whitespace collapses to nothing); every term must appear **somewhere** across `title`, `summary_ru`,
-and `summary_en` combined (not necessarily the same field, not necessarily as a contiguous phrase)
-for an article to match — a query matching only one of several terms excludes that row. Capped at 6
-terms; extra terms beyond that are dropped rather than erroring. Each term is truncated to a safe
-UTF-8 byte length before being turned into a `LIKE` pattern, and a literal `%`/`_` in a term is
-escaped (`ESCAPE '\'`) so it matches literally instead of acting as a SQL wildcard. This fixes a
-live incident: a multi-word query longer than ~48 bytes previously 500'd with
+whitespace collapses to nothing); every (stemmed) term must appear **somewhere** across `title`,
+`summary_ru`, and `summary_en` combined (not necessarily the same field, not necessarily as a
+contiguous phrase) for an article to match — a query matching only one of several terms excludes
+that row. Capped at 6 terms; extra terms beyond that are dropped rather than erroring. Each term is
+truncated to a safe UTF-8 byte length before being turned into a `LIKE` pattern, and a literal
+`%`/`_` in a term is escaped (`ESCAPE '\'`) so it matches literally instead of acting as a SQL
+wildcard. This fixes a live incident: a multi-word query longer than ~48 bytes previously 500'd with
 `D1_ERROR: LIKE or GLOB
 pattern too complex` — D1/SQLite's default `LIKE` pattern-length limit is
 **50 bytes, not characters** (confirmed empirically; a 50-character Cyrillic term is ~100 bytes and
