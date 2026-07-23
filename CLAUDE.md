@@ -24,6 +24,21 @@ assumes a fixed backend.
 4. NEVER force-push, rebase, or reset remote main; treat it as protected.
 5. Conventional commit messages; no Co-Authored-By / noreply@anthropic.com trailers.
 
+## API documentation
+
+`packages/api/openapi.json` is the hand-maintained OpenAPI 3.1 spec for every route in
+`packages/api/src/index.ts` (public, admin, and the Telegram webhook), served at `/openapi.json` and
+rendered at `/docs` via a self-hosted Swagger UI (never a CDN — see
+`packages/web/vendor/swagger-ui/`).
+
+1. Any task that adds, removes, or changes a route (new endpoint, changed request/response shape,
+   new status code, new parameter) MUST update `packages/api/openapi.json` in the same PR. This spec
+   is not generated from code — it will silently drift if it isn't part of the change itself.
+2. `packages/api/openapi_drift_test.ts` is a lightweight, intentionally limited smoke test — it
+   checks that a representative subset of the spec's schemas still names real fields from
+   `packages/shared/src/types.ts`, not full request/response validation. Passing it is necessary but
+   not sufficient; still read the diff.
+
 ## Security policy
 
 1. This is a public repo: never commit secrets, tokens, API keys, real personal data, or real

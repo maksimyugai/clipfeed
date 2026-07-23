@@ -30,7 +30,20 @@
     "jsxImportSource": "preact"
   },
   "fmt": {
-    "lineWidth": 100
+    "lineWidth": 100,
+    "exclude": [
+      "packages/web/vendor/",
+      "dist/",
+      "node_modules/",
+      ".wrangler/",
+      "deno.lock",
+      "**/*.min.js",
+      "**/*.min.css",
+      "**/*.map"
+    ]
+  },
+  "lint": {
+    "exclude": ["packages/web/vendor/", "dist/", "node_modules/", ".wrangler/"]
   },
   "allowScripts": ["npm:sharp", "npm:workerd"]
 }

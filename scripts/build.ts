@@ -24,6 +24,7 @@ async function buildApi(): Promise<void> {
 
 async function buildWeb(): Promise<void> {
   await Deno.mkdir("dist/web/fonts", { recursive: true });
+  await Deno.mkdir("dist/web/docs-assets", { recursive: true });
   await esbuild.build({
     entryPoints: ["packages/web/src/main.tsx"],
     outdir: "dist/web",
@@ -45,6 +46,18 @@ async function buildWeb(): Promise<void> {
     if (entry.isFile && entry.name.endsWith(".woff2")) {
       await Deno.copyFile(`packages/web/fonts/${entry.name}`, `dist/web/fonts/${entry.name}`);
     }
+  }
+
+  // Task 39: self-hosted Swagger UI for GET /docs — vendored (not
+  // npm-installed) under packages/web/vendor/swagger-ui/, see that
+  // directory's VERSION file for provenance/update instructions. Never
+  // loaded from a CDN, same privacy/fork-friendliness reasoning as the
+  // self-hosted fonts above.
+  for (const asset of ["swagger-ui-bundle.js", "swagger-ui.css"]) {
+    await Deno.copyFile(
+      `packages/web/vendor/swagger-ui/${asset}`,
+      `dist/web/docs-assets/${asset}`,
+    );
   }
 
   // Reuses the extension's procedural "cf" monogram generator (see
