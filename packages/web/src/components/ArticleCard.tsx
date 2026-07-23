@@ -20,7 +20,7 @@ import {
   visitorFailureText,
 } from "../lib/failureDisplay.ts";
 import { scrollTitleIntoView } from "../lib/scroll.ts";
-import { faithfulnessBadgeInfo, faithfulnessCounts } from "../lib/faithfulness.ts";
+import { faithfulnessCounts, visibleFaithfulnessBadgeInfo } from "../lib/faithfulness.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { usePrefersReducedMotion, withMotionClass } from "../lib/motion.ts";
 import { pendingCardVariant } from "../lib/agentBatch.ts";
@@ -443,15 +443,14 @@ export function ArticleCard(props: ArticleCardProps) {
     justReady ? ` ${withMotionClass("card--just-ready", "card--slide-fade-in", reducedMotion)}` : ""
   }`;
 
-  // 'pass' and null (check disabled/not run) get no badge at all — only
-  // 'weak'/'fail' are worth a reader's attention (see faithfulnessBadgeInfo
-  // in lib/faithfulness.ts). Shown in BOTH owner and visitor mode
-  // (transparency is the point); the per-claim detail line below it is
-  // owner-only. The tooltip (Task 34 Part B) explains what the badge
-  // means, for everyone — a shared trailing line names the check as a
-  // separate AI judge, distinct from the summary itself.
+  // Task 42 Part B: the badge is now internal quality instrumentation, not
+  // a reader-facing disclaimer — a visitor comes to read, not to audit the
+  // pipeline, and the old copy implied doubt about the ORIGINAL article
+  // rather than our own summary. Owner-mode only, for both 'weak' and
+  // 'fail' ('pass'/null still get nothing at all, as before). The
+  // per-claim detail line further below stays owner-only too, unchanged.
   const verdict = article.faithfulness_verdict;
-  const badgeInfo = faithfulnessBadgeInfo(dict, verdict);
+  const badgeInfo = visibleFaithfulnessBadgeInfo(dict, verdict, isOwner);
   const faithfulnessBadgeText = badgeInfo?.badgeText ?? null;
   const faithfulnessDetailCounts = faithfulnessCounts(article.faithfulness_json);
 

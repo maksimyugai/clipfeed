@@ -46,3 +46,20 @@ export function faithfulnessBadgeInfo(
   }
   return null;
 }
+
+// Task 42 Part B: the badge became an internal quality signal, not a
+// reader-facing disclaimer — a visitor never sees it, in ANY verdict state,
+// including both 'weak' and 'fail'. Owner mode is unaffected (still gated
+// by faithfulnessBadgeInfo's own verdict check above). Pulled out as its
+// own pure function — same reasoning as faithfulnessBadgeInfo itself: the
+// gating logic belongs in a unit-testable helper, not inlined as a ternary
+// in ArticleCard.tsx where it can't be exercised without rendering the
+// component.
+export function visibleFaithfulnessBadgeInfo(
+  dict: Dictionary,
+  verdict: FaithfulnessVerdict | null,
+  isOwner: boolean,
+): FaithfulnessBadgeInfo | null {
+  if (!isOwner) return null;
+  return faithfulnessBadgeInfo(dict, verdict);
+}

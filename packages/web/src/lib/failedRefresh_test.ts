@@ -31,6 +31,7 @@ function article(overrides: Partial<ArticleListItem> & { id: string }): ArticleL
     image_key: null,
     image_source_url: null,
     processing_started_at: null,
+    faithfulness_enforced_at: null,
     ...overrides,
   };
 }

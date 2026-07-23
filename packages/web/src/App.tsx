@@ -82,7 +82,12 @@ async function fetchArticleList(
   if (isOwner) return await listAdminArticles(params);
   const res = await listArticles(params);
   return {
-    items: res.items.map((item) => ({ ...item, error: null, faithfulness_json: null })),
+    items: res.items.map((item) => ({
+      ...item,
+      error: null,
+      faithfulness_json: null,
+      faithfulness_enforced_at: null,
+    })),
     next_cursor: res.next_cursor,
   };
 }
@@ -104,6 +109,7 @@ async function fetchSemanticSearch(isOwner: boolean, query: string): Promise<Art
     ...item.article,
     error: null,
     faithfulness_json: null,
+    faithfulness_enforced_at: null,
   }));
 }
 
@@ -114,7 +120,7 @@ async function fetchSemanticSearch(isOwner: boolean, query: string): Promise<Art
 async function fetchArticleById(isOwner: boolean, id: string): Promise<ArticleListItem> {
   if (isOwner) return await getAdminArticle(id);
   const article = await getArticle(id);
-  return { ...article, error: null, faithfulness_json: null };
+  return { ...article, error: null, faithfulness_json: null, faithfulness_enforced_at: null };
 }
 
 function computeSourceFacets(articles: ArticleListItem[]) {
@@ -549,6 +555,7 @@ export function App() {
           image_key: null,
           image_source_url: null,
           processing_started_at: null,
+          faithfulness_enforced_at: null,
         },
         ...current,
       ]);
