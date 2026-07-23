@@ -24,7 +24,13 @@ PUBLIC_BASE_URL = "https://clipfeed.maksimyugai.com"
 # forkability policy, never an owner-specific default), so both links are
 # simply hidden until you set this to your own fork's repo URL.
 REPO_URL = "https://github.com/maksimyugai/clipfeed"
-PENDING_TIMEOUT_MIN = 10
+# Task 41 Part C: the task spec asked for 10 -> 6, but the recomputed worst
+# case (SUMMARIZE_CALL_TIMEOUT_MS x2 + JUDGE_CALL_TIMEOUT_MS x2 + fetch/embed/
+# image/extract overhead ~= 357s) leaves 6 minutes (360s) only ~3s of
+# margin -- not enough to avoid killing genuinely-still-working live jobs.
+# Set to 8 instead; see CLAUDE.md/PR description for the full arithmetic.
+PENDING_TIMEOUT_MIN = 8
+QUEUE_WAIT_TIMEOUT_MIN = 30
 INTEREST_TOPICS = "AI/LLMs and their engineering; computer hardware — CPUs, GPUs, NVIDIA/Intel/AMD, chips; Linux — kernel, distributions, open source ecosystem; software development and programming languages; Cloudflare and edge computing; security — vulnerabilities, breaches, exploits, threat research; notable science/tech news"
 AGENT_HOUR_UTC = "5"
 # Curated variety (Task 33, README "Curated variety"): topic quotas,

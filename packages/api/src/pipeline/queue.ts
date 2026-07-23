@@ -1,6 +1,6 @@
 import "../env.d.ts";
 import type { QueueMessage, QueueNotify } from "@clipfeed/shared/types";
-import { getArticleById, markArticleFailed } from "../articles/db.ts";
+import { getArticleById, markArticleFailed, markProcessingStarted } from "../articles/db.ts";
 import {
   resolvePriorViolations,
   runArticlePipeline,
@@ -68,6 +68,14 @@ async function notifyTelegram(env: Env, notify: QueueNotify, articleId: string):
 // carrying its fields in the message: the row already has everything
 // (title/url/tags set at insert time), so the message body stays tiny.
 export async function processQueueMessage(env: Env, message: QueueMessage): Promise<void> {
+  // Task 41 Part C: the very first thing a consumer invocation does for
+  // this row — see db.ts's sweepStalePending, which uses this to tell
+  // "still waiting in the queue" (processing_started_at still null) apart
+  // from "the pipeline itself is stuck" (processing_started_at set, but
+  // old). A no-op if the article was deleted between enqueue and delivery
+  // (the UPDATE simply matches zero rows).
+  await markProcessingStarted(env.DB, message.articleId, new Date().toISOString());
+
   const article = await getArticleById(env.DB, message.articleId);
   if (!article) {
     console.warn(JSON.stringify({
@@ -192,18 +200,27 @@ export async function processDeadLetterMessage(env: Env, message: QueueMessage):
 // already themselves running inside a waitUntil()'d task (the scraping
 // agent) can omit it and just await the fallback inline instead of
 // nesting another waitUntil.
+//
+// Task 41 Part C: generates queueMessageId here (Cloudflare's own
+// Queue.send() returns void — there's no delivery id to read back), logged
+// in queue_started immediately, before either dispatch path runs. The
+// consumer (index.ts's queue() handler / processQueueMessage) echoes the
+// same id in queue_received/queue_done so an operator can correlate the two
+// sides in `wrangler tail` without guessing from articleId+kind alone.
 export async function enqueueArticleJob(
   env: Env,
   ctx: ExecutionContext | undefined,
-  message: QueueMessage,
+  input: Omit<QueueMessage, "queueMessageId">,
 ): Promise<void> {
+  const message: QueueMessage = { ...input, queueMessageId: crypto.randomUUID() };
+  console.log(JSON.stringify({
+    event: "queue_started",
+    articleId: message.articleId,
+    kind: message.kind,
+    queueMessageId: message.queueMessageId,
+  }));
   if (env.JOBS) {
     await env.JOBS.send(message);
-    console.log(JSON.stringify({
-      event: "queue_enqueued",
-      articleId: message.articleId,
-      kind: message.kind,
-    }));
     return;
   }
   console.warn("queue not configured — large articles may time out");

@@ -1,6 +1,5 @@
 import "../env.d.ts";
 import { assertEquals } from "@std/assert";
-import type { QueueMessage } from "@clipfeed/shared/types";
 import {
   DEAD_LETTER_QUEUE_NAME,
   enqueueArticleJob,
@@ -89,6 +88,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    QUEUE_WAIT_TIMEOUT_MIN: 30,
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
@@ -166,7 +166,11 @@ Deno.test("processQueueMessage: 'process' kind fetches the URL when no html was 
   const stub = stubFetch();
   try {
     await insertPending(env, "a1", "https://example.com/no-html");
-    await processQueueMessage(env, { kind: "process", articleId: "a1" });
+    await processQueueMessage(env, {
+      kind: "process",
+      articleId: "a1",
+      queueMessageId: "test-msg",
+    });
 
     const db = env.DB as unknown as FakeD1;
     const row = db.rows.find((r) => r.id === "a1")!;
@@ -183,7 +187,11 @@ Deno.test("processQueueMessage: 'process' kind uses stashed html and never fetch
   try {
     await insertPending(env, "a2", "https://example.com/has-html");
     await stashPendingHtml(env.CACHE, "a2", ARTICLE_HTML);
-    await processQueueMessage(env, { kind: "process", articleId: "a2" });
+    await processQueueMessage(env, {
+      kind: "process",
+      articleId: "a2",
+      queueMessageId: "test-msg",
+    });
 
     const db = env.DB as unknown as FakeD1;
     const row = db.rows.find((r) => r.id === "a2")!;
@@ -211,7 +219,11 @@ Deno.test("processQueueMessage: 'resummarize' kind with stored full_text skips f
 
   const stub = stubFetch();
   try {
-    await processQueueMessage(env, { kind: "resummarize", articleId: "a3" });
+    await processQueueMessage(env, {
+      kind: "resummarize",
+      articleId: "a3",
+      queueMessageId: "test-msg",
+    });
     const db = env.DB as unknown as FakeD1;
     const row = db.rows.find((r) => r.id === "a3")!;
     assertEquals(row.status, "ready");
@@ -227,7 +239,11 @@ Deno.test("processQueueMessage: 'resummarize' kind with no stored full_text fall
 
   const stub = stubFetch();
   try {
-    await processQueueMessage(env, { kind: "resummarize", articleId: "a4" });
+    await processQueueMessage(env, {
+      kind: "resummarize",
+      articleId: "a4",
+      queueMessageId: "test-msg",
+    });
     const db = env.DB as unknown as FakeD1;
     const row = db.rows.find((r) => r.id === "a4")!;
     assertEquals(row.status, "ready");
@@ -239,7 +255,11 @@ Deno.test("processQueueMessage: 'resummarize' kind with no stored full_text fall
 
 Deno.test("processQueueMessage: unknown article id is a no-op, never throws", async () => {
   const env = makeEnv();
-  await processQueueMessage(env, { kind: "process", articleId: "does-not-exist" });
+  await processQueueMessage(env, {
+    kind: "process",
+    articleId: "does-not-exist",
+    queueMessageId: "test-msg",
+  });
 });
 
 // --- priorViolations: a 'content'-classified retry is informed, others aren't (Task 26.5) ---
@@ -277,7 +297,11 @@ Deno.test("processQueueMessage: 'process' kind retrying a previous 'content' fai
     );
     await markArticlePending(env.DB, "a-content-retry");
 
-    await processQueueMessage(env, { kind: "process", articleId: "a-content-retry" });
+    await processQueueMessage(env, {
+      kind: "process",
+      articleId: "a-content-retry",
+      queueMessageId: "test-msg",
+    });
 
     const db = env.DB as unknown as FakeD1;
     const row = db.rows.find((r) => r.id === "a-content-retry")!;
@@ -322,7 +346,11 @@ Deno.test("processQueueMessage: 'process' kind retrying a 'transient' failure do
     );
     await markArticlePending(env.DB, "a-transient-retry");
 
-    await processQueueMessage(env, { kind: "process", articleId: "a-transient-retry" });
+    await processQueueMessage(env, {
+      kind: "process",
+      articleId: "a-transient-retry",
+      queueMessageId: "test-msg",
+    });
 
     const firstMessage = capturedAnthropicBody?.messages[0]?.content ?? "";
     assertEquals(firstMessage.includes("A previous attempt failed validation"), false);
@@ -344,6 +372,7 @@ Deno.test("processQueueMessage: notify present -> sends a Telegram edit reflecti
       kind: "process",
       articleId: "a5",
       notify: { chatId: "999", messageId: 42 },
+      queueMessageId: "test-msg",
     });
 
     const editCall = stub.telegramCalls.find((c) => c.method === "editMessageText");
@@ -365,6 +394,7 @@ Deno.test("processQueueMessage: notify present but Telegram unconfigured -> no t
       kind: "process",
       articleId: "a6",
       notify: { chatId: "999", messageId: 1 },
+      queueMessageId: "test-msg",
     });
     assertEquals(stub.telegramCalls.length, 0);
   } finally {
@@ -396,7 +426,11 @@ Deno.test("processDeadLetterMessage: marks a non-terminal article failed with th
   const spy = spyConsole();
   try {
     await insertPending(env, "dlq-1", "https://example.com/dlq-1");
-    await processDeadLetterMessage(env, { kind: "process", articleId: "dlq-1" });
+    await processDeadLetterMessage(env, {
+      kind: "process",
+      articleId: "dlq-1",
+      queueMessageId: "test-msg",
+    });
 
     const db = env.DB as unknown as FakeD1;
     const row = db.rows.find((r) => r.id === "dlq-1")!;
@@ -424,7 +458,11 @@ Deno.test("processDeadLetterMessage: idempotent — does not clobber an already-
     tags: [],
   });
 
-  await processDeadLetterMessage(env, { kind: "process", articleId: "dlq-2" });
+  await processDeadLetterMessage(env, {
+    kind: "process",
+    articleId: "dlq-2",
+    queueMessageId: "test-msg",
+  });
 
   const db = env.DB as unknown as FakeD1;
   const row = db.rows.find((r) => r.id === "dlq-2")!;
@@ -436,7 +474,11 @@ Deno.test("processDeadLetterMessage: idempotent — does not overwrite an alread
   await insertPending(env, "dlq-3", "https://example.com/dlq-3");
   await markArticleFailed(env.DB, "dlq-3", "extraction: insufficient text (5 chars)");
 
-  await processDeadLetterMessage(env, { kind: "process", articleId: "dlq-3" });
+  await processDeadLetterMessage(env, {
+    kind: "process",
+    articleId: "dlq-3",
+    queueMessageId: "test-msg",
+  });
 
   const db = env.DB as unknown as FakeD1;
   const row = db.rows.find((r) => r.id === "dlq-3")!;
@@ -446,7 +488,11 @@ Deno.test("processDeadLetterMessage: idempotent — does not overwrite an alread
 
 Deno.test("processDeadLetterMessage: unknown article id is a no-op, never throws", async () => {
   const env = makeEnv();
-  await processDeadLetterMessage(env, { kind: "process", articleId: "does-not-exist" });
+  await processDeadLetterMessage(env, {
+    kind: "process",
+    articleId: "does-not-exist",
+    queueMessageId: "test-msg",
+  });
 });
 
 // --- enqueueArticleJob ---
@@ -465,31 +511,33 @@ function makeExecutionContext() {
   };
 }
 
-Deno.test("enqueueArticleJob: JOBS configured -> sends the exact message, never touches ctx.waitUntil", async () => {
+Deno.test("enqueueArticleJob: JOBS configured -> sends the message (kind/articleId), a generated queueMessageId, never touches ctx.waitUntil", async () => {
   const jobs = new FakeQueue();
   const env = makeEnv({ JOBS: jobs });
   const { ctx, settle } = makeExecutionContext();
-  const message: QueueMessage = { kind: "process", articleId: "queued-1" };
 
-  await enqueueArticleJob(env, ctx, message);
+  await enqueueArticleJob(env, ctx, { kind: "process", articleId: "queued-1" });
   await settle();
 
-  assertEquals(jobs.sent, [message]);
+  assertEquals(jobs.sent.length, 1);
+  assertEquals(jobs.sent[0].kind, "process");
+  assertEquals(jobs.sent[0].articleId, "queued-1");
+  assertEquals(typeof jobs.sent[0].queueMessageId, "string");
   const db = env.DB as unknown as FakeD1;
   assertEquals(db.rows.length, 0); // nothing ran locally — genuinely enqueued
 });
 
-Deno.test("enqueueArticleJob: JOBS configured -> logs queue_enqueued with articleId and kind", async () => {
+Deno.test("enqueueArticleJob: JOBS configured -> logs queue_started with articleId, kind, and queueMessageId", async () => {
   const jobs = new FakeQueue();
   const env = makeEnv({ JOBS: jobs });
   const { ctx } = makeExecutionContext();
   const spy = spyConsole();
   try {
     await enqueueArticleJob(env, ctx, { kind: "process", articleId: "queued-log-1" });
-    assertEquals(
-      spy.logs.some((l) => l.includes("queue_enqueued") && l.includes("queued-log-1")),
-      true,
-    );
+    const line = spy.logs.find((l) => l.includes("queue_started") && l.includes("queued-log-1"));
+    assertEquals(line !== undefined, true);
+    const parsed = JSON.parse(line!);
+    assertEquals(typeof parsed.queueMessageId, "string");
   } finally {
     spy.restore();
   }
@@ -536,7 +584,11 @@ Deno.test("queue(): acks each message after processQueueMessage completes, even 
   const stub = stubFetch();
   try {
     await insertPending(env, "consumer-1", "https://example.com/consumer-1");
-    const message = new FakeMessage({ kind: "process", articleId: "consumer-1" });
+    const message = new FakeMessage({
+      kind: "process",
+      articleId: "consumer-1",
+      queueMessageId: "test-msg",
+    });
     const batch = makeBatch([message]);
 
     await worker.queue(batch, env, makeExecutionContext().ctx);
@@ -559,7 +611,11 @@ Deno.test("queue(): retries only when processQueueMessage itself throws unexpect
     },
   };
   const env = makeEnv({ DB: throwingDb });
-  const message = new FakeMessage({ kind: "process", articleId: "whatever" });
+  const message = new FakeMessage({
+    kind: "process",
+    articleId: "whatever",
+    queueMessageId: "test-msg",
+  });
   const batch = makeBatch([message]);
 
   await worker.queue(batch, env, makeExecutionContext().ctx);
@@ -574,7 +630,11 @@ Deno.test("queue(): logs queue_received then queue_done bracketing a successful 
   const spy = spyConsole();
   try {
     await insertPending(env, "log-1", "https://example.com/log-1");
-    const message = new FakeMessage({ kind: "process", articleId: "log-1" });
+    const message = new FakeMessage({
+      kind: "process",
+      articleId: "log-1",
+      queueMessageId: "test-msg",
+    });
     const batch = makeBatch([message]);
 
     await worker.queue(batch, env, makeExecutionContext().ctx);
@@ -593,7 +653,11 @@ Deno.test("queue(): logs queue_received then queue_done bracketing a successful 
 Deno.test("queue(): a DLQ batch routes to processDeadLetterMessage and always acks, never retries", async () => {
   const env = makeEnv();
   await insertPending(env, "dlq-consumer-1", "https://example.com/dlq-consumer-1");
-  const message = new FakeMessage({ kind: "process", articleId: "dlq-consumer-1" });
+  const message = new FakeMessage({
+    kind: "process",
+    articleId: "dlq-consumer-1",
+    queueMessageId: "test-msg",
+  });
   const batch = makeBatch([message], DEAD_LETTER_QUEUE_NAME);
 
   await worker.queue(batch, env, makeExecutionContext().ctx);
@@ -613,7 +677,11 @@ Deno.test("queue(): a DLQ batch still acks even if processing itself throws unex
     },
   };
   const env = makeEnv({ DB: throwingDb });
-  const message = new FakeMessage({ kind: "process", articleId: "dlq-consumer-2" });
+  const message = new FakeMessage({
+    kind: "process",
+    articleId: "dlq-consumer-2",
+    queueMessageId: "test-msg",
+  });
   const batch = makeBatch([message], DEAD_LETTER_QUEUE_NAME);
 
   await worker.queue(batch, env, makeExecutionContext().ctx);

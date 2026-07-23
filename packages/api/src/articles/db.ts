@@ -45,6 +45,7 @@ interface ArticleRow {
   en_generated_at: string | null;
   image_key: string | null;
   image_source_url: string | null;
+  processing_started_at: string | null;
 }
 
 type ArticleRowNoText = Omit<ArticleRow, "full_text">;
@@ -134,6 +135,7 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     en_generated_at: row.en_generated_at,
     image_key: row.image_key,
     image_source_url: row.image_source_url,
+    processing_started_at: row.processing_started_at,
   };
 }
 
@@ -744,16 +746,93 @@ export async function backfillNormalizedTags(db: D1Database): Promise<number> {
 // case. Lazy: no cron dependency, just one cheap UPDATE run at the start of
 // every public list fetch, so a stuck row surfaces (as 'failed', with a
 // Retry button) the next time anyone loads the feed.
+//
+// Task 41 Part C: split into two branches that used to be a single
+// `added_at`-measured check — that conflated two entirely different failure
+// modes. A message can legitimately sit in the queue for a long time under
+// backpressure (max_concurrency = 3 in wrangler.toml; a burst of ~30
+// same-day enqueues can leave the last few waiting well past what used to
+// be a single 10-minute cutoff) — that's not a stuck pipeline, it's a
+// row that hasn't started yet, and measuring it from added_at punished it
+// for queue wait time it never caused. Now:
+//   - PROCESSING branch: processing_started_at IS NOT NULL (a consumer
+//     actually picked it up) AND that timestamp is older than
+//     pendingTimeoutMinutes -> genuinely stuck mid-pipeline (the CPU-kill
+//     case this sweep originally existed for) -> 'timeout: processing did
+//     not complete'.
+//   - QUEUE-WAIT branch: processing_started_at IS NULL (never reached a
+//     consumer) AND added_at is older than queueWaitTimeoutMinutes -> the
+//     message itself was lost, or backpressure held it far longer than
+//     reasonable -> a distinct error, 'queue: never picked up', so the two
+//     modes are never conflated in the stored reason again.
+// Both branches re-check `status = 'pending'` at UPDATE time (not from a
+// stale read), which is what makes this last-writer-safe against a
+// concurrently-completing pipeline: if runArticlePipeline's own
+// markArticleReady/markArticleFailed writes land first, status is no longer
+// 'pending' and neither branch here matches that row at all; if this sweep
+// runs first, the pipeline's own write (unconditional on id) simply lands
+// after and wins — either order, the real outcome (ready, or a real error)
+// is never clobbered by this generic sweep.
+// Task 41 Part C: logs one line per row this sweep is about to flip,
+// naming which branch caught it and how long it had actually been waiting —
+// the two numbers this whole split exists to stop conflating. Reads the
+// candidates just before the UPDATE that acts on them; a row could in
+// principle complete (via the real pipeline) in the narrow gap between the
+// two, in which case it's logged here but the UPDATE's own `status =
+// 'pending'` re-check (see sweepStalePending's doc comment) simply won't
+// match it — a harmless, rare over-log, never an incorrect write.
+async function logSweepCandidates(
+  db: D1Database,
+  reason: "processing_timeout" | "queue_wait_timeout",
+  processingStarted: boolean,
+  column: "processing_started_at" | "added_at",
+  cutoff: string,
+  now: Date,
+): Promise<void> {
+  const condition = processingStarted
+    ? "status = 'pending' AND processing_started_at IS NOT NULL AND processing_started_at < ?"
+    : "status = 'pending' AND processing_started_at IS NULL AND added_at < ?";
+  const result = await db.prepare(`SELECT id, ${column} as ts FROM articles WHERE ${condition}`)
+    .bind(cutoff)
+    .all<{ id: string; ts: string }>();
+  for (const row of result.results ?? []) {
+    console.warn(JSON.stringify({
+      event: "sweep_stale_pending",
+      id: row.id,
+      reason,
+      processingStarted,
+      elapsedMs: now.getTime() - Date.parse(row.ts),
+    }));
+  }
+}
+
 export async function sweepStalePending(
   db: D1Database,
-  timeoutMinutes: number,
+  pendingTimeoutMinutes: number,
+  queueWaitTimeoutMinutes: number,
   now: Date = new Date(),
 ): Promise<void> {
-  const cutoff = new Date(now.getTime() - timeoutMinutes * 60_000).toISOString();
+  const processingCutoff = new Date(now.getTime() - pendingTimeoutMinutes * 60_000).toISOString();
+  const queueWaitCutoff = new Date(now.getTime() - queueWaitTimeoutMinutes * 60_000).toISOString();
+
+  await logSweepCandidates(
+    db,
+    "processing_timeout",
+    true,
+    "processing_started_at",
+    processingCutoff,
+    now,
+  );
   await db.prepare(
     `UPDATE articles SET status = 'failed', error = 'timeout: processing did not complete'
-     WHERE status = 'pending' AND added_at < ?`,
-  ).bind(cutoff).run();
+     WHERE status = 'pending' AND processing_started_at IS NOT NULL AND processing_started_at < ?`,
+  ).bind(processingCutoff).run();
+
+  await logSweepCandidates(db, "queue_wait_timeout", false, "added_at", queueWaitCutoff, now);
+  await db.prepare(
+    `UPDATE articles SET status = 'failed', error = 'queue: never picked up'
+     WHERE status = 'pending' AND processing_started_at IS NULL AND added_at < ?`,
+  ).bind(queueWaitCutoff).run();
 }
 
 // Deliberately leaves `error`/`fail_class` untouched — a re-run (retry,
@@ -765,8 +844,32 @@ export async function sweepStalePending(
 // state (markArticleReady clears them; markArticleFailed replaces them), so
 // leaving the old value visible during the 'pending' window is harmless —
 // nothing renders `error` for a pending article.
+// Task 41 Part C: also clears processing_started_at back to NULL — a
+// retry/resummarize/heal-triggered re-enqueue starts a brand-new "waiting in
+// the queue" episode, not a continuation of whatever the previous attempt's
+// processing_started_at recorded. Leaving that stale would make the new
+// attempt look like it's already been "processing" for as long as the
+// entire previous attempt took, which could sweep it to 'failed' again
+// almost immediately.
 export async function markArticlePending(db: D1Database, id: string): Promise<void> {
-  await db.prepare(`UPDATE articles SET status = 'pending' WHERE id = ?`).bind(id).run();
+  await db.prepare(
+    `UPDATE articles SET status = 'pending', processing_started_at = NULL WHERE id = ?`,
+  )
+    .bind(id).run();
+}
+
+// Task 41 Part C: written as the very first action of a queue consumer
+// invocation (see index.ts's queue() handler, alongside its queue_received
+// log) — before fetch/summarize/anything else runs. This is what lets the
+// sweeper (below) tell "still waiting in the queue" apart from "the
+// pipeline itself is stuck," instead of measuring both from added_at.
+export async function markProcessingStarted(
+  db: D1Database,
+  id: string,
+  startedAtIso: string,
+): Promise<void> {
+  await db.prepare(`UPDATE articles SET processing_started_at = ? WHERE id = ?`)
+    .bind(startedAtIso, id).run();
 }
 
 export async function getArticleById(db: D1Database, id: string): Promise<Article | null> {
@@ -798,6 +901,11 @@ export interface ListArticlesParams {
   source?: string;
   q?: string;
   archived?: boolean;
+  // Task 41 Part D: undefined means "all statuses" (the historical default,
+  // still used by the owner-only admin list) — the public route always
+  // passes 'ready' explicitly, ignoring whatever a caller's own status=
+  // query param says (see index.ts's parseArticleListParams).
+  status?: ArticleStatus;
 }
 
 export interface ListArticlesResult {
@@ -813,7 +921,7 @@ export interface ListArticlesResult {
 // in production, invisible to FakeD1's tests since it returns whole stored
 // rows regardless of the projected column list).
 export const LIST_COLUMNS =
-  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at, en_generated_at, image_key, image_source_url";
+  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at, en_generated_at, image_key, image_source_url, processing_started_at";
 
 export interface ListQuery {
   sql: string;
@@ -902,6 +1010,10 @@ export function buildListQuery(params: ListArticlesParams): ListQuery {
   if (params.archived !== undefined) {
     conditions.push("archived = ?");
     binds.push(params.archived ? 1 : 0);
+  }
+  if (params.status) {
+    conditions.push("status = ?");
+    binds.push(params.status);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
