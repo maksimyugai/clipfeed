@@ -22,6 +22,11 @@ const VECTORIZE_METRIC = "cosine";
 // embeddings.ts's queryRelatedEmbeddings) — without this metadata index,
 // Vectorize would reject a query that filters on it.
 const VECTORIZE_METADATA_PROPERTY = "added_at";
+// Task 35 Part C: optional article-thumbnail storage (see images.ts,
+// README "Article images") — same "degrades gracefully without it" story
+// as Vectorize above: no IMAGES binding simply means downloadAndStoreImage
+// skips storing, the pipeline proceeds unchanged.
+const R2_BUCKET_NAME = "clipfeed-images";
 
 interface WranglerResult {
   code: number;
@@ -133,6 +138,20 @@ export function vectorizeIndexExistsInList(listOutput: string, name: string): bo
   } catch {
     return false;
   }
+}
+
+// Same "not account-scoped, no id to patch" shape as queueExistsInList/
+// vectorizeIndexExistsInList above — an R2 bucket's name is the literal
+// string already in wrangler.toml ("clipfeed-images"). Unlike Vectorize's
+// `--json` output, `wrangler r2 bucket list` prints plain
+// `name:  <value>\ncreation_date:  <value>\n\n` blocks (no JSON flag exists
+// for this command), so this matches the `name:` line directly instead of
+// parsing a table or JSON.
+export function r2BucketExistsInList(listOutput: string, name: string): boolean {
+  return listOutput.split("\n").some((line) => {
+    const match = line.match(/^name:\s*(\S+)/);
+    return match !== null && match[1] === name;
+  });
 }
 
 // --- Orchestration ---
@@ -281,6 +300,26 @@ async function ensureVectorize(created: string[], reused: string[]): Promise<voi
   }
 }
 
+// Task 35 Part C: article-thumbnail storage (see images.ts, README "Article
+// images") — a create-or-reuse existence check, same pattern as
+// ensureQueue/ensureVectorize above, since a bucket name (unlike D1/KV) has
+// no id to patch into wrangler.toml.
+async function ensureR2Bucket(created: string[], reused: string[]): Promise<void> {
+  const list = await runWrangler(["r2", "bucket", "list"]);
+  if (list.code === 0 && r2BucketExistsInList(list.stdout, R2_BUCKET_NAME)) {
+    reused.push(`R2 bucket "${R2_BUCKET_NAME}" already exists`);
+    return;
+  }
+
+  const create = await runWrangler(["r2", "bucket", "create", R2_BUCKET_NAME]);
+  if (create.code !== 0) {
+    console.error(`Could not create R2 bucket "${R2_BUCKET_NAME}":\n`);
+    console.error(create.stdout || create.stderr);
+    Deno.exit(1);
+  }
+  created.push(`R2 bucket "${R2_BUCKET_NAME}"`);
+}
+
 async function applyMigrations(): Promise<void> {
   console.log("Applying D1 migrations to the remote database...\n");
   const result = await runWrangler(["d1", "migrations", "apply", "DB", "--remote"]);
@@ -406,6 +445,7 @@ async function main(): Promise<void> {
   // (Cloudflare validates dead_letter_queue references at deploy time).
   await ensureQueue(DLQ_NAME, created, reused);
   await ensureVectorize(created, reused);
+  await ensureR2Bucket(created, reused);
   await applyMigrations();
   console.log();
   await reportSecrets();

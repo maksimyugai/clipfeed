@@ -125,24 +125,32 @@ export function Header(
           </div>
         )}
 
-        <div class="lang-toggle" role="group" aria-label="RU/EN">
-          <button
-            type="button"
-            aria-pressed={lang === "ru"}
-            aria-label={dict.langToggleAriaRu}
-            onClick={() => onLangChange("ru")}
-          >
-            RU
-          </button>
-          <button
-            type="button"
-            aria-pressed={lang === "en"}
-            aria-label={dict.langToggleAriaEn}
-            onClick={() => onLangChange("en")}
-          >
-            EN
-          </button>
-        </div>
+        {
+          /* Task 35 Part A §4: the owner reads Russian only, so EN
+            generation is lazy/owner-triggered — a visitor toggling this
+            would just find every card stuck on "preparing English", with
+            no way to trigger the translate call themselves. Owner-only. */
+        }
+        {isOwner && (
+          <div class="lang-toggle" role="group" aria-label="RU/EN">
+            <button
+              type="button"
+              aria-pressed={lang === "ru"}
+              aria-label={dict.langToggleAriaRu}
+              onClick={() => onLangChange("ru")}
+            >
+              RU
+            </button>
+            <button
+              type="button"
+              aria-pressed={lang === "en"}
+              aria-label={dict.langToggleAriaEn}
+              onClick={() => onLangChange("en")}
+            >
+              EN
+            </button>
+          </div>
+        )}
 
         <button
           type="button"

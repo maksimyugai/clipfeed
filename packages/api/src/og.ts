@@ -11,6 +11,14 @@ const MAX_DESCRIPTION_CHARS = 200;
 export interface OgArticle {
   title: string;
   tldr: string;
+  // Task 35 Part C: absolute URL to GET /img/:id (never the original
+  // source-page image URL directly — see index.ts) when this article has a
+  // stored image; undefined/omitted otherwise. Deliberately NOT sendPhoto to
+  // Telegram (see README "Article images") — adding this tag is enough for
+  // Telegram's own link-preview crawler to render the ClipFeed card WITH the
+  // image automatically, the same mechanism that already renders the
+  // title/description above.
+  imageUrl?: string;
 }
 
 // Attribute-context escaping (content="...") — the four characters that
@@ -34,14 +42,20 @@ export function buildOgTags(article: OgArticle, cardUrl: string): string {
   const title = escapeHtmlAttr(article.title);
   const description = escapeHtmlAttr(truncate(article.tldr, MAX_DESCRIPTION_CHARS));
   const url = escapeHtmlAttr(cardUrl);
-  return [
+  const tags = [
     `<meta property="og:title" content="${title}" />`,
     `<meta property="og:description" content="${description}" />`,
     `<meta property="og:url" content="${url}" />`,
     `<meta property="og:site_name" content="ClipFeed" />`,
     `<meta property="og:type" content="article" />`,
-    `<meta name="twitter:card" content="summary" />`,
-  ].join("\n    ");
+  ];
+  if (article.imageUrl) {
+    tags.push(`<meta property="og:image" content="${escapeHtmlAttr(article.imageUrl)}" />`);
+    tags.push(`<meta name="twitter:card" content="summary_large_image" />`);
+  } else {
+    tags.push(`<meta name="twitter:card" content="summary" />`);
+  }
+  return tags.join("\n    ");
 }
 
 // Replaces the `<!--OG-->` marker in index.html (see packages/web/index.html)

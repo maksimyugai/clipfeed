@@ -231,14 +231,49 @@ app.get("/a/:id", async (c) => {
   }
 
   const cardUrl = `${publicBaseUrl}/a/${id}`;
+  // Task 35 Part C: absolute /img/:id URL (never the original source-page
+  // image URL) — see og.ts's doc comment on OgArticle.imageUrl for why this
+  // alone is enough for Telegram to render the image, no sendPhoto needed.
+  const imageUrl = article.image_key ? `${publicBaseUrl}/img/${id}` : undefined;
   const tags = buildOgTags(
-    { title: article.summary_json.title_ru || article.title, tldr: article.summary_json.tldr_ru },
+    {
+      title: article.summary_json.title_ru || article.title,
+      tldr: article.summary_json.tldr_ru,
+      imageUrl,
+    },
     cardUrl,
   );
   return new Response(injectOgTags(shell, tags), {
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "public, max-age=300",
+    },
+  });
+});
+
+// Task 35 Part C: public image serving — the feed itself is public, so an
+// article's preview image is too, same posture as GET /api/articles. R2
+// key format is `articles/<id>.<ext>` (see images.ts's r2ImageKey) but this
+// route is keyed by ARTICLE id, not the raw R2 key, so callers (the SPA,
+// Telegram's link-preview crawler) never need to know the stored
+// extension. 404 when the article has no image (never found, download/
+// validation failed, or the feature was disabled at pipeline time) or when
+// the IMAGES binding itself isn't configured (a fork that hasn't run
+// `deno task setup` yet) — immutable, 1-year cache: the object at a given
+// key never changes once stored (a resummarize doesn't re-fetch the image,
+// and there's no image-replace endpoint).
+app.get("/img/:id", async (c) => {
+  if (!c.env.IMAGES) return c.notFound();
+  const article = await getArticleById(c.env.DB, c.req.param("id"));
+  if (!article?.image_key) return c.notFound();
+
+  const object = await c.env.IMAGES.get(article.image_key);
+  if (!object) return c.notFound();
+
+  return new Response(object.body, {
+    headers: {
+      "content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
+      "cache-control": "public, max-age=31536000, immutable",
     },
   });
 });
@@ -475,6 +510,32 @@ app.post("/api/admin/articles/:id/resummarize", async (c) => {
   return c.json({ id, status: "pending" }, 202);
 });
 
+// Task 35 Part A §3: lazy, owner-triggered EN generation — the default
+// summary is RU-only (see summarize.ts), so this is how an EN edition gets
+// created at all. Generates ONLY the EN fields from the article's stored
+// full_text (never a translation of the RU summary — see
+// generateEnglishFields) and merges them into summary_json, setting
+// en_generated_at. Idempotent: already-translated is a 200 no-op, never a
+// second queue job — a caller (the SPA's lazy-translate trigger) can safely
+// call this again without checking en_generated_at itself first. Does NOT
+// flip status to 'pending' — the article's own RU content/status is
+// entirely untouched by this operation, only summary_json gains the EN
+// fields once the job completes.
+app.post("/api/admin/articles/:id/translate", async (c) => {
+  const id = c.req.param("id");
+  const article = await getArticleById(c.env.DB, id);
+  if (!article) return c.json({ error: "not found" }, 404);
+  if (article.status !== "ready" || !article.full_text) {
+    return c.json({ error: "article must be ready with stored text to translate" }, 409);
+  }
+  if (article.en_generated_at) {
+    return c.json({ id, status: "already-translated" }, 200);
+  }
+
+  await enqueueArticleJob(c.env, c.executionCtx, { kind: "translate", articleId: id });
+  return c.json({ id, status: "pending" }, 202);
+});
+
 // Re-runs ONLY the faithfulness stage (see faithfulness.ts) against an
 // already-summarized article's stored full_text/summary_json — no
 // fetch/extract/summarize at all, so this is a cheap way to spot-check the
@@ -701,9 +762,9 @@ app.post("/api/admin/embeddings/backfill", async (c) => {
   let processed = 0;
   for (const article of batch) {
     const text = buildEmbeddingText({
-      title_en: article.title_en,
-      tldr_en: article.tldr_en,
-      bullets_en: article.bullets_en,
+      title_ru: article.title_ru,
+      tldr_ru: article.tldr_ru,
+      bullets_ru: article.bullets_ru,
     });
     if (!text) {
       // Nothing embeddable on this row (e.g. a 'ready' row with no

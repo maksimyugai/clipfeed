@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { ArticleListItem } from "@clipfeed/shared/types";
 import type { Dictionary, Lang } from "../i18n.ts";
 import { viaLabel } from "../i18n.ts";
-import { getArticle } from "../api.ts";
+import { getAdminArticle, getArticle, translateArticle } from "../api.ts";
 import { selectSummaryFields } from "../lib/summaryFields.ts";
-import { formatDate } from "../lib/format.ts";
+import { formatDate, hostnameFromUrl } from "../lib/format.ts";
 import { nextPollDelayMs, pollReducer, type PollState } from "../lib/pollSchedule.ts";
+import { translateQueue } from "../lib/translateQueue.ts";
 import {
   articleErrorText,
   failClassIsPermanent,
@@ -185,6 +186,79 @@ function useJustReadyHighlight(status: ArticleListItem["status"]): boolean {
   return justReady;
 }
 
+// Task 35 Part A §4: in owner-only EN mode, a ready article missing its
+// English edition (en_generated_at is null) renders a "preparing English"
+// skeleton (see the needsEnglish branch below) instead of blocking on a
+// bulk translate. This hook is what makes that skeleton self-resolving: it
+// fires POST .../translate for this one card (subject to the shared
+// translateQueue's concurrency cap — see lib/translateQueue.ts, "max 5
+// concurrently, never in bulk") and polls on the same cadence as
+// usePendingPoll (lib/pollSchedule.ts) until en_generated_at appears. A card
+// that can't get a queue slot yet still polls without re-triggering the
+// endpoint — each tick re-checks the queue, so it opportunistically starts
+// its own translate call the moment a slot frees up, without any central
+// coordinator besides the shared queue.
+function useEnglishTranslation(
+  article: ArticleListItem,
+  needsEnglish: boolean,
+  onArticleUpdate: (article: ArticleListItem) => void,
+): void {
+  const triggeredRef = useRef(false);
+
+  useEffect(() => {
+    if (!needsEnglish) {
+      triggeredRef.current = false;
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    let elapsed = 0;
+    let cycleStartedAt = Date.now();
+
+    const maybeTrigger = () => {
+      if (triggeredRef.current || !translateQueue.canEnqueue(article.id)) return;
+      triggeredRef.current = true;
+      translateQueue.start(article.id);
+      translateArticle(article.id)
+        .catch(() => {
+          // A failed trigger just means this cycle's polling won't be
+          // backed by a fresh job — the existing poll loop below keeps
+          // checking regardless, and a later tick may re-trigger once
+          // triggeredRef is reset (e.g. on unmount/remount).
+        })
+        .finally(() => translateQueue.finish(article.id));
+    };
+
+    const tick = async () => {
+      maybeTrigger();
+      try {
+        const updated = await getAdminArticle(article.id);
+        if (cancelled) return;
+        if (updated.en_generated_at) {
+          onArticleUpdate({ ...article, ...updated });
+          return;
+        }
+      } catch {
+        // Network hiccup — keep polling on the same schedule rather than
+        // giving up on a single failed check.
+      }
+      elapsed += Date.now() - cycleStartedAt;
+      const delay = nextPollDelayMs(elapsed);
+      if (delay === null || cancelled) return;
+      cycleStartedAt = Date.now();
+      timerId = setTimeout(tick, delay);
+    };
+
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) clearTimeout(timerId);
+    };
+  }, [needsEnglish, article.id]);
+}
+
 export interface ArticleCardProps {
   dict: Dictionary;
   lang: Lang;
@@ -224,6 +298,24 @@ export function ArticleCard(props: ArticleCardProps) {
   const justReady = useJustReadyHighlight(article.status);
   const givenUpPolling = pollState === "given-up";
   const reducedMotion = usePrefersReducedMotion();
+
+  // Task 35 Part A §4: EN mode is owner-only (see Header.tsx/App.tsx's
+  // effectiveLang) — a ready article that hasn't been translated yet gets a
+  // "preparing English" skeleton instead of silently falling back to RU
+  // (which selectSummaryFields would otherwise do).
+  const needsEnglish = isOwner && lang === "en" && article.status === "ready" &&
+    !article.en_generated_at;
+  useEnglishTranslation(article, needsEnglish, onArticleUpdate);
+
+  // Task 35 Part C §4: article.image_key is only ever set once /img/:id
+  // (index.ts) actually has something to serve — see downloadAndStoreImage
+  // (images.ts). imageError is a one-way flag: onError hides the element
+  // gracefully for the rest of this card's lifetime rather than retrying, so
+  // a broken/expired R2 object doesn't leave a permanently-spinning broken
+  // image icon.
+  const [imageError, setImageError] = useState(false);
+  const hasImage = article.image_key !== null && !imageError;
+  const imageUrl = `/img/${article.id}`;
 
   // Only scroll on the transition INTO expanded — collapsing must stay put
   // (jumpy otherwise), and this only fires on the `expanded` flip, not on
@@ -330,6 +422,25 @@ export function ArticleCard(props: ArticleCardProps) {
     );
   }
 
+  if (needsEnglish) {
+    const shimmerClass = withMotionClass(
+      "skeleton-shimmer",
+      "skeleton-shimmer--animated",
+      reducedMotion,
+    );
+    return (
+      <article class="card card--skeleton">
+        <div class="card-date">{formatDate(article.added_at, lang)}</div>
+        <div class={shimmerClass} aria-hidden="true">
+          <div class="skeleton-line skeleton-line--title" />
+          <div class="skeleton-line skeleton-line--body" />
+          <div class="skeleton-line skeleton-line--body skeleton-line--short" />
+        </div>
+        <p class="pending-processing-caption">{dict.preparingEnglishLabel}</p>
+      </article>
+    );
+  }
+
   const fields = selectSummaryFields(article.title, article.summary_json, lang);
   const source = article.source;
   // Task 25 Part A point 2: a card that just finished (pending->ready,
@@ -372,44 +483,84 @@ export function ArticleCard(props: ArticleCardProps) {
       )}
       <div class="card-date">{formatDate(article.added_at, lang)}</div>
 
-      <button type="button" class="card-title-button" onClick={() => onToggleExpand(article.id)}>
-        <h3 class="card-title" ref={titleRef}>{fields.title}</h3>
-      </button>
+      <div class={!expanded && hasImage ? "card-collapsed-row" : undefined}>
+        <div class={!expanded && hasImage ? "card-collapsed-text" : undefined}>
+          <button
+            type="button"
+            class="card-title-button"
+            onClick={() => onToggleExpand(article.id)}
+          >
+            <h3 class="card-title" ref={titleRef}>{fields.title}</h3>
+          </button>
 
-      {!expanded && (
-        <>
-          {fields.tldr && <p class="card-tldr-excerpt">{fields.tldr}</p>}
-          <div class="card-footer-row">
-            <div class="card-pills">
-              {article.tags.map((tag) => (
-                <button
-                  key={tag}
-                  type="button"
-                  class="tag-pill"
-                  onClick={() => onTagClick(tag)}
-                >
-                  {tag}
+          {!expanded && (
+            <>
+              {fields.tldr && <p class="card-tldr-excerpt">{fields.tldr}</p>}
+              <div class="card-footer-row">
+                <div class="card-pills">
+                  {article.tags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      class="tag-pill"
+                      onClick={() => onTagClick(tag)}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                  {source && (
+                    <button
+                      type="button"
+                      class="source-pill"
+                      onClick={() => onSourceClick(source)}
+                    >
+                      🌐 {source}
+                    </button>
+                  )}
+                </div>
+                <button type="button" class="read-more" onClick={() => onToggleExpand(article.id)}>
+                  {dict.readMore}
                 </button>
-              ))}
-              {source && (
-                <button
-                  type="button"
-                  class="source-pill"
-                  onClick={() => onSourceClick(source)}
-                >
-                  🌐 {source}
-                </button>
-              )}
-            </div>
-            <button type="button" class="read-more" onClick={() => onToggleExpand(article.id)}>
-              {dict.readMore}
-            </button>
-          </div>
-        </>
-      )}
+              </div>
+            </>
+          )}
+        </div>
+
+        {!expanded && hasImage && (
+          <img
+            class="card-thumb"
+            src={imageUrl}
+            alt={dict.imageAlt}
+            width={112}
+            height={84}
+            loading="lazy"
+            decoding="async"
+            onError={() => setImageError(true)}
+          />
+        )}
+      </div>
 
       {expanded && (
         <div class="card-expanded-body">
+          {hasImage && (
+            <>
+              <img
+                class="card-expanded-image"
+                src={imageUrl}
+                alt={dict.imageAlt}
+                width={800}
+                height={320}
+                loading="lazy"
+                decoding="async"
+                onError={() => setImageError(true)}
+              />
+              {article.image_source_url && hostnameFromUrl(article.image_source_url) && (
+                <p class="card-image-caption">
+                  {dict.imageSourcePrefix}: {hostnameFromUrl(article.image_source_url)}
+                </p>
+              )}
+            </>
+          )}
           {fields.tldr && (
             <p class="tldr-paragraph">
               <span class="tldr-label">{dict.tldrLabel}</span> {fields.tldr}

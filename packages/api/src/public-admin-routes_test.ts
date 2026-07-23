@@ -258,6 +258,7 @@ Deno.test("admin routes: 401 auth_not_configured on every mutating route when Ac
     ["DELETE", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles/some-id/retry"],
     ["POST", "/api/admin/articles/some-id/resummarize"],
+    ["POST", "/api/admin/articles/some-id/translate"],
     ["POST", "/api/admin/articles/some-id/reverify"],
     ["POST", "/api/admin/agent/run"],
     ["GET", "/api/admin/health-report"],
@@ -288,6 +289,7 @@ Deno.test("admin routes: 401 unauthorized on every mutating route when configure
     ["DELETE", "/api/admin/articles/some-id"],
     ["POST", "/api/admin/articles/some-id/retry"],
     ["POST", "/api/admin/articles/some-id/resummarize"],
+    ["POST", "/api/admin/articles/some-id/translate"],
     ["POST", "/api/admin/articles/some-id/reverify"],
     ["POST", "/api/admin/agent/run"],
     ["GET", "/api/admin/health-report"],
@@ -568,6 +570,185 @@ Deno.test("POST /api/admin/articles/:id/reverify: 401 without auth even for an e
   });
   const res = await app.request(
     "/api/admin/articles/rv-noauth/reverify",
+    { method: "POST" },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 401);
+});
+
+// --- POST /api/admin/articles/:id/translate (Task 35 Part A §3) ---
+
+Deno.test("POST /api/admin/articles/:id/translate: 404 for a missing id", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+  const res = await app.request(
+    "/api/admin/articles/does-not-exist/translate",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 404);
+});
+
+Deno.test("POST /api/admin/articles/:id/translate: 409 for a pending article (not ready yet)", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+  await insertPendingArticle(env.DB, {
+    id: "tr-pending",
+    url: "https://example.com/tr-pending",
+    title: "tr-pending",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  const res = await app.request(
+    "/api/admin/articles/tr-pending/translate",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 409);
+});
+
+Deno.test("POST /api/admin/articles/:id/translate: 202 for a ready article, generates EN fields from full_text and merges them without touching RU content", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext();
+
+  const stopFetch = stubFetch();
+  let created: { id: string };
+  try {
+    created = await (
+      await app.request(
+        "/api/admin/articles",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", ...authHeaders },
+          body: JSON.stringify({ url: "https://example.com/tr-ready" }),
+        },
+        env,
+        ctx.ctx,
+      )
+    ).json();
+    await ctx.settle();
+  } finally {
+    stopFetch();
+  }
+
+  const beforeReady = await (
+    await app.request(`/api/admin/articles/${created.id}`, { headers: authHeaders }, env, ctx.ctx)
+  ).json();
+  assertEquals(beforeReady.status, "ready");
+  assertEquals(beforeReady.en_generated_at, null);
+  assertEquals(beforeReady.summary_json.title_en, undefined);
+
+  // A second stub, so a failure to skip re-fetching would be visible: this
+  // one serves different HTML than the first, but generateEnglishFields
+  // reads the ALREADY-STORED full_text (see runEnglishTranslation), never
+  // re-fetching the article's URL — so the EN fields below being the
+  // stubbed VALID_SUMMARY's EN content, not derived from this HTML, proves
+  // the generation path used the stored text.
+  let anthropicCallCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const urlText =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(urlText);
+    } catch {
+      throw new Error("translate must not re-fetch the article's own URL");
+    }
+
+    if (parsed.protocol === "https:" && parsed.hostname === "api.anthropic.com") {
+      anthropicCallCount += 1;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: JSON.stringify(VALID_SUMMARY) }] }),
+          { status: 200 },
+        ),
+      );
+    }
+    throw new Error("translate must not re-fetch the article's own URL");
+  }) as typeof fetch;
+
+  try {
+    const res = await app.request(
+      `/api/admin/articles/${created.id}/translate`,
+      { method: "POST", headers: authHeaders },
+      env,
+      ctx.ctx,
+    );
+    assertEquals(res.status, 202);
+    const body = await res.json();
+    assertEquals(body.status, "pending");
+    await ctx.settle();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assertEquals(anthropicCallCount, 1);
+
+  const translated = await (
+    await app.request(`/api/admin/articles/${created.id}`, { headers: authHeaders }, env, ctx.ctx)
+  ).json();
+  assertEquals(typeof translated.en_generated_at, "string");
+  assertEquals(translated.summary_json.title_en, VALID_SUMMARY.title_en);
+  assertEquals(translated.summary_json.tldr_en, VALID_SUMMARY.tldr_en);
+  // RU content and status are untouched by the translate job.
+  assertEquals(translated.summary_json.title_ru, beforeReady.summary_json.title_ru);
+  assertEquals(translated.status, "ready");
+});
+
+Deno.test("POST /api/admin/articles/:id/translate: idempotent — a second call after en_generated_at is set is a 200 no-op, no new queue job", async () => {
+  const jobs = new FakeQueue();
+  const { env, authHeaders } = await makeOwnerContext({ JOBS: jobs });
+  const ctx = makeExecutionContext().ctx;
+
+  await insertPendingArticle(env.DB, {
+    id: "tr-done",
+    url: "https://example.com/tr-done",
+    title: "tr-done",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  const db = env.DB as unknown as FakeD1;
+  const row = db.rows.find((r) => r.id === "tr-done")!;
+  row.status = "ready";
+  row.full_text = "Enough stored text to translate from.";
+  row.summary_json = JSON.stringify({ title_ru: "Заголовок", tags: [], lang_original: "en" });
+  row.en_generated_at = "2026-01-01T12:00:00.000Z";
+
+  const res = await app.request(
+    "/api/admin/articles/tr-done/translate",
+    { method: "POST", headers: authHeaders },
+    env,
+    ctx,
+  );
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.status, "already-translated");
+  assertEquals(jobs.sent.length, 0);
+});
+
+Deno.test("POST /api/admin/articles/:id/translate: 401 without auth even for an existing article (covered by the auth-matrix test above, spot-checked here too)", async () => {
+  const { env } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+  await insertPendingArticle(env.DB, {
+    id: "tr-noauth",
+    url: "https://example.com/tr-noauth",
+    title: "tr-noauth",
+    source: "example.com",
+    tags: [],
+    added_via: "manual",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+  const res = await app.request(
+    "/api/admin/articles/tr-noauth/translate",
     { method: "POST" },
     env,
     ctx,

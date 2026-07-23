@@ -56,6 +56,38 @@ Deno.test("buildOgTags: a short description is left untouched, no ellipsis", () 
   assertEquals(tags.includes('content="Short."'), true);
 });
 
+// --- imageUrl (Task 35 Part C §5) ---
+
+Deno.test("buildOgTags: no imageUrl -> no og:image tag, twitter:card is 'summary'", () => {
+  const tags = buildOgTags({ title: "t", tldr: "d" }, "https://example.com/a/id-1");
+  assertEquals(tags.includes("og:image"), false);
+  assertEquals(tags.includes('<meta name="twitter:card" content="summary" />'), true);
+});
+
+Deno.test("buildOgTags: imageUrl present -> adds og:image and switches twitter:card to summary_large_image", () => {
+  const tags = buildOgTags(
+    { title: "t", tldr: "d", imageUrl: "https://example.com/img/id-1" },
+    "https://example.com/a/id-1",
+  );
+  assertEquals(
+    tags.includes('<meta property="og:image" content="https://example.com/img/id-1" />'),
+    true,
+  );
+  assertEquals(
+    tags.includes('<meta name="twitter:card" content="summary_large_image" />'),
+    true,
+  );
+  assertEquals(tags.includes('<meta name="twitter:card" content="summary" />'), false);
+});
+
+Deno.test("buildOgTags: escapes the imageUrl (attribute context)", () => {
+  const tags = buildOgTags(
+    { title: "t", tldr: "d", imageUrl: 'https://example.com/img/"><script>' },
+    "https://example.com/a/id-1",
+  );
+  assertEquals(tags.includes("<script>"), false);
+});
+
 Deno.test("injectOgTags: replaces the <!--OG--> marker with the rendered tags", () => {
   const html = "<head><title>x</title>\n    <!--OG-->\n  </head>";
   const result = injectOgTags(html, '<meta property="og:title" content="t" />');

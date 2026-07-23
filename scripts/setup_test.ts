@@ -7,6 +7,7 @@ import {
   patchD1DatabaseId,
   patchKvNamespaceId,
   queueExistsInList,
+  r2BucketExistsInList,
   readD1DatabaseId,
   readKvNamespaceId,
   readVarValue,
@@ -224,4 +225,33 @@ Deno.test("vectorizeIndexExistsInList: returns false for empty/unparseable outpu
 
 Deno.test("vectorizeIndexExistsInList: an empty list returns false", () => {
   assertEquals(vectorizeIndexExistsInList("[]", "clipfeed-embeddings"), false);
+});
+
+// Real `wrangler r2 bucket list` output shape — plain
+// `name:  <value>\ncreation_date:  <value>` blocks, one per bucket,
+// separated by a blank line. No --json flag exists for this command.
+const R2_LIST_OUTPUT = [
+  "name:           some-other-bucket",
+  "creation_date:  2025-04-13T16:59:05.382Z",
+  "",
+  "name:           clipfeed-images",
+  "creation_date:  2026-07-06T20:44:02.879Z",
+  "",
+].join("\n");
+
+Deno.test("r2BucketExistsInList: finds the bucket by exact name in real `wrangler r2 bucket list` output", () => {
+  assertEquals(r2BucketExistsInList(R2_LIST_OUTPUT, "clipfeed-images"), true);
+});
+
+Deno.test("r2BucketExistsInList: returns false when no entry's name matches", () => {
+  assertEquals(r2BucketExistsInList(R2_LIST_OUTPUT, "some-unrelated-bucket"), false);
+});
+
+Deno.test("r2BucketExistsInList: does not match a substring of the creation_date line", () => {
+  assertEquals(r2BucketExistsInList(R2_LIST_OUTPUT, "2026-07-06T20:44:02.879Z"), false);
+});
+
+Deno.test("r2BucketExistsInList: returns false for empty/unparseable output", () => {
+  assertEquals(r2BucketExistsInList("", "clipfeed-images"), false);
+  assertEquals(r2BucketExistsInList("some unrelated wrangler output", "clipfeed-images"), false);
 });

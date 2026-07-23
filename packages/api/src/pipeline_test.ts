@@ -10,32 +10,20 @@ import {
 
 // Meets validateSummary's content bar (>=120 char tldrs, 3-6 bullets each
 // 20-220 chars and not duplicating the tldr, 1-6 tags) — see summarize.ts.
+// Task 35 Part A: RU-only — a fresh generation never carries _en fields.
 const VALID_SUMMARY = {
   title_ru: "Компания подняла цену подписки на 60% с 1 сентября",
-  title_en: "Company Raises Subscription Price 60% Starting September 1",
   tldr_ru:
     "Компания повышает стоимость подписки с $5 до $8 в месяц начиная с 1 сентября, ссылаясь на рост расходов на серверы и трафик. Изменение затронет около 2 миллионов подписчиков сервиса, а годовые подписчики получат отсрочку до продления плана.",
-  tldr_en:
-    "The company is raising its subscription price from $5 to $8 a month starting September 1, citing rising server and bandwidth costs. The change affects roughly 2 million subscribers, though annual-plan subscribers get a grace period until renewal.",
   body_ru: [
     "Компания объявила об изменении во вторник, уточнив, что новый тариф вступит в силу с 1 сентября. Рост стоимости составляет почти 60% по сравнению с текущей ценой. Затронутыми окажутся примерно 2 миллиона подписчиков сервиса, при этом клиенты, уже оформившие годовой план, не почувствуют изменения сразу.",
     "В компании ссылаются на растущие расходы на серверную инфраструктуру и сетевой трафик как на основную причину решения. Руководство отмечало, что откладывало повышение более года, опасаясь навредить клиентам из малого бизнеса, но в итоге пришло к выводу, что дальнейшая отсрочка невозможна из-за продолжающегося роста издержек.",
-  ],
-  body_en: [
-    "The company announced the change on Tuesday, confirming the new rate takes effect September 1. The increase amounts to nearly 60% over the current price. Roughly 2 million subscribers are affected, though customers already on an annual plan won't see the new rate right away, since their existing terms carry over until renewal.",
-    "Executives point to climbing server infrastructure and network costs as the primary driver behind the decision. Leadership has said it held off on the increase for over a year out of concern for small-business customers, but ultimately concluded further delay wasn't sustainable given the pace of rising expenses.",
   ],
   bullets_ru: [
     "Те, кто уже на годовом плане, сохранят старую цену до момента продления плана.",
     "Компания откладывала повышение цены более года из опасений навредить малому бизнесу.",
     "Решение было принято только после того, как расходы на инфраструктуру продолжили расти.",
     "Ни один из конкурентов пока не объявлял о похожем шаге.",
-  ],
-  bullets_en: [
-    "Price rises from $5 to $8 per month, a nearly 60% increase for new payments.",
-    "Existing annual-plan subscribers keep their price until their plan renews.",
-    "The company delayed the increase for over a year and a half before acting.",
-    "No competitor has announced a comparable price change so far this year.",
   ],
   tags: ["tag"],
   lang_original: "en",

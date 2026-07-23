@@ -205,7 +205,6 @@ Deno.test("processQueueMessage: 'resummarize' kind with stored full_text skips f
     author: null,
     lang_original: "en",
     summary_ru: "old ru",
-    summary_en: "old en",
     summary_json: VALID_SUMMARY,
     tags: ["seed"],
   });
@@ -421,7 +420,6 @@ Deno.test("processDeadLetterMessage: idempotent — does not clobber an already-
     author: null,
     lang_original: "en",
     summary_ru: "ru",
-    summary_en: "en",
     summary_json: VALID_SUMMARY,
     tags: [],
   });

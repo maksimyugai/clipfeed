@@ -159,7 +159,6 @@ async function seedReadyArticle(
     author: null,
     lang_original: "en",
     summary_ru: overrides.title,
-    summary_en: overrides.title,
     summary_json: { ...MINIMAL_SUMMARY_JSON, title_en: overrides.title },
     tags: [],
   });

@@ -89,7 +89,8 @@ no separate "prompt number" and "validator number" that can drift out of sync wi
 
 `SUMMARY_BODY_TARGET_CHARS` ([vars] in `wrangler.toml`, default `800`, valid range `400`–`4000`) is
 how much summary you want to read — the target _total_ body length in characters, across all
-paragraphs, per language. Everything else derives from it:
+paragraphs, for the (Russian-only, see "Russian-first summaries & lazy English" below) generated
+summary. Everything else derives from it:
 
 - **Paragraph count** widens as the target grows, based on the tier your target falls into (≤900,
   ≤2000, beyond): STRICT gets 2, 2–3, or 3–4 paragraphs; RELAXED gets one extra paragraph of
@@ -115,8 +116,8 @@ paragraphs, per language. Everything else derives from it:
 - **Bullets** don't scale with the target — they're about the _count_ of scannable facts, not prose
   volume, so both tiers keep their original ranges (STRICT 4–7 × 40–220 chars, RELAXED 3–7 × 30–220
   chars — 220 is likewise a soft max, see below).
-- **`max_tokens`** scales with the raw target too (clamped to `[2500, 6000]`), so a larger requested
-  digest doesn't get cut off mid-paragraph.
+- **`max_tokens`** scales with the raw target too, clamped to `[1500, 5000]` — see "Russian-first
+  summaries & lazy English" below for the exact formula and why those numbers are what they are.
 
 A bad override (missing, non-numeric, or outside `[400, 4000]`) falls back to the `800` default and
 logs a warning naming the rejected value — never a broken or nonsensical prompt.
@@ -205,6 +206,65 @@ regardless of its healing attempt count, resetting that count first — run it o
 `SUMMARY_BODY_TARGET_CHARS` (or after any prompt/validation change) to sweep up the backlog instead
 of retrying each one by hand. Responds `202 {count}`.
 
+## Russian-first summaries & lazy English
+
+The owner reads Russian only. Emitting both a Russian and an English edition in the same LLM
+response doubles output tokens for a language nobody reads by default, and was a real cause of
+`max_tokens` truncation on longer targets. As of Task 35, a fresh summarization request generates
+**only** the Russian fields (`title_ru`, `tldr_ru`, `bullets_ru`, `body_ru`, `tags`,
+`lang_original`) — the `_en` fields are gone from the JSON schema, the system prompt, both
+validation profiles, and the few-shot example. Articles summarized before this change keep whatever
+English content they already have (no backfill, no deletion) — the `_en` fields on `SummaryJson` are
+optional now, not removed, so old rows still round-trip correctly.
+
+**`max_tokens` formula (RU-only).** Russian is roughly 2–3× more token-expensive per character than
+English (Cyrillic tokenizes less efficiently), so halving the old RU+EN budget would have been the
+wrong arithmetic — the formula below is derived from scratch in RU-only terms:
+
+```
+ENGLISH_TOKENS_PER_CHAR   = 0.25              (~4 chars/token, standard rough estimate)
+CYRILLIC_TOKEN_MULTIPLIER = 2.5               (middle of the commonly-cited ~2-3x range)
+CYRILLIC_TOKENS_PER_CHAR  = 0.25 * 2.5 = 0.625
+
+RU_OVERHEAD_CHARS = 2100   (everything besides the body: up to 7 bullets * 220 chars = 1540,
+                            tldr ~350, title ~90, tags/JSON structure ~100 — rounded up)
+MAX_TOKENS_SAFETY_MARGIN  = 1.25              (run-to-run variance headroom)
+
+maxTokens(targetTotalChars) = clamp(
+  ceil((RU_OVERHEAD_CHARS + targetTotalChars) * CYRILLIC_TOKENS_PER_CHAR * MAX_TOKENS_SAFETY_MARGIN),
+  MIN_MAX_TOKENS = 1500,
+  MAX_MAX_TOKENS = 5000,
+)
+```
+
+At `SUMMARY_BODY_TARGET_CHARS` = 400 / 800 / 1200 / 2000, this yields **1954 / 2266 / 2579 / 3204**
+tokens respectively (all four exact values are asserted in `summarize_test.ts`). The formula is
+identical for both validation profiles (STRICT/RELAXED) — only the body-length targets those
+profiles derive differ, not this calculation.
+
+**Lazy English generation.** English is now opt-in and owner-only, generated independently from the
+article's stored `full_text` — never by translating the Russian summary, for the same reason the
+original RU/EN generation was independent (translating a summary risks compounding whatever the
+summary itself already dropped or paraphrased).
+
+- `POST /api/admin/articles/:id/translate` (Access-protected) enqueues an EN-generation job on the
+  same queue/provider stack as regular summarization. It requires the article to be `ready` with
+  stored `full_text`; if `en_generated_at` is already set it's a `200` no-op (idempotent — safe to
+  call repeatedly without checking first), otherwise it enqueues and returns `202`. The job merges
+  the resulting `title_en`/`tldr_en`/`body_en`/`bullets_en` into `summary_json`, sets
+  `en_generated_at`, and never touches the article's RU content or `status`.
+- Resummarizing an article's RU content always clears `summary_en`/`en_generated_at` back to `null`
+  — a stale English edition describing content that's since been rewritten in Russian is worse than
+  no English edition, and the owner can just call `.../translate` again.
+- **In the SPA:** the RU/EN toggle in the header is **owner-only** — a visitor always gets the
+  Russian feed with no language switch at all. When the owner switches to EN, any visible, `ready`
+  article without an English edition yet renders a "preparing English version" skeleton instead of
+  silently falling back to Russian, and the SPA fires `.../translate` for that card automatically
+  (capped at 5 concurrent requests across the whole page, never in bulk — see
+  `lib/translateQueue.ts`), then polls on the same schedule as any other pending work until
+  `en_generated_at` appears. Articles that already have English (summarized before this change, or
+  already translated) render normally in EN mode immediately.
+
 ## Faithfulness check
 
 After a summary validates (see above), a SEPARATE verification pass checks whether it actually
@@ -232,15 +292,24 @@ article.
   summarization can still pick a specific Llama judge model.
 
 **How it works:** the judge is given the numbered claims (the tldr + each bullet + each body
-paragraph — EN fields only, since RU/EN are independently-written but semantically parallel
-translations of the same facts, so verifying EN once is equivalent coverage without doubling judge
-calls or risking RU-translation noise being misread as a faithfulness problem) and the same
-extracted source text the summarizer saw, and returns `supported`/`unsupported`/`contradicted` per
-claim plus a short source-span citation for each. Any single `contradicted` claim fails the article
-outright; otherwise the unsupported-claim ratio decides `pass` (≤25%), `weak` (25–50%), or `fail`
-(>50%) — see `packages/api/src/faithfulness.ts` for the exact thresholds, which are intentionally
-round, untuned numbers for this first release rather than something calibrated against real judge
-output yet.
+paragraph — RU fields, since Task 35 made summarization Russian-only by default; see "Russian-first
+summaries" above) and the same extracted source text the summarizer saw, and returns
+`supported`/`unsupported`/`contradicted` per claim plus a short source-span citation for each. Any
+single `contradicted` claim fails the article outright; otherwise the unsupported-claim ratio
+decides `pass` (≤25%), `weak` (25–50%), or `fail` (>50%) — see `packages/api/src/faithfulness.ts`
+for the exact thresholds, which are intentionally round, untuned numbers for this first release
+rather than something calibrated against real judge output yet.
+
+**Cross-lingual caveat:** the source article is usually English while the summary being judged is
+now Russian by default (it was the reverse before Task 35, when EN was the judged language and RU/EN
+were both always generated). The judge prompt explicitly tells the model that the claim and the
+source may be in different languages and that it must judge MEANING, not wording or language match —
+but this is inherently a harder task for the judge than same-language verification was, and verdict
+quality (especially the supported/unsupported boundary) may be less reliable than before. No paid
+judge model swap is planned for this yet — watch the `pass`/`weak`/`fail`/`null` breakdown in
+`GET /api/admin/health-report` over time and reconsider `FAITHFULNESS_JUDGE_MODEL` or
+`FAITHFULNESS_ENFORCE` if the weak/fail rate climbs higher than you'd expect from the source
+material.
 
 A judge failure (timeout, unparseable output even after one corrective retry) never blocks a good
 summary — it's recorded as a `null` verdict and the article proceeds normally either way. The judge
@@ -261,6 +330,47 @@ the judge's full response.
 only the faithfulness stage against an already-summarized article's stored text and summary — no
 re-fetch, no re-summarize, no status change — a cheap way to see how the judge scores a specific
 article without touching anything else.
+
+## Article images
+
+After extraction, the pipeline reads the fetched page's `og:image` (falling back to `twitter:image`)
+and, if present, downloads it into a dedicated R2 bucket for the article's card and link previews.
+Only a publisher-provided image explicitly intended for link previews is ever used, cached, or shown
+— never anything scraped from the article body itself — and it's always displayed with an
+attribution caption naming the source domain (see below). Images are strictly optional: no
+`og:image` tag, a download failure, or the feature being disabled all leave the article completely
+unaffected — nothing about the summary or its status depends on whether an image was found.
+
+**Fork setup:** `deno task setup` provisions the `clipfeed-images` R2 bucket the same way it
+provisions D1/KV/Queues/Vectorize (create-or-reuse, patches nothing since a bucket name — like a
+queue or Vectorize index name — has no id to write into `wrangler.toml`). Without the bucket
+provisioned (fresh fork that hasn't run setup yet), the `IMAGES` binding is simply absent and the
+image stage silently skips storing anything — same graceful-degradation story as Vectorize/Queues.
+
+**Download path:** the image URL goes through the exact same SSRF-safe fetch guard as article
+fetching (`ssrf.ts`'s `safeFetchImageBytes`) — http/https only, private IP ranges rejected,
+redirects re-validated at each hop — with its own 10-second timeout and 5 MB size cap. Content-Type
+must be `image/jpeg`, `image/png`, `image/webp`, or `image/gif`; **SVG is explicitly rejected** (an
+SVG can carry embedded scripts, unlike a raster image). At most one image is stored per article,
+keyed `articles/<id>.<ext>` in R2. `IMAGES_ENABLED` ([vars] in `wrangler.toml`, default `"true"`)
+disables the whole feature — only the literal `"false"` skips extraction/ download/storage entirely.
+
+**Serving:** `GET /img/:id` (public, no auth — the feed itself is public) streams the R2 object with
+`Cache-Control: public, max-age=31536000, immutable` and the stored content type; `404` when the
+article has no image.
+
+**In the SPA:** a collapsed card with an image shows a small thumbnail, right-aligned, with the
+title/TL;DR/tags reflowing beside it (a card with no image renders exactly as before — this is
+purely additive). An expanded card shows the image full-width above the TL;DR, with a caption line
+("Изображение: `<domain>`" / "Image: `<domain>`") naming the site the image came from — the
+attribution the paragraph above promises. Both use `loading="lazy"`, `decoding="async"`, and
+explicit width/height to avoid layout shift; a failed image load hides the element gracefully
+instead of showing a broken-image icon.
+
+**Telegram:** no `sendPhoto` call — instead, when an article has an image, `GET /a/:id`'s OG tags
+(see "Link previews" below) include `og:image` (an absolute URL to `/img/:id`) and switch
+`twitter:card` to `"summary_large_image"`. Telegram's own link-preview crawler then renders the card
+with the image automatically, the same mechanism that already renders the title/description.
 
 ## Database
 
@@ -352,11 +462,13 @@ is tied to a specific account, domain, or Access team.
 1. Fork the repo.
 2. `deno run -A npm:wrangler login`, then `deno task setup` — creates (or reuses) your D1 database,
    KV namespace, the `clipfeed-jobs`/`clipfeed-dlq` queues (see "Queue-based pipeline execution"
-   below), and the `clipfeed-embeddings` Vectorize index + its `added_at` metadata index (see
-   "Semantic dedup & search" below), patches `wrangler.toml` with your real D1/KV ids, and applies
-   migrations to the remote database. It never commits that patch for you; review and commit it
-   yourself. It also prints which of the secrets below are already set, without ever reading or
-   printing their values.
+   below), the `clipfeed-embeddings` Vectorize index + its `added_at` metadata index (see "Semantic
+   dedup & search" below), and the `clipfeed-images` R2 bucket (see "Article images" below), patches
+   `wrangler.toml` with your real D1/KV ids, and applies migrations to the remote database. It never
+   commits that patch for you; review and commit it yourself. It also prints which of the secrets
+   below are already set, without ever reading or printing their values. **Run this before merging a
+   PR that touched `wrangler.toml`'s `[[r2_buckets]]`/`[[vectorize]]` entries** — those bindings
+   fail deploy if the underlying resource doesn't exist yet.
 3. (Optional) Upgrade the LLM mode — ClipFeed already works out of the box on the free Workers AI
    default (see "LLM modes" above). To use a real Claude model instead, set one of:
    - **AI Gateway (recommended)** — gives you usage/cost visibility and lets you rotate or swap the

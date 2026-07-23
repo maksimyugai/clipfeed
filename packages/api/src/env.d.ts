@@ -92,6 +92,34 @@ declare global {
     send(body: Body): Promise<void>;
   }
 
+  // Minimal ambient R2 types (Task 35 Part C, see images.ts) — same
+  // "extend as we actually use it" convention as the rest of this file: we
+  // only ever put() (with a content-type) and get() by key, never list/
+  // multipart/conditional operations.
+  interface R2HttpMetadata {
+    contentType?: string;
+  }
+
+  interface R2Object {
+    key: string;
+    httpMetadata?: R2HttpMetadata;
+  }
+
+  interface R2ObjectBody extends R2Object {
+    body: ReadableStream;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  }
+
+  interface R2Bucket {
+    get(key: string): Promise<R2ObjectBody | null>;
+    put(
+      key: string,
+      value: ReadableStream | ArrayBuffer | ArrayBufferView | string,
+      options?: { httpMetadata?: R2HttpMetadata },
+    ): Promise<R2Object>;
+    delete(key: string): Promise<void>;
+  }
+
   // Consumer-side message shape (see index.ts's `queue` export).
   interface Message<Body = unknown> {
     readonly id: string;
@@ -301,6 +329,17 @@ declare global {
     // 60 days) rather than throwing.
     AUTOBLOCK_THRESHOLD?: string;
     AUTOBLOCK_TTL_DAYS?: string;
+    // Article preview images (Task 35 Part C, see images.ts, README
+    // "Article images"): optional so a fork that hasn't run
+    // `deno task setup` yet (no R2 bucket provisioned, no [[r2_buckets]]
+    // binding in wrangler.toml) degrades gracefully — the image stage
+    // simply skips (logs, no image stored), same "auxiliary, never blocks"
+    // contract as VECTORS/embeddings above. IMAGES_ENABLED (default
+    // "true", [vars] string, parsed defensively by
+    // images.ts's parseImagesEnabled) disables the whole feature even when
+    // the binding IS configured — set to "false" to opt out entirely.
+    IMAGES?: R2Bucket;
+    IMAGES_ENABLED?: string;
   }
 }
 

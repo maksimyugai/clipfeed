@@ -180,3 +180,19 @@ export function resummarizeArticle(id: string): Promise<CreateArticleResponse> {
     { method: "POST" },
   );
 }
+
+// Task 35 Part A §3/§4: enqueues (or, if already done, no-ops on) lazy EN
+// generation for one article — the owner-only EN toggle triggers this per
+// visible card that's missing an English edition (see
+// lib/translateQueue.ts for the concurrency cap this is called under).
+export interface TranslateResponse {
+  id: string;
+  status: "pending" | "already-translated";
+}
+
+export function translateArticle(id: string): Promise<TranslateResponse> {
+  return request<TranslateResponse>(
+    `/api/admin/articles/${encodeURIComponent(id)}/translate`,
+    { method: "POST" },
+  );
+}

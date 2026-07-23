@@ -19,7 +19,7 @@ import {
 } from "./api.ts";
 import { readStoredSearchMode, type SearchMode, writeStoredSearchMode } from "./lib/searchMode.ts";
 import { computeLogoResetState } from "./lib/feedReset.ts";
-import { canMutate, classifyMeOutcome } from "./ownerMode.ts";
+import { canMutate, classifyMeOutcome, resolveEffectiveLang } from "./ownerMode.ts";
 import { isPickOfTheDay } from "./lib/pickOfTheDay.ts";
 import { EMPTY_FILTER_STATE, filterReducer } from "./lib/filterState.ts";
 import { bucketSection, type DateSection, groupArticlesBySection } from "./lib/dateGrouping.ts";
@@ -129,7 +129,6 @@ function computeSourceFacets(articles: ArticleListItem[]) {
 export function App() {
   const [lang, setLangState] = useState<Lang>(() => readStoredLang(localStorage));
   const [theme, toggleTheme] = useTheme();
-  const dict = dictionaries[lang];
 
   const [searchInput, setSearchInput] = useState("");
   const [searchMode, setSearchModeState] = useState<SearchMode>(() =>
@@ -154,6 +153,8 @@ export function App() {
     "loading",
   );
   const isOwner = canMutate(ownerModeState);
+  const effectiveLang = resolveEffectiveLang(lang, isOwner);
+  const dict = dictionaries[effectiveLang];
   const [sectionOpen, setSectionOpen] = useState<SectionOpenState>(() =>
     readStoredSectionState(localStorage)
   );
@@ -442,6 +443,9 @@ export function App() {
           faithfulness_checked_at: null,
           embedded_at: null,
           telegram_published_at: null,
+          en_generated_at: null,
+          image_key: null,
+          image_source_url: null,
         },
         ...current,
       ]);
@@ -615,7 +619,7 @@ export function App() {
       <div class="top-strip" />
       <Header
         dict={dict}
-        lang={lang}
+        lang={effectiveLang}
         onLogoClick={handleLogoClick}
         onLangChange={setLang}
         theme={theme}
@@ -660,7 +664,7 @@ export function App() {
             ? (
               <DeepLinkedArticle
                 dict={dict}
-                lang={lang}
+                lang={effectiveLang}
                 article={deepLinkedArticle}
                 isOwner={isOwner}
                 onBackToFeed={handleBackToFeed}
@@ -676,7 +680,7 @@ export function App() {
             : (
               <Feed
                 dict={dict}
-                lang={lang}
+                lang={effectiveLang}
                 articles={articles}
                 expandedId={expandedId}
                 onToggleExpand={(id) => setExpandedId((current) => (current === id ? null : id))}
