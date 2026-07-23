@@ -652,8 +652,17 @@ Deno.test("POST /api/admin/articles/:id/translate: 202 for a ready article, gene
   let anthropicCallCount = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = ((input: string | URL | Request) => {
-    const url = input.toString();
-    if (url.startsWith("https://api.anthropic.com")) {
+    const urlText =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(urlText);
+    } catch {
+      throw new Error("translate must not re-fetch the article's own URL");
+    }
+
+    if (parsed.protocol === "https:" && parsed.hostname === "api.anthropic.com") {
       anthropicCallCount += 1;
       return Promise.resolve(
         new Response(
