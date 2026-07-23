@@ -1,5 +1,10 @@
 import { assertEquals } from "@std/assert";
-import { digestHeader, failedText, readySuccessText } from "./telegram-strings.ts";
+import {
+  agentAlreadyRanWarning,
+  digestHeader,
+  failedText,
+  readySuccessText,
+} from "./telegram-strings.ts";
 
 Deno.test("readySuccessText: formats title/tldr/feed link on separate lines", () => {
   assertEquals(
@@ -37,4 +42,11 @@ Deno.test("failedText: truncates a very long reason to the message limit", () =>
 Deno.test("digestHeader: includes the article count", () => {
   assertEquals(digestHeader(3), "ClipFeed — за сутки: 3 статей");
   assertEquals(digestHeader(1), "ClipFeed — за сутки: 1 статей");
+});
+
+Deno.test("agentAlreadyRanWarning: names the picks count and UTC clock time, states it's running again", () => {
+  assertEquals(
+    agentAlreadyRanWarning(10, "05:00"),
+    "Сегодня агент уже отработал: 10 статей в 05:00 UTC. Запускаю ещё раз.",
+  );
 });

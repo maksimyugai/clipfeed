@@ -13,7 +13,7 @@ function truncateToTelegramLimit(text: string): string {
 export const NON_OWNER_REPLY = "Это персональный бот.";
 
 export const HELP_TEXT =
-  "Отправь ссылку — сохраню её в ленту.\n\n/digest — прислать выжимку за сутки.\n/scrape — запустить агента прямо сейчас.\n/publish — опубликовать следующую статью из очереди сейчас же.";
+  "Отправь ссылку — сохраню её в ленту.\n\n/digest — прислать выжимку за сутки.\n/scrape — запустить агента прямо сейчас (если уже запускался сегодня, предупрежу перед повтором; /scrape force — без предупреждения).\n/publish — опубликовать следующую статью из очереди сейчас же.";
 
 export const SAVING_TEXT = "Сохраняю…";
 
@@ -50,4 +50,14 @@ export function failedText(reason: string): string {
 
 export function digestHeader(articleCount: number): string {
   return `ClipFeed — за сутки: ${articleCount} статей`;
+}
+
+// Task 36 Part B §3: shown before a manual agent trigger (POST
+// /api/admin/agent/run, /scrape) proceeds anyway, when the agent already
+// ran today — names the most recent prior run (picks count + UTC clock
+// time) so the owner isn't surprised by a doubled batch. "статей" left
+// unconditional (no Russian plural agreement) — same simplification
+// digestHeader above already makes.
+export function agentAlreadyRanWarning(picks: number, timeUtc: string): string {
+  return `Сегодня агент уже отработал: ${picks} статей в ${timeUtc} UTC. Запускаю ещё раз.`;
 }

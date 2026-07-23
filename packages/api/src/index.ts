@@ -51,6 +51,8 @@ import {
 } from "./validation.ts";
 import { handleTelegramWebhook } from "./telegram-webhook.ts";
 import { runAgentJob } from "./agent.ts";
+import { formatUtcHourMinute, readAgentRunHistory } from "./agent-run-tracker.ts";
+import { agentAlreadyRanWarning } from "./telegram-strings.ts";
 import { handleScheduled, parseHour } from "./scheduled.ts";
 import { parseAgentDailyPicks } from "./ranking.ts";
 import { listLearnedThinHosts } from "./thin-host-learning.ts";
@@ -568,9 +570,22 @@ app.post("/api/admin/articles/:id/reverify", async (c) => {
 
 // Manual trigger for the daily scraping agent — same job the hourly
 // AGENT_HOUR_UTC dispatch runs, useful for testing without waiting for the
-// clock. See agent.ts.
-app.post("/api/admin/agent/run", (c) => {
-  c.executionCtx.waitUntil(runAgentJob(c.env));
+// clock. See agent.ts. Task 36 Part B §3: owner intent always wins here —
+// this runs regardless of whether the agent already ran today — but if it
+// did, the response carries a `warning` naming the most recent prior run so
+// the owner isn't surprised by a doubled batch. `?force=1` skips the
+// history check (and thus the warning) entirely, matching the bot's
+// "/scrape force" bypass.
+app.post("/api/admin/agent/run", async (c) => {
+  const forced = c.req.query("force") === "1";
+  const previousRuns = forced ? [] : await readAgentRunHistory(c.env.CACHE);
+  c.executionCtx.waitUntil(runAgentJob(c.env, undefined, "manual"));
+
+  if (previousRuns.length > 0) {
+    const last = previousRuns[previousRuns.length - 1];
+    const warning = agentAlreadyRanWarning(last.picks, formatUtcHourMinute(last.startedAt));
+    return c.json({ ok: true, warning }, 202);
+  }
   return c.json({ ok: true }, 202);
 });
 
@@ -588,6 +603,7 @@ app.get("/api/admin/health-report", async (c) => {
     faithfulnessCallsToday,
     curationBlocked,
     sourceStats,
+    agentRunsToday,
   ] = await Promise.all([
     getFailureStats(c.env.DB),
     listLearnedThinHosts(c.env.CACHE),
@@ -597,6 +613,7 @@ app.get("/api/admin/health-report", async (c) => {
     readFaithfulnessCallCount(c.env.CACHE),
     buildCurationBlockedReport(c.env),
     getSourceStats(c.env.DB),
+    readAgentRunHistory(c.env.CACHE),
   ]);
 
   // Task 33 §8: joins each source's picks/successes/failures with its
@@ -620,6 +637,11 @@ app.get("/api/admin/health-report", async (c) => {
     heal_attempts_totals,
     learned_thinhosts: learnedThinhosts,
     last_agent_run: { last_added_at: lastAgentActivity },
+    // Task 36 Part B §4: every completed agent run for the current UTC day
+    // (scheduled and/or manual, see agent-run-tracker.ts) — makes a doubled
+    // batch (two runs same day) visible without log spelunking. Empty when
+    // the agent hasn't run yet today.
+    agent_runs_today: agentRunsToday,
     // Today's daily-limit budget usage — a run that silently fails with
     // 'daily-limit' (fetch->extract->done, no summarize stage — see
     // pipeline.ts's budget stage log) previously cost the owner a

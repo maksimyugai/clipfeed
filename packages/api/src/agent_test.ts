@@ -1,6 +1,7 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { runAgentJob } from "./agent.ts";
+import { readAgentRunHistory } from "./agent-run-tracker.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { FakeQueue } from "./testing/fake_queue.ts";
 import type { SourceConfig } from "./agent-types.ts";
@@ -178,6 +179,47 @@ Deno.test("runAgentJob: end-to-end — 10 picks across 5 distinct sources insert
       assertEquals(row.status, "ready");
       assertEquals(row.summary_ru !== null, true);
     }
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("runAgentJob: records a run marker on completion with the trigger and actual picks count (Task 36 Part B)", async () => {
+  const restore = stubFetch();
+  try {
+    const env = makeEnv();
+    await runAgentJob(env, FIVE_RSS_SOURCES, "scheduled");
+
+    const history = await readAgentRunHistory(env.CACHE);
+    assertEquals(history.length, 1);
+    assertEquals(history[0].trigger, "scheduled");
+    assertEquals(history[0].picks, 10);
+    assertEquals(typeof history[0].startedAt, "string");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("runAgentJob: defaults to trigger 'manual' when not specified", async () => {
+  const restore = stubFetch();
+  try {
+    const env = makeEnv();
+    await runAgentJob(env, FIVE_RSS_SOURCES);
+    const history = await readAgentRunHistory(env.CACHE);
+    assertEquals(history[0].trigger, "manual");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("runAgentJob: records a run marker (picks: 0) even when the pool ends up empty", async () => {
+  const restore = stubFetch();
+  try {
+    const env = makeEnv();
+    await runAgentJob(env, [], "scheduled");
+    const history = await readAgentRunHistory(env.CACHE);
+    assertEquals(history.length, 1);
+    assertEquals(history[0].picks, 0);
   } finally {
     restore();
   }

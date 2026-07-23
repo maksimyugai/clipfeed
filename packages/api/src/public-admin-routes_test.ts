@@ -4,6 +4,7 @@ import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 import { insertPendingArticle, markArticleFailed } from "./db.ts";
 import { FakeQueue } from "./testing/fake_queue.ts";
+import { recordAgentRun } from "./agent-run-tracker.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";
@@ -357,6 +358,33 @@ Deno.test("GET /api/admin/health-report: 200 for the owner, returns the self-hea
   // preferred-but-blocked conflicts, all in one response.
   assertEquals(body.curation.blocked.config.includes("wsj.com"), true);
   assertEquals(body.curation.sources, []); // no agent-added rows in this test
+
+  // Task 36 Part B §4: no agent run yet today in this test.
+  assertEquals(body.agent_runs_today, []);
+});
+
+Deno.test("GET /api/admin/health-report: includes today's agent run history (Task 36 Part B)", async () => {
+  const { env, authHeaders } = await makeOwnerContext();
+  const ctx = makeExecutionContext().ctx;
+
+  await recordAgentRun(env.CACHE, {
+    startedAt: "2026-01-01T05:00:48.000Z",
+    picks: 10,
+    trigger: "scheduled",
+  });
+  await recordAgentRun(env.CACHE, {
+    startedAt: "2026-01-01T08:47:33.000Z",
+    picks: 10,
+    trigger: "manual",
+  });
+
+  const res = await app.request("/api/admin/health-report", { headers: authHeaders }, env, ctx);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.agent_runs_today, [
+    { startedAt: "2026-01-01T05:00:48.000Z", picks: 10, trigger: "scheduled" },
+    { startedAt: "2026-01-01T08:47:33.000Z", picks: 10, trigger: "manual" },
+  ]);
 });
 
 // --- Task 33: GET /api/admin/curation/blocked, DELETE .../autoblock ---
@@ -887,6 +915,67 @@ Deno.test("POST /api/admin/agent/run: 202 for the owner, runs the agent job via 
     // waitUntil resolved without throwing.
     const db = env.DB as unknown as FakeD1;
     assertEquals(db.rows.filter((r) => r.added_via === "agent").length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("POST /api/admin/agent/run: when the agent already ran today, response carries a warning naming the prior run, and the job still runs (Task 36 Part B)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch;
+  try {
+    const { env, authHeaders } = await makeOwnerContext();
+    const { ctx, settle } = makeExecutionContext();
+
+    await recordAgentRun(env.CACHE, {
+      startedAt: "2026-01-01T05:00:48.000Z",
+      picks: 10,
+      trigger: "scheduled",
+    });
+
+    const res = await app.request(
+      "/api/admin/agent/run",
+      { method: "POST", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(res.status, 202);
+    const body = await res.json();
+    assertEquals(body.ok, true);
+    assertEquals(typeof body.warning, "string");
+    assertEquals(body.warning.includes("10 статей"), true);
+
+    await settle();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("POST /api/admin/agent/run?force=1: suppresses the warning even when the agent already ran today", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(new Response("nope", { status: 500 }))) as typeof fetch;
+  try {
+    const { env, authHeaders } = await makeOwnerContext();
+    const { ctx, settle } = makeExecutionContext();
+
+    await recordAgentRun(env.CACHE, {
+      startedAt: "2026-01-01T05:00:48.000Z",
+      picks: 10,
+      trigger: "scheduled",
+    });
+
+    const res = await app.request(
+      "/api/admin/agent/run?force=1",
+      { method: "POST", headers: authHeaders },
+      env,
+      ctx,
+    );
+    assertEquals(res.status, 202);
+    const body = await res.json();
+    assertEquals(body.ok, true);
+    assertEquals("warning" in body, false);
+
+    await settle();
   } finally {
     globalThis.fetch = originalFetch;
   }

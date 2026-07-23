@@ -1,6 +1,7 @@
 import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { handleScheduled, parseHour } from "./scheduled.ts";
+import { recordAgentRun } from "./agent-run-tracker.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
 
 class FakeKV {
@@ -90,6 +91,29 @@ Deno.test("handleScheduled: on the agent hour, runs the agent job (fetches sourc
     const scheduledTime = new Date("2026-01-01T05:00:00Z").getTime();
     await handleScheduled(env, scheduledTime);
     assertEquals(fetchCalled, true);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("handleScheduled: on the agent hour, skips the agent job when a run marker for today already exists (Task 36 Part B)", async () => {
+  let fetchCalled = false;
+  const restore = stubFetch(() => {
+    fetchCalled = true;
+    return new Response("nope", { status: 500 });
+  });
+  try {
+    const env = makeEnv({ AGENT_HOUR_UTC: "5" });
+    const scheduledTime = new Date("2026-01-01T05:00:00Z").getTime();
+    // A manual run already happened earlier today (e.g. /scrape before the
+    // scheduled hour) — the scheduled dispatch must not double it.
+    await recordAgentRun(
+      env.CACHE,
+      { startedAt: "2026-01-01T02:00:00.000Z", picks: 8, trigger: "manual" },
+      new Date(scheduledTime),
+    );
+    await handleScheduled(env, scheduledTime);
+    assertEquals(fetchCalled, false);
   } finally {
     restore();
   }
