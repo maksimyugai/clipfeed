@@ -61,3 +61,11 @@ export function digestHeader(articleCount: number): string {
 export function agentAlreadyRanWarning(picks: number, timeUtc: string): string {
   return `Сегодня агент уже отработал: ${picks} статей в ${timeUtc} UTC. Запускаю ещё раз.`;
 }
+
+// Task 37 §4: shown when /publish hits PUBLISH_MAX_PER_DAY — the cap is a
+// flood guard, not an inconvenience, so there's no force-bypass wording here
+// (unlike agentAlreadyRanWarning above, which precedes a run that still
+// happens).
+export function publishCapReachedText(maxPerDay: number): string {
+  return `Дневной лимит публикаций достигнут (${maxPerDay}).`;
+}

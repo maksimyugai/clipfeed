@@ -1,14 +1,17 @@
 import "./env.d.ts";
-import { getNextPublishCandidate, markTelegramPublished } from "./db.ts";
+import { getNextPublishCandidate, markStaleArticlesSkipped, markTelegramPublished } from "./db.ts";
 import { readTelegramConfig, sendMessage, type TelegramConfig } from "./telegram-client.ts";
 import { buildPublishPost } from "./telegram-post.ts";
 
-// Don't drip out ancient backlog if the feature is turned on (or was off
-// for a while) long after articles piled up — same "recent window" idea as
-// the /digest command's 24h lookback, just wider since the drip is meant
-// to eventually surface everything from roughly the last two days, not
-// just "since yesterday".
-const PUBLISH_LOOKBACK_MS = 48 * 60 * 60 * 1000;
+// Task 37: publish ONLY today's articles. The drip used to draw from a
+// rolling 48h window, which meant a quiet stretch let yesterday's leftovers
+// crowd out today's picks before the reader ever saw them. Owner decision:
+// freshness beats completeness — 10 posts/day is already more than enough
+// for a full day's picks to fit inside "today", so there's no need for a
+// wider window at all.
+export function utcDayStartIso(nowMs: number): string {
+  return `${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00.000Z`;
+}
 
 // [vars] strings parsed defensively, same pattern as the rest of this
 // codebase's hour-window/threshold configs (see search.ts's
@@ -51,24 +54,79 @@ export function isPublishEnabled(raw: string | undefined): boolean {
   return (raw ?? "true").trim().toLowerCase() !== "false";
 }
 
+// Task 37 §3: flood guard against the agent producing more than one batch in
+// a day (see Task 36) — without a cap, a second batch's worth of picks would
+// otherwise all drip out on top of the first. Same defensive-parse
+// convention as the hour vars above.
+export const DEFAULT_PUBLISH_MAX_PER_DAY = 10;
+
+function parsePublishMaxPerDay(raw: string | undefined): number {
+  const trimmed = (raw ?? "").trim();
+  if (trimmed === "") return DEFAULT_PUBLISH_MAX_PER_DAY;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n <= 0) {
+    console.warn(
+      JSON.stringify({
+        event: "publish_max_per_day_invalid",
+        raw: trimmed,
+        fallback: DEFAULT_PUBLISH_MAX_PER_DAY,
+      }),
+    );
+    return DEFAULT_PUBLISH_MAX_PER_DAY;
+  }
+  return n;
+}
+
+// Same 48h TTL convention as Task 36's agentrun:<date> marker — a day's
+// counter naturally expires after two days rather than needing explicit
+// cleanup, well after the cap could matter again.
+const PUBLISH_COUNT_TTL_SECONDS = 48 * 60 * 60;
+
+// Keyed off `nowMs` (the publish attempt's own time, not the real wall
+// clock) so the cap is scoped to the correct UTC calendar day even under
+// test with an injected time.
+function publishCountKey(nowMs: number): string {
+  return `published:${new Date(nowMs).toISOString().slice(0, 10)}`;
+}
+
+async function readPublishCountToday(cache: KVNamespace, nowMs: number): Promise<number> {
+  const raw = await cache.get(publishCountKey(nowMs));
+  if (!raw) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+async function incrementPublishCount(
+  cache: KVNamespace,
+  nowMs: number,
+  countBefore: number,
+): Promise<void> {
+  await cache.put(publishCountKey(nowMs), String(countBefore + 1), {
+    expirationTtl: PUBLISH_COUNT_TTL_SECONDS,
+  });
+}
+
 export type PublishOutcome =
   | { kind: "published"; articleId: string }
   | { kind: "skipped-unfaithful"; articleId: string }
-  | { kind: "empty" };
+  | { kind: "empty" }
+  | { kind: "cap-reached"; maxPerDay: number };
 
 // The one shared "advance the drip queue by one" step, used by BOTH the
 // hourly cron job (gated by window/enabled, see runPublishJob below) and
 // the owner-only /publish command (which forces it immediately, ignoring
-// the window). A faithfulness-'fail' candidate is never sent to Telegram —
-// broadcasting a likely-inaccurate summary is worse than silence — but is
-// still marked published so the queue advances past it on the next tick
-// instead of retrying the same skip forever.
+// the window — but NOT the cap, see §4). A faithfulness-'fail' candidate is
+// never sent to Telegram — broadcasting a likely-inaccurate summary is
+// worse than silence — but is still marked published so the queue advances
+// past it on the next tick instead of retrying the same skip forever. That
+// skip never touches the daily cap: it never reaches Telegram, so it can't
+// contribute to flooding the channel.
 export async function publishNextArticle(
   env: Env,
   config: TelegramConfig,
   nowMs: number = Date.now(),
 ): Promise<PublishOutcome> {
-  const since = new Date(nowMs - PUBLISH_LOOKBACK_MS).toISOString();
+  const since = utcDayStartIso(nowMs);
   const candidate = await getNextPublishCandidate(env.DB, since);
   if (!candidate) return { kind: "empty" };
 
@@ -80,6 +138,13 @@ export async function publishNextArticle(
     );
     await markTelegramPublished(env.DB, candidate.id, now);
     return { kind: "skipped-unfaithful", articleId: candidate.id };
+  }
+
+  const maxPerDay = parsePublishMaxPerDay(env.PUBLISH_MAX_PER_DAY);
+  const countToday = await readPublishCountToday(env.CACHE, nowMs);
+  if (countToday >= maxPerDay) {
+    console.warn(JSON.stringify({ event: "publish_cap_reached", maxPerDay }));
+    return { kind: "cap-reached", maxPerDay };
   }
 
   const text = buildPublishPost({
@@ -106,6 +171,7 @@ export async function publishNextArticle(
   // surface the failure.
   await sendMessage(config.botToken, chatId, text, { parseMode: "HTML" });
   await markTelegramPublished(env.DB, candidate.id, now);
+  await incrementPublishCount(env.CACHE, nowMs, countToday);
   return { kind: "published", articleId: candidate.id };
 }
 
@@ -122,6 +188,21 @@ export async function runPublishJob(env: Env, nowMs: number = Date.now()): Promi
   const config = readTelegramConfig(env);
   if (!config) return;
   if (!isPublishEnabled(env.PUBLISH_ENABLED)) return;
+
+  // Task 37 §2: sweep yesterday-and-older unpublished candidates out of the
+  // queue on every enabled tick, regardless of the publish-hour window — this
+  // is unrelated cleanup, not a publish attempt, so it shouldn't wait for the
+  // window to open. Wrapped separately so a sweep failure can never prevent
+  // the actual publish attempt below.
+  try {
+    const cutoff = utcDayStartIso(nowMs);
+    const staleCount = await markStaleArticlesSkipped(env.DB, cutoff);
+    if (staleCount > 0) {
+      console.log(JSON.stringify({ event: "publish_skipped_stale", count: staleCount }));
+    }
+  } catch (err) {
+    console.error(JSON.stringify({ event: "publish_stale_sweep_failed", error: String(err) }));
+  }
 
   const currentHour = new Date(nowMs).getUTCHours();
   if (!isWithinPublishWindow(currentHour, env.PUBLISH_START_HOUR_UTC, env.PUBLISH_END_HOUR_UTC)) {

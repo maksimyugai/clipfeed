@@ -655,8 +655,8 @@ Plus `[vars]`, all optional:
   blank.
 - `TELEGRAM_CHANNEL_ID` (default `""`) — when set, drip posts go to this channel instead of your own
   DM. See "Publishing to a channel" below.
-- `PUBLISH_START_HOUR_UTC` / `PUBLISH_END_HOUR_UTC` (defaults `4` / `18`) and `PUBLISH_ENABLED`
-  (default `true`) — see "Drip publishing (cron)" below.
+- `PUBLISH_START_HOUR_UTC` / `PUBLISH_END_HOUR_UTC` (defaults `4` / `18`), `PUBLISH_ENABLED`
+  (default `true`), and `PUBLISH_MAX_PER_DAY` (default `10`) — see "Drip publishing (cron)" below.
 
 ### Setup
 
@@ -740,17 +740,49 @@ tick instead of a single hour, gated by its own window:
 crons = ["0 * * * *"]
 ```
 
-Each tick, if the current UTC hour falls inside `[PUBLISH_START_HOUR_UTC, PUBLISH_END_HOUR_UTC)` and
+On every enabled tick (window or not — see below), ClipFeed first sweeps: any `ready`, non-archived,
+still-unpublished article added **before the current UTC day** is marked as skipped-stale rather
+than left to queue forever (Task 37 — see "Today-only selection and stale articles" below). Then, if
+the current UTC hour falls inside `[PUBLISH_START_HOUR_UTC, PUBLISH_END_HOUR_UTC)` and
 `PUBLISH_ENABLED` isn't the literal `"false"`, ClipFeed picks the **oldest** `ready`, non-archived,
-not-yet-published article added within the last 48h and posts it as a proper standalone message:
-title in bold, the TL;DR, the key-point bullets, a "Читать полностью →" link to its card
+not-yet-published article added **on the current UTC day** and posts it as a proper standalone
+message: title in bold, the TL;DR, the key-point bullets, a "Читать полностью →" link to its card
 (`PUBLIC_BASE_URL + "/a/<id>"` — a real path, not a hash fragment; see "Link previews" below), and a
 plain-text source line (just the domain, e.g. `Источник: example.com` — no link). The message
 therefore contains **exactly one** link, the ClipFeed card, so Telegram's own link-preview crawler
 builds its preview from that card instead of the original article. At most one article goes out per
-tick, so across the default 4–18 UTC window that's up to 14 posts a day, spread out instead of
-arriving as one unreadable wall of text. An article is marked published the moment it's posted (or
-skipped — see below) so it's never sent twice, even across restarts or config changes.
+tick, so across the default 4–18 UTC window that's up to 14 posts a day — well under
+`PUBLISH_MAX_PER_DAY`'s default of 10, so the cap (see below) is what actually governs the daily
+total. An article is marked published the moment it's posted (or skipped — see below) so it's never
+sent twice, even across restarts or config changes.
+
+### Today-only selection and stale articles
+
+Task 37: the drip selects only articles added on the **current UTC calendar day** — not a rolling
+window. Owner decision: 10 posts/day (the cap, see below) is already more than enough for a full
+day's picks to fit inside "today", so freshness beats completeness. An article that doesn't get
+posted before the day ends is **not** carried over and published later — it stays visible in the
+feed like any other article, it just never goes out over Telegram. To stop the job re-scanning a
+growing backlog of old candidates on every tick, any such article is marked with a sentinel value in
+its existing `telegram_published_at` column (distinct from a real publish timestamp, but every
+reader of that column only ever checks NULL vs. NOT NULL, never parses it as a date — so reusing the
+column avoids a migration) the first tick after its day has passed, logged as
+`publish_skipped_stale
+{count}`. This sweep is idempotent: once marked, a row can never be
+reconsidered, so there's no re-looping.
+
+### Daily post cap
+
+**`PUBLISH_MAX_PER_DAY`** ([vars] in `wrangler.toml`, default `10`) caps how many articles the drip
+actually sends per UTC day — a KV counter (`published:<YYYY-MM-DD>`, 48h TTL) increments on every
+real send and resets naturally at the next UTC day. This matters because the scraping agent can
+produce more than one batch in a day (see "Daily scraping agent" below and Task 36's run-level
+idempotency); without the cap, a second batch's worth of picks would otherwise all drip out on top
+of the first. Once the cap is hit, both the cron job and manual `/publish` no-op (logged as
+`publish_cap_reached`) rather than posting further — `/publish` replies with "Дневной лимит
+публикаций достигнут (N)" and, unlike `/scrape force`, has **no bypass**: the cap is a flood guard,
+not an inconvenience. A faithfulness-`'fail'` skip (see below) never counts against the cap and is
+never blocked by it, since it's never actually sent to Telegram.
 
 ### Link previews (`GET /a/:id`)
 
@@ -769,14 +801,15 @@ quiet — but still marked as handled, so the drip queue advances past it instea
 skip forever. Nothing in the SPA or `/digest` is affected; this only changes what the bot
 broadcasts.
 
-`PUBLISH_ENABLED` set to `"false"` turns the whole job off (no posts, cron or `/publish`); any other
-value, including leaving it unset, means "on" — same "only the literal false disables it" convention
-as `FAITHFULNESS_CHECK`. `PUBLISH_START_HOUR_UTC`/`PUBLISH_END_HOUR_UTC` are `[vars]` strings parsed
-defensively (an invalid or missing value falls back to the documented default, `4`/`18`) rather than
-disabling anything — they only bound the window, they aren't an on/off switch themselves. Always
-**UTC**, regardless of your own timezone. `deno task deploy` (and the CD workflow on merge to
-`main`) applies `wrangler.toml`'s triggers automatically; no separate registration step like the
-webhook needs.
+`PUBLISH_ENABLED` set to `"false"` turns the whole job off (no posts, cron or `/publish`, and no
+stale sweep either); any other value, including leaving it unset, means "on" — same "only the
+literal false disables it" convention as `FAITHFULNESS_CHECK`.
+`PUBLISH_START_HOUR_UTC`/`PUBLISH_END_HOUR_UTC` and `PUBLISH_MAX_PER_DAY` are all `[vars]` strings
+parsed defensively (an invalid or missing value falls back to the documented default — `4`/`18`/`10`
+respectively — with a logged warning) rather than disabling anything — the hour vars only bound the
+window and the cap only bounds the count, neither is an on/off switch itself. Always **UTC**,
+regardless of your own timezone. `deno task deploy` (and the CD workflow on merge to `main`) applies
+`wrangler.toml`'s triggers automatically; no separate registration step like the webhook needs.
 
 ### Privacy
 

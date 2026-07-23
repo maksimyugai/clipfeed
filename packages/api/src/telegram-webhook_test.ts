@@ -637,3 +637,77 @@ Deno.test("webhook: a non-owner chat never triggers /scrape", async () => {
     stub.restore();
   }
 });
+
+// --- /publish (Task 29's drip publish, forced immediately) — Task 37's
+// daily cap must be respected here exactly like the cron job, since both
+// paths share publishNextArticle. Uses the real Date.now() for added_at
+// (rather than an injected time — the webhook handler itself always calls
+// publishNextArticle with the default, real-clock nowMs), same convention
+// as the /scrape-already-ran tests above.
+
+function insertReadyArticleForPublish(db: FakeD1, id: string) {
+  db.rows.push({
+    id,
+    url: `https://example.com/${id}`,
+    canonical_url: null,
+    title: "Some title",
+    source: "example.com",
+    author: null,
+    published_at: null,
+    added_at: new Date().toISOString(),
+    added_via: "agent",
+    lang_original: "en",
+    full_text: "full text",
+    summary_ru: "summary",
+    summary_en: "summary",
+    summary_json: JSON.stringify(VALID_SUMMARY),
+    tags: "[]",
+    status: "ready",
+    archived: 0,
+    error: null,
+    fail_class: null,
+    heal_attempts: 0,
+    faithfulness_verdict: null,
+    faithfulness_json: null,
+    faithfulness_checked_at: null,
+    embedded_at: null,
+    telegram_published_at: null,
+  });
+}
+
+Deno.test("webhook: /publish posts the oldest queued article and replies 'Опубликовано.'", async () => {
+  const stub = stubFetch();
+  try {
+    const env = makeEnv();
+    insertReadyArticleForPublish(env.DB as unknown as FakeD1, "p1");
+    const { ctx } = makeExecutionContext();
+
+    const res = await webhookRequest(env, ctx, messageUpdate({ text: "/publish" }));
+    assertEquals(res.status, 200);
+    assertEquals(stub.telegramCalls.length, 2); // the post itself, then the owner reply
+    assertEquals(stub.telegramCalls[1].body.text, "Опубликовано.");
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("webhook: /publish at the daily cap replies with the cap-reached message and does not post, no force bypass", async () => {
+  const stub = stubFetch();
+  try {
+    const env = makeEnv();
+    insertReadyArticleForPublish(env.DB as unknown as FakeD1, "p1");
+    const today = new Date().toISOString().slice(0, 10);
+    await env.CACHE.put(`published:${today}`, "10");
+    const { ctx } = makeExecutionContext();
+
+    const res = await webhookRequest(env, ctx, messageUpdate({ text: "/publish" }));
+    assertEquals(res.status, 200);
+    assertEquals(stub.telegramCalls.length, 1); // only the reply, no post
+    assertEquals(stub.telegramCalls[0].body.text, "Дневной лимит публикаций достигнут (10).");
+
+    const row = (env.DB as unknown as FakeD1).rows.find((r) => r.id === "p1")!;
+    assertEquals(row.telegram_published_at, null);
+  } finally {
+    stub.restore();
+  }
+});

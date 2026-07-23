@@ -105,7 +105,12 @@ export interface Article {
   // publish date) to avoid colliding with that unrelated, pre-existing
   // field. A 'fail'-verdict article is marked here WITHOUT ever actually
   // being sent (see telegram-publish.ts's doc comment) so the drip queue
-  // advances past it instead of retrying the same skip forever.
+  // advances past it instead of retrying the same skip forever. Task 37:
+  // may also hold db.ts's TELEGRAM_SKIPPED_STALE_MARKER sentinel string
+  // instead of a real ISO timestamp, for an article that aged out of the
+  // drip's today-only window and will never be published — every reader of
+  // this field only ever checks NULL vs. NOT NULL, never parses it as a
+  // Date, so the sentinel is safe here.
   telegram_published_at: string | null;
   // Task 35 Part A: set once POST /api/admin/articles/:id/translate has
   // successfully generated and merged the _en summary fields (see
