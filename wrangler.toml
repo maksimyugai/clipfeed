@@ -45,7 +45,7 @@ AUTOBLOCK_TTL_DAYS = "60"
 # ever selects the current UTC day's articles (Task 37) — PUBLISH_MAX_PER_DAY
 # caps how many of those are actually sent per UTC day, as a flood guard
 # against the scraping agent producing more than one batch in a day.
-TELEGRAM_CHANNEL_ID = ""
+TELEGRAM_CHANNEL_ID = "@clipfeedchannel"
 PUBLISH_START_HOUR_UTC = "4"
 PUBLISH_END_HOUR_UTC = "18"
 PUBLISH_ENABLED = "true"
@@ -62,7 +62,7 @@ AGENT_DAILY_PICKS = "10"
 # breaking. See README "Summary length".
 SUMMARY_BODY_TARGET_CHARS = "800"
 
-# Faithfulness check (see packages/api/src/faithfulness.ts, README
+# Faithfulness check (see packages/api/src/pipeline/faithfulness.ts, README
 # "Faithfulness check"): a SEPARATE judge pass, always Workers AI Llama
 # regardless of which model wrote the summary, that verifies a summary
 # against its source after it validates but before the article is marked
@@ -121,7 +121,7 @@ index_name = "clipfeed-embeddings"
 binding = "IMAGES"
 bucket_name = "clipfeed-images"
 
-# Single hourly cron (see packages/api/src/scheduled.ts):
+# Single hourly cron (see packages/api/src/scheduled/scheduled.ts):
 #   - AGENT_HOUR_UTC (default 5, empty/invalid disables it): the scraping
 #     agent (see README "Daily scraping agent"), runs once at this hour.
 #   - The Telegram drip publish job (see README "Telegram bot") runs on

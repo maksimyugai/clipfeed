@@ -2,9 +2,9 @@ import "./env.d.ts";
 import { assertEquals } from "@std/assert";
 import { app } from "./index.ts";
 import { FakeD1 } from "./testing/fake_d1.ts";
-import { insertPendingArticle, markArticleFailed } from "./db.ts";
+import { insertPendingArticle, markArticleFailed } from "./articles/db.ts";
 import { FakeQueue } from "./testing/fake_queue.ts";
-import { recordAgentRun } from "./agent-run-tracker.ts";
+import { recordAgentRun } from "./agent/agent-run-tracker.ts";
 
 const TEAM_DOMAIN = "test-team.cloudflareaccess.com";
 const AUD = "test-aud-tag";

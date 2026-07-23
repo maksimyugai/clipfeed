@@ -10,7 +10,7 @@ const KV_BINDING = "CACHE";
 const QUEUE_NAME = "clipfeed-jobs";
 const DLQ_NAME = "clipfeed-dlq";
 const VECTORIZE_INDEX_NAME = "clipfeed-embeddings";
-// Must match EMBEDDING_DIMENSIONS in packages/api/src/embeddings.ts — the
+// Must match EMBEDDING_DIMENSIONS in packages/api/src/search/embeddings.ts — the
 // Workers AI model (@cf/baai/bge-m3) that produces the vectors this index
 // stores. If that model ever changes, this index has to be recreated at the
 // new dimension count (Vectorize can't resize an existing index) — see

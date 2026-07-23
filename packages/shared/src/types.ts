@@ -2,7 +2,7 @@ export type ArticleStatus = "pending" | "ready" | "failed";
 export type AddedVia = "extension" | "manual" | "agent" | "telegram";
 
 // Verdict from the independent faithfulness judge (always Workers AI Llama —
-// see packages/api/src/faithfulness.ts), run as a separate pipeline stage
+// see packages/api/src/pipeline/faithfulness.ts), run as a separate pipeline stage
 // after a summary validates but before the article is marked 'ready'. null
 // means the check hasn't run at all (disabled, or a pre-Task-23 row) — this
 // is distinct from a judge call that ran but couldn't be parsed, which is
@@ -92,7 +92,7 @@ export interface Article {
   faithfulness_json: FaithfulnessJson | null;
   faithfulness_checked_at: string | null;
   // Set once this article's Vectorize embedding has been written (see
-  // packages/api/src/embeddings.ts) — null means not embedded yet: a fresh
+  // packages/api/src/search/embeddings.ts) — null means not embedded yet: a fresh
   // 'ready' article whose embed stage hasn't run, one whose embed call
   // failed (embed failures never fail the article itself — see
   // pipeline.ts), or a row saved before this feature existed. The backfill
@@ -100,7 +100,7 @@ export interface Article {
   // catches all three by selecting WHERE embedded_at IS NULL.
   embedded_at: string | null;
   // Set once this article has been drip-published to Telegram (see
-  // packages/api/src/telegram-publish.ts) — null means not yet published.
+  // packages/api/src/telegram/telegram-publish.ts) — null means not yet published.
   // Named distinctly from `published_at` above (the SOURCE article's own
   // publish date) to avoid colliding with that unrelated, pre-existing
   // field. A 'fail'-verdict article is marked here WITHOUT ever actually
@@ -124,7 +124,7 @@ export interface Article {
   en_generated_at: string | null;
   // Task 35 Part C: R2 object key for this article's thumbnail/preview
   // image (`articles/<id>.<ext>`), scraped from the source page's own
-  // og:image/twitter:image meta tag — see packages/api/src/images.ts. null
+  // og:image/twitter:image meta tag — see packages/api/src/pipeline/images.ts. null
   // means no image (none found, download/validation failed, or the feature
   // is disabled) — images are strictly optional and never fail a summary.
   image_key: string | null;

@@ -73,7 +73,7 @@ requests are actually arriving there. See "Deploy your own (fork)" below for the
 
 Every summary is checked against a content-quality bar before it's persisted (title length, tldr
 length, bullet count/length, body paragraph count/length, and a duplicate-content heuristic — see
-`validateSummary` in `packages/api/src/summarize.ts`) — an LLM response that fails gets one
+`validateSummary` in `packages/api/src/pipeline/summarize.ts`) — an LLM response that fails gets one
 corrective retry naming the specific violations, then the article is marked `'failed'` rather than
 storing a substandard summary. There are two named tiers, not one: **STRICT** (gateway/direct,
 Claude-class models) and **RELAXED** (Workers AI's free-tier Llama default) — Claude-class models
@@ -296,9 +296,10 @@ paragraph — RU fields, since Task 35 made summarization Russian-only by defaul
 summaries" above) and the same extracted source text the summarizer saw, and returns
 `supported`/`unsupported`/`contradicted` per claim plus a short source-span citation for each. Any
 single `contradicted` claim fails the article outright; otherwise the unsupported-claim ratio
-decides `pass` (≤25%), `weak` (25–50%), or `fail` (>50%) — see `packages/api/src/faithfulness.ts`
-for the exact thresholds, which are intentionally round, untuned numbers for this first release
-rather than something calibrated against real judge output yet.
+decides `pass` (≤25%), `weak` (25–50%), or `fail` (>50%) — see
+`packages/api/src/pipeline/faithfulness.ts` for the exact thresholds, which are intentionally round,
+untuned numbers for this first release rather than something calibrated against real judge output
+yet.
 
 **Cross-lingual caveat:** the source article is usually English while the summary being judged is
 now Russian by default (it was the reverse before Task 35, when EN was the judged language and RU/EN
@@ -599,10 +600,10 @@ Turnstile support was built for an earlier model where mutations were reachable 
 and it protected them from scripted abuse. That model is gone: **every mutation now requires a
 verified Cloudflare Access identity** (see "Protecting your instance" above), so there's no
 anonymous-mutation surface left for Turnstile to guard. `turnstileGuard()`
-(`packages/api/src/turnstile-middleware.ts`) is fully implemented and tested but isn't mounted on
-any route in `index.ts`. `GET /api/config` still reports the configured site key if you've set one,
-and the SPA still fetches it on boot — but nothing ever asks it to acquire a token, since no route
-returns `turnstile_required` anymore.
+(`packages/api/src/auth/turnstile-middleware.ts`) is fully implemented and tested but isn't mounted
+on any route in `index.ts`. `GET /api/config` still reports the configured site key if you've set
+one, and the SPA still fetches it on boot — but nothing ever asks it to acquire a token, since no
+route returns `turnstile_required` anymore.
 
 The module, its tests, and the `TURNSTILE_SITE_KEY`/`TURNSTILE_SECRET_KEY` config plumbing (see
 `.dev.vars.example`) are left in place for a future genuinely-public write path — e.g. a "suggest a

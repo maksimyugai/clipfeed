@@ -6,9 +6,9 @@ import type {
   EmbeddingsBackfillResponse,
   QueueMessage,
 } from "@clipfeed/shared/types";
-import { accessAuth, type AppEnv } from "./access-middleware.ts";
-import { readTurnstileConfig } from "./turnstile-middleware.ts";
-import type { ListArticlesParams } from "./db.ts";
+import { accessAuth, type AppEnv } from "./auth/access-middleware.ts";
+import { readTurnstileConfig } from "./auth/turnstile-middleware.ts";
+import type { ListArticlesParams } from "./articles/db.ts";
 import {
   backfillNormalizedTags,
   countUnembeddedArticles,
@@ -33,49 +33,53 @@ import {
   toPublicArticle,
   toPublicListItem,
   updateFaithfulnessOnly,
-} from "./db.ts";
-import { normalizeTitleExact } from "./title-similarity.ts";
+} from "./articles/db.ts";
+import { normalizeTitleExact } from "./lib/title-similarity.ts";
 import {
   DEAD_LETTER_QUEUE_NAME,
   enqueueArticleJob,
   processDeadLetterMessage,
   processQueueMessage,
   stashPendingHtml,
-} from "./queue.ts";
+} from "./pipeline/queue.ts";
 import {
   MAX_BODY_BYTES,
   sourceFromUrl,
   validateCreateArticleRequest,
   validateHtml,
   validatePatchArticleRequest,
-} from "./validation.ts";
-import { handleTelegramWebhook } from "./telegram-webhook.ts";
-import { runAgentJob } from "./agent.ts";
-import { formatUtcHourMinute, readAgentRunHistory } from "./agent-run-tracker.ts";
-import { agentAlreadyRanWarning } from "./telegram-strings.ts";
-import { handleScheduled, parseHour } from "./scheduled.ts";
-import { parseAgentDailyPicks } from "./ranking.ts";
-import { listLearnedThinHosts } from "./thin-host-learning.ts";
-import { readSummaryBudgetUsage } from "./cost-guard.ts";
+} from "./articles/validation.ts";
+import { handleTelegramWebhook } from "./telegram/telegram-webhook.ts";
+import { runAgentJob } from "./agent/agent.ts";
+import { formatUtcHourMinute, readAgentRunHistory } from "./agent/agent-run-tracker.ts";
+import { agentAlreadyRanWarning } from "./telegram/telegram-strings.ts";
+import { handleScheduled, parseHour } from "./scheduled/scheduled.ts";
+import { parseAgentDailyPicks } from "./agent/ranking.ts";
+import { listLearnedThinHosts } from "./agent/thin-host-learning.ts";
+import { readSummaryBudgetUsage } from "./pipeline/cost-guard.ts";
 import {
   readFaithfulnessCallCount,
   resolveFaithfulnessJudgeModel,
   runFaithfulnessCheck,
-} from "./faithfulness.ts";
+} from "./pipeline/faithfulness.ts";
 import {
   buildEmbeddingText,
   deleteArticleEmbedding,
   embedText,
   resolveEmbeddingModel,
   upsertArticleEmbedding,
-} from "./embeddings.ts";
-import { parseSearchRatePerMin, searchArticles, tryConsumeSearchRateLimit } from "./search.ts";
-import { buildOgTags, injectOgTags } from "./og.ts";
-import { SOURCES } from "./sources.ts";
-import { loadBlocklistConfig, loadCurationConfig } from "./curation.ts";
-import { normalizeDomainInput, resolveDomainPrecedence } from "./domain-block.ts";
-import { hostname } from "./url-host.ts";
-import { clearAutoBlock, isAutoBlocked, listAutoBlocks } from "./autoblock.ts";
+} from "./search/embeddings.ts";
+import {
+  parseSearchRatePerMin,
+  searchArticles,
+  tryConsumeSearchRateLimit,
+} from "./search/search.ts";
+import { buildOgTags, injectOgTags } from "./articles/og.ts";
+import { SOURCES } from "./agent/sources.ts";
+import { loadBlocklistConfig, loadCurationConfig } from "./agent/curation.ts";
+import { normalizeDomainInput, resolveDomainPrecedence } from "./agent/domain-block.ts";
+import { hostname } from "./lib/url-host.ts";
+import { clearAutoBlock, isAutoBlocked, listAutoBlocks } from "./agent/autoblock.ts";
 
 const app = new Hono<AppEnv>();
 
