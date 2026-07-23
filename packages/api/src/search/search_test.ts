@@ -39,6 +39,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    QUEUE_WAIT_TIMEOUT_MIN: 30,
     PUBLIC_BASE_URL: "",
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",

@@ -212,6 +212,15 @@ async function readJsonBody(
   }
 }
 
+// Task 41 Part D: status=ready|pending|failed|all — 'all' (or anything else,
+// including absent) means no filter at all, matching the historical
+// default. Only the admin list route honors whatever this parses to; the
+// public route always overrides it to 'ready' itself (see below), so an
+// invalid or missing value here is never a security question, just a no-op.
+function parseStatusParam(raw: string | undefined): "ready" | "pending" | "failed" | undefined {
+  return raw === "ready" || raw === "pending" || raw === "failed" ? raw : undefined;
+}
+
 // Shared by the public and owner-only list routes below — same filters,
 // same cursor pagination; only the returned row shape differs (see each
 // route's own comment).
@@ -233,6 +242,7 @@ function parseArticleListParams(c: Context<AppEnv>): ListArticlesParams {
     source: query.source || undefined,
     q: query.q || undefined,
     archived,
+    status: parseStatusParam(query.status),
   };
 }
 
@@ -242,19 +252,29 @@ function parseArticleListParams(c: Context<AppEnv>): ListArticlesParams {
 // `fail_class` are exposed, which is enough for the SPA's localized
 // failed-card copy in visitor mode. The owner-only equivalent, with the
 // real `error` field, is GET /api/admin/articles below.
+//
+// Task 41 Part D: a visitor must only ever see finished, real content — a
+// pending or failed row is internal pipeline state, not something a public
+// feed should expose (a failed card reading "Ошибка: timeout: processing
+// did not complete" made a public feed look broken). status is forced to
+// 'ready' here regardless of any status= query param a caller sends — that
+// param is honored only by the admin route below.
 app.get("/api/articles", async (c) => {
   // Lazy stale-pending sweeper — see sweepStalePending() in db.ts.
-  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN);
-  const result = await listArticles(c.env.DB, parseArticleListParams(c));
+  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN, c.env.QUEUE_WAIT_TIMEOUT_MIN);
+  const result = await listArticles(c.env.DB, { ...parseArticleListParams(c), status: "ready" });
   return c.json({ items: result.items.map(toPublicListItem), next_cursor: result.next_cursor });
 });
 
 // Public — excludes full_text and the raw error string (see
 // PublicArticle/toPublicArticle). The full row is only available to the
-// owner, via GET /api/admin/articles/:id below.
+// owner, via GET /api/admin/articles/:id below. Task 41 Part D: a
+// pending/failed row 404s here too, same reasoning as the list route above
+// — a visitor fetching a specific id (e.g. a stale bookmark) must not learn
+// that an article exists but hasn't finished (or failed) processing.
 app.get("/api/articles/:id", async (c) => {
   const article = await getArticleById(c.env.DB, c.req.param("id"));
-  if (!article) return c.json({ error: "not found" }, 404);
+  if (!article || article.status !== "ready") return c.json({ error: "not found" }, 404);
   return c.json(toPublicArticle(article));
 });
 
@@ -345,7 +365,10 @@ function parseSearchLimit(c: Context<AppEnv>): number {
 // search.ts's searchArticles) — never a dead end, just less precise.
 // Rate-limited (not the LIKE-only GET /api/articles?q= above) because a hit
 // here costs a Workers AI call once Vectorize IS configured; an empty/missing
-// `q` short-circuits before that check even runs.
+// `q` short-circuits before that check even runs. Task 41 Part D: 'ready'
+// forced same as the list/detail routes — a pending/failed article (or one
+// mid-resummarize, still matching its OLD embedding) must never surface in
+// a visitor's results.
 app.get("/api/search", async (c) => {
   const q = (c.req.query("q") ?? "").trim();
   if (!q) return c.json({ items: [] });
@@ -354,7 +377,7 @@ app.get("/api/search", async (c) => {
   const allowed = await tryConsumeSearchRateLimit(c.env.CACHE, limitPerMin);
   if (!allowed) return c.json({ error: "rate_limited" }, 429);
 
-  const hits = await searchArticles(c.env, q, parseSearchLimit(c));
+  const hits = await searchArticles(c.env, q, parseSearchLimit(c), "ready");
   return c.json({
     items: hits.map((hit) => ({ article: toPublicListItem(hit.article), score: hit.score })),
   });
@@ -406,9 +429,13 @@ app.get("/api/admin/login", (c) => {
 // Owner-only equivalent of GET /api/articles — same filters/pagination,
 // but full rows (error included, full_text still excluded — same shape as
 // GET /api/admin/articles/:id minus full_text) since the owner needs the
-// real error text to decide whether a failure is worth investigating.
+// real error text to decide whether a failure is worth investigating. Task
+// 41 Part D: honors status=ready|pending|failed|all (default all — every
+// status, the historical behavior) since the owner legitimately needs to
+// see pending/failed rows; the public route above always forces 'ready'
+// regardless of this param.
 app.get("/api/admin/articles", async (c) => {
-  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN);
+  await sweepStalePending(c.env.DB, c.env.PENDING_TIMEOUT_MIN, c.env.QUEUE_WAIT_TIMEOUT_MIN);
   const result = await listArticles(c.env.DB, parseArticleListParams(c));
   return c.json(result);
 });
@@ -940,6 +967,7 @@ export default {
         event: "queue_received",
         articleId: message.body.articleId,
         kind: message.body.kind,
+        queueMessageId: message.body.queueMessageId,
         attempt: message.attempts,
       }));
       try {
@@ -948,6 +976,7 @@ export default {
         console.log(JSON.stringify({
           event: "queue_done",
           articleId: message.body.articleId,
+          queueMessageId: message.body.queueMessageId,
           outcome: "ok",
           duration_ms: Date.now() - startedAt,
         }));
@@ -961,6 +990,7 @@ export default {
         console.log(JSON.stringify({
           event: "queue_done",
           articleId: message.body.articleId,
+          queueMessageId: message.body.queueMessageId,
           outcome: "retry",
           duration_ms: Date.now() - startedAt,
         }));

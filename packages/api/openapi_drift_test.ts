@@ -93,6 +93,7 @@ const samplePublicArticle: PublicArticle = {
   en_generated_at: null,
   image_key: null,
   image_source_url: null,
+  processing_started_at: null,
   has_error: false,
 };
 

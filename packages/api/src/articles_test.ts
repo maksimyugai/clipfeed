@@ -167,6 +167,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     WORKERS_AI_MODEL: "test-workers-ai-model",
     DAILY_SUMMARY_LIMIT: 50,
     PENDING_TIMEOUT_MIN: 10,
+    QUEUE_WAIT_TIMEOUT_MIN: 30,
     INTEREST_TOPICS: "testing",
     AGENT_HOUR_UTC: "5",
     AGENT_DAILY_PICKS: "10",
@@ -607,6 +608,7 @@ Deno.test("GET /api/articles: sweeps a stale pending row to failed before listin
     status: "pending",
     archived: 0,
     error: null,
+    processing_started_at: new Date(Date.now() - 20 * 60_000).toISOString(),
   });
   db.rows.push({
     id: "fresh-1",
@@ -629,24 +631,31 @@ Deno.test("GET /api/articles: sweeps a stale pending row to failed before listin
     error: null,
   });
 
+  // Task 41 Part D: the public list is ready-only, so the sweep it triggers
+  // is now only observable by inspecting the underlying row (via FakeD1) —
+  // neither stale-1 (swept to 'failed') nor fresh-1 (still 'pending') ever
+  // appears in the public response itself.
   const res = await app.request("/api/articles", {}, env, ctx);
   const body = await res.json();
-  const items = body.items as { id: string; status: string; has_error: boolean }[];
+  const items = body.items as { id: string }[];
 
-  assertEquals(items.find((i) => i.id === "stale-1")?.status, "failed");
-  // Public list — no raw `error` field (see the privacy-incident regression
-  // test below); has_error is the public-safe signal instead.
-  assertEquals(items.find((i) => i.id === "stale-1")?.has_error, true);
-  assertEquals(items.find((i) => i.id === "fresh-1")?.status, "pending");
+  assertEquals(items.find((i) => i.id === "stale-1"), undefined);
+  assertEquals(items.find((i) => i.id === "fresh-1"), undefined);
+  assertEquals(db.rows.find((r) => r.id === "stale-1")?.status, "failed");
+  assertEquals(db.rows.find((r) => r.id === "fresh-1")?.status, "pending");
 });
 
 // Regression test for a live-confirmed privacy incident: the public list
 // endpoint was including the raw `error` column verbatim — internal
 // pipeline detail (upstream URLs, stack fragments) visible to any
 // anonymous visitor on a failed card. GET /api/articles/:id (single item)
-// was already correct; only the list endpoint leaked it. Fixed by mapping
-// every row through toPublicListItem() before responding — see index.ts.
-Deno.test("GET /api/articles: never includes the raw error field, even for a failed article (privacy incident regression)", async () => {
+// was already correct; only the list endpoint leaked it. Originally fixed
+// by mapping every row through toPublicListItem() before responding; Task
+// 41 Part D went further and excludes non-'ready' rows from both public
+// routes entirely (a failed card reading the raw pipeline error was itself
+// making the public feed look broken, regardless of which fields leaked) —
+// see index.ts.
+Deno.test("GET /api/articles: a failed article never appears at all, and its raw error text never leaks anywhere in the response (privacy incident regression)", async () => {
   const restoreFetch = stubFetch();
   const { env, authHeaders } = await makeOwnerContext();
   const { ctx, settle } = makeExecutionContext();
@@ -675,14 +684,13 @@ Deno.test("GET /api/articles: never includes the raw error field, even for a fai
     const listBody = await listRes.json();
     const item = listBody.items.find((i: { id: string }) => i.id === id);
 
-    assertEquals("error" in item, false);
-    assertEquals(item.has_error, true);
+    assertEquals(item, undefined);
     assertEquals(JSON.stringify(listBody).includes("internal-upstream.example"), false);
 
     const detailRes = await app.request(`/api/articles/${id}`, {}, env, ctx);
+    assertEquals(detailRes.status, 404);
     const detailBody = await detailRes.json();
-    assertEquals("error" in detailBody, false);
-    assertEquals(detailBody.has_error, true);
+    assertEquals(JSON.stringify(detailBody).includes("internal-upstream.example"), false);
   } finally {
     restoreFetch();
   }
@@ -1468,7 +1476,8 @@ Deno.test("POST /api/admin/articles: with JOBS configured, enqueues a 'process' 
   await settle();
 
   assertEquals(jobs.sent.length, 1);
-  assertEquals(jobs.sent[0], { kind: "process", articleId: created.id });
+  assertEquals(jobs.sent[0].kind, "process");
+  assertEquals(jobs.sent[0].articleId, created.id);
 
   // Still 'pending' — a real consumer never ran; only the message was sent.
   const db = env.DB as unknown as FakeD1;
@@ -1529,7 +1538,9 @@ Deno.test("POST /api/admin/articles/:id/retry: with JOBS configured, enqueues a 
   assertEquals(retryRes.status, 202);
   await settle();
 
-  assertEquals(jobs.sent, [{ kind: "process", articleId: created.id }]);
+  assertEquals(jobs.sent.length, 1);
+  assertEquals(jobs.sent[0].kind, "process");
+  assertEquals(jobs.sent[0].articleId, created.id);
   const db = env.DB as unknown as FakeD1;
   assertEquals(db.rows.find((r) => r.id === created.id)!.status, "pending");
 });
@@ -1565,7 +1576,9 @@ Deno.test("POST /api/admin/articles/:id/resummarize: with JOBS configured, enque
     assertEquals(res.status, 202);
     await settle();
 
-    assertEquals(jobs.sent, [{ kind: "resummarize", articleId: created.id }]);
+    assertEquals(jobs.sent.length, 1);
+    assertEquals(jobs.sent[0].kind, "resummarize");
+    assertEquals(jobs.sent[0].articleId, created.id);
     const db = env.DB as unknown as FakeD1;
     assertEquals(db.rows.find((r) => r.id === created.id)!.status, "pending");
   } finally {
