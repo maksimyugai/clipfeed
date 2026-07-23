@@ -631,6 +631,14 @@ ul {
   color: var(--mut);
 }
 
+.semantic-fallback-heading {
+  margin: 0 0 4px;
+  padding: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
 .section-loading-row {
   display: flex;
   justify-content: center;

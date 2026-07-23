@@ -12,6 +12,7 @@ import type {
 } from "@clipfeed/shared/types";
 import { classifyFailure } from "../../../shared/src/classify-failure.ts";
 import { normalizeTags } from "../lib/tags.ts";
+import { stemSearchTerm } from "../search/ru-stemmer.ts";
 
 // Raw D1 row shape — matches migrations/0001_init.sql through 0003_*.sql
 // exactly. `tags` and `summary_json` are stored as JSON text; `archived` as
@@ -999,12 +1000,20 @@ function truncateToByteLength(s: string, maxBytes: number): string {
 // to nothing (empty tokens dropped); extra terms beyond MAX_SEARCH_TERMS
 // are silently dropped rather than erroring — a long query still searches
 // meaningfully on its first few words.
+//
+// Task 43: each term is stemmed (Russian inflection reduced to a common
+// root; Latin terms just lowercased — see ru-stemmer.ts) BEFORE the byte
+// truncation, since stems are shorter than the words they came from and
+// truncating first risks cutting a word mid-stem. Stemming the QUERY term
+// (not the stored text) means every inflected form the user might type —
+// "кабели", "кабеля", "кабелей" — reduces to the same LIKE pattern that
+// matches whichever form actually appears in the article.
 export function tokenizeSearchQuery(q: string): string[] {
   return q
     .split(/\s+/)
     .filter((term) => term.length > 0)
     .slice(0, MAX_SEARCH_TERMS)
-    .map((term) => truncateToByteLength(term, MAX_TERM_BYTES));
+    .map((term) => truncateToByteLength(stemSearchTerm(term), MAX_TERM_BYTES));
 }
 
 // Escapes SQLite LIKE wildcards so a term containing a literal `%` or `_`

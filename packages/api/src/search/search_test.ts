@@ -1,6 +1,7 @@
 import "../env.d.ts";
 import { assertEquals } from "@std/assert";
 import {
+  adaptiveMinScore,
   filterAndOrderMatches,
   parseSearchMinScore,
   parseSearchRatePerMin,
@@ -86,6 +87,40 @@ Deno.test("parseSearchMinScore: out-of-range/non-numeric falls back to the defau
   assertEquals(parseSearchMinScore("-0.1"), 0.5);
   assertEquals(parseSearchMinScore("1.1"), 0.5);
   assertEquals(parseSearchMinScore("not a number"), 0.5);
+});
+
+// --- adaptiveMinScore (Task 43 Part 5): threshold-by-query-length ---
+
+Deno.test("adaptiveMinScore: a single-word query gets the largest discount off the base", () => {
+  assertEquals(adaptiveMinScore(0.5, "кабели"), 0.45);
+});
+
+Deno.test("adaptiveMinScore: a two-word query gets a smaller discount", () => {
+  assertEquals(adaptiveMinScore(0.5, "кабели по"), 0.48);
+});
+
+Deno.test("adaptiveMinScore: three or more words use the base value unchanged", () => {
+  assertEquals(adaptiveMinScore(0.5, "подводные кабели вдоль"), 0.5);
+  assertEquals(adaptiveMinScore(0.5, "один два три четыре пять"), 0.5);
+});
+
+Deno.test("adaptiveMinScore: an empty/whitespace-only query is treated as 1 word (the 1-word floor, not a crash)", () => {
+  assertEquals(adaptiveMinScore(0.5, ""), 0.45);
+  assertEquals(adaptiveMinScore(0.5, "   "), 0.45);
+});
+
+Deno.test("adaptiveMinScore: extra whitespace between words doesn't inflate the word count", () => {
+  assertEquals(adaptiveMinScore(0.5, "  кабели   по  "), 0.48);
+});
+
+Deno.test("adaptiveMinScore: discounts scale with a different base (SEARCH_MIN_SCORE stays the tunable ceiling)", () => {
+  assertEquals(adaptiveMinScore(0.7, "кабели"), 0.65);
+  assertEquals(adaptiveMinScore(0.7, "кабели по"), 0.68);
+  assertEquals(adaptiveMinScore(0.7, "подводные кабели вдоль"), 0.7);
+});
+
+Deno.test("adaptiveMinScore: never goes negative for a very low base", () => {
+  assertEquals(adaptiveMinScore(0.02, "кабели"), 0);
 });
 
 // --- filterAndOrderMatches: pure filter/order/truncate ---
@@ -219,6 +254,38 @@ Deno.test("searchArticles: semantic path hydrates D1 rows in Vectorize's score o
   const hits = await searchArticles(env, "some query", 20);
   assertEquals(hits.map((h) => h.article.id), ["sem-b", "sem-a"]);
   assertEquals(hits.map((h) => h.score), [0.95, 0.80]);
+});
+
+// --- searchArticles + adaptiveMinScore integration (Task 43 Part 5) ---
+
+Deno.test("searchArticles: a 1-word query lets through a match the base 0.5 threshold would have dropped", async () => {
+  const env = makeEnv({
+    AI: makeStubAi(new Array(EMBEDDING_DIMENSIONS).fill(0.1)),
+    VECTORS: makeStubVectors([{ id: "short-word", score: 0.47 }]),
+  });
+  await seedReadyArticle(env.DB, {
+    id: "short-word",
+    title: "Article",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+
+  const hits = await searchArticles(env, "кабели", 20);
+  assertEquals(hits.map((h) => h.article.id), ["short-word"]);
+});
+
+Deno.test("searchArticles: the SAME score is filtered out for a 3+ word query (base SEARCH_MIN_SCORE applies unchanged)", async () => {
+  const env = makeEnv({
+    AI: makeStubAi(new Array(EMBEDDING_DIMENSIONS).fill(0.1)),
+    VECTORS: makeStubVectors([{ id: "short-word", score: 0.47 }]),
+  });
+  await seedReadyArticle(env.DB, {
+    id: "short-word",
+    title: "Article",
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+
+  const hits = await searchArticles(env, "один два три", 20);
+  assertEquals(hits, []);
 });
 
 Deno.test("searchArticles: a Vectorize match with no D1 row is skipped, not an error", async () => {

@@ -51,6 +51,52 @@ export function parseSearchMinScore(raw: string | undefined): number {
   return n;
 }
 
+// Task 43 Part 5: a fixed SEARCH_MIN_SCORE penalizes SHORT queries unfairly.
+// Article embeddings are built from title + tldr + bullets (hundreds of
+// characters — see embeddings.ts's buildEmbeddingText); a one- or two-word
+// query produces a much shorter vector whose cosine similarity against that
+// long text is mathematically lower even for a perfect topical match. Live
+// numbers gathered against the owner's real corpus (60 real articles, real
+// bge-m3 embeddings, before any threshold filtering) confirmed this:
+//   "кабели"             (1 word)  -> top real match 0.490
+//   "кабель"              (1 word)  -> top real match 0.497
+//   "кабели по"           (2 words) -> top real match 0.502 (the padding
+//                                      word alone pushed a genuine match
+//                                      from below 0.5 to just above it)
+//   "подводные кабели"    (2 words) -> top real match 0.539
+//   "бетономешалка"       (1 word,  unrelated to any stored article)
+//                                   -> top real match only 0.390
+//   "бетономешалка производитель" (2 words, still unrelated) -> only 0.365
+// A genuine 1-word match and a 1-word nonsense query are ~0.10 apart, and a
+// genuine 2-word match and nonsense are ~0.15 apart — comfortable margin for
+// a per-length floor without letting nonsense through. Also tried wrapping
+// short queries in a neutral template ("новости про {query}") before
+// embedding: it raised "кабели" from 0.490 to 0.506, but LOWERED "кабель"
+// from 0.497 to 0.492 — inconsistent, so it was NOT adopted (the task's own
+// bar is "keep only if it demonstrably helps").
+const SHORT_QUERY_ONE_WORD_DISCOUNT = 0.05;
+const SHORT_QUERY_TWO_WORD_DISCOUNT = 0.02;
+
+function countQueryWords(q: string): number {
+  return q.trim().split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+// SEARCH_MIN_SCORE stays the base/ceiling value (used as-is for 3+ word
+// queries, and as the reference point the 1-/2-word discounts are taken
+// off of) so it's still the one tunable var an owner adjusts to raise or
+// lower the whole scale.
+export function adaptiveMinScore(baseMinScore: number, q: string): number {
+  const words = countQueryWords(q);
+  const discount = words <= 1
+    ? SHORT_QUERY_ONE_WORD_DISCOUNT
+    : words === 2
+    ? SHORT_QUERY_TWO_WORD_DISCOUNT
+    : 0;
+  // Rounded to avoid float noise (e.g. 0.7 - 0.05 === 0.6499999999999999)
+  // leaking into an otherwise-clean tunable value.
+  return Math.round(Math.max(0, baseMinScore - discount) * 1000) / 1000;
+}
+
 // Vectorize is queried for more than `limit` candidates so the min-score
 // filter below has real material to work with — filtering topK=limit down
 // to (say) 3 matches would otherwise under-fill a request that could have
@@ -172,7 +218,7 @@ export async function searchArticles(
     return await keywordSearch(env, q, limit);
   }
 
-  const minScore = parseSearchMinScore(env.SEARCH_MIN_SCORE);
+  const minScore = adaptiveMinScore(parseSearchMinScore(env.SEARCH_MIN_SCORE), q);
   const matches = filterAndOrderMatches(rawMatches, minScore, limit);
 
   const rows = await getArticlesByIds(env.DB, matches.map((m) => m.id));

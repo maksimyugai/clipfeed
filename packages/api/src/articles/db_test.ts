@@ -177,15 +177,20 @@ Deno.test("tokenizeSearchQuery: multi-word (Latin) splits into separate terms", 
   assertEquals(tokenizeSearchQuery("hugging face"), ["hugging", "face"]);
 });
 
-Deno.test("tokenizeSearchQuery: multi-word (Cyrillic) splits into separate terms", () => {
-  assertEquals(tokenizeSearchQuery("секьюрити проблемы"), ["секьюрити", "проблемы"]);
+Deno.test("tokenizeSearchQuery: multi-word (Cyrillic) splits into separate terms and stems each (Task 43)", () => {
+  assertEquals(tokenizeSearchQuery("секьюрити проблемы"), ["секьюрит", "проблем"]);
 });
 
-Deno.test("tokenizeSearchQuery: mixed-script multi-word query", () => {
+Deno.test("tokenizeSearchQuery: mixed-script multi-word query — Cyrillic terms stemmed, Latin terms untouched", () => {
   assertEquals(
     tokenizeSearchQuery("секьюрити проблемы у hugging face"),
-    ["секьюрити", "проблемы", "у", "hugging", "face"],
+    ["секьюрит", "проблем", "у", "hugging", "face"],
   );
+});
+
+Deno.test("tokenizeSearchQuery: Russian inflected forms all reduce to the same term (Task 43)", () => {
+  assertEquals(tokenizeSearchQuery("кабели"), tokenizeSearchQuery("кабеля"));
+  assertEquals(tokenizeSearchQuery("кабели"), tokenizeSearchQuery("кабелей"));
 });
 
 Deno.test("tokenizeSearchQuery: leading/trailing/repeated whitespace collapses — no empty tokens", () => {

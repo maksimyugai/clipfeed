@@ -43,6 +43,12 @@ export interface FeedProps {
   forceOpenSection: DateSection | null;
   isSearching: boolean;
   searchMode: SearchMode;
+  // Task 43 Part 3: true when the results currently shown came from the
+  // automatic keyword->semantic fallback (see App.tsx's
+  // isShowingSemanticFallback) rather than the user picking semantic mode
+  // themselves — swaps the usual "N semantic matches" line for a heading
+  // explaining why they're seeing meaning-based results for a word search.
+  isSemanticFallback: boolean;
   agentHourUtc: number | null;
   // Task 29 Part C: whether a tag/source filter is active, so the Today
   // countdown and the generic empty state both know the difference between
@@ -66,6 +72,7 @@ export function Feed(props: FeedProps) {
     forceOpenSection,
     isSearching,
     searchMode,
+    isSemanticFallback,
     agentHourUtc,
     activeTag,
     activeSource,
@@ -113,6 +120,9 @@ export function Feed(props: FeedProps) {
     return (
       <div class="feed-sections">
         <div class="feed-section">
+          {isSemanticFallback && (
+            <p class="semantic-fallback-heading">{dict.semanticFallbackHeading}</p>
+          )}
           <p class="semantic-matches-count">{countText}</p>
           <div class="feed">
             {articles.map((article) => (
