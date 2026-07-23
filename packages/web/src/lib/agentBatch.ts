@@ -1,11 +1,12 @@
 import type { AddedVia, ArticleStatus } from "@clipfeed/shared/types";
 
-// Only the two fields this module actually needs — callers pass a real
+// Only the three fields this module actually needs — callers pass a real
 // ArticleListItem, but keeping the parameter type minimal makes every
 // function here trivially testable with plain literals.
 export interface AgentBatchItem {
   added_via: AddedVia;
   status: ArticleStatus;
+  added_at: string;
 }
 
 export function isAgentBatchPending(item: AgentBatchItem): boolean {
@@ -51,19 +52,49 @@ export interface AgentBatchState {
   total: number; // N = M + still-pending
 }
 
-// See Task 25 Part A: shown while any agent-added article in a section is
-// still pending, summarizing progress instead of rendering each one as an
-// individual card (agent-pending cards are hidden — see ArticleCard.tsx).
-// Ready agent articles are NOT hidden — they render normally in the list
-// AND are counted here as `ready`, so the indicator and the real cards
-// coexist without contradicting each other.
+// Task 41 Part B: after several agent runs in the same day, the indicator
+// used to aggregate EVERY agent article in the section — including batches
+// that finished long ago — so "Готово 29 из 30" was really "29 done across
+// three runs, 1 still going," not the progress of the run actually in
+// flight. A wave is the run currently in progress (its pending articles)
+// plus any agent article close enough in time to plausibly be part of the
+// same run: waveStart is the earliest added_at among currently-pending agent
+// articles, and anything (pending or ready) within WAVE_TOLERANCE_MS before
+// that counts as a sibling. An agent article older than that is a
+// long-finished, unrelated batch and is excluded — regardless of how many
+// there are.
+export const WAVE_TOLERANCE_MS = 10 * 60_000;
+
+function currentWave(items: readonly AgentBatchItem[]): AgentBatchItem[] {
+  const pendingAgentTimes = items
+    .filter((item) => item.added_via === "agent" && item.status === "pending")
+    .map((item) => Date.parse(item.added_at));
+  if (pendingAgentTimes.length === 0) return [];
+
+  const waveStart = Math.min(...pendingAgentTimes);
+  const cutoff = waveStart - WAVE_TOLERANCE_MS;
+  return items.filter((item) =>
+    item.added_via === "agent" &&
+    (item.status === "pending" || item.status === "ready") &&
+    Date.parse(item.added_at) >= cutoff
+  );
+}
+
+// See Task 25 Part A: shown while any agent-added article in the CURRENT
+// wave (see currentWave above) is still pending, summarizing progress
+// instead of rendering each one as an individual card (agent-pending cards
+// are hidden — see ArticleCard.tsx). Ready agent articles in the wave are
+// NOT hidden — they render normally in the list AND are counted here as
+// `ready`, so the indicator and the real cards coexist without
+// contradicting each other. No pending agent article at all (the common
+// case between runs) means an empty wave — ready/total both 0, hidden —
+// regardless of how many earlier, finished agent articles the section has.
 export function computeAgentBatchIndicator(items: readonly AgentBatchItem[]): AgentBatchState {
   let ready = 0;
   let pending = 0;
-  for (const item of items) {
-    if (item.added_via !== "agent") continue;
+  for (const item of currentWave(items)) {
     if (item.status === "ready") ready += 1;
-    else if (item.status === "pending") pending += 1;
+    else pending += 1;
   }
   return { visible: pending > 0, ready, total: ready + pending };
 }

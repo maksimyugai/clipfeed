@@ -55,35 +55,24 @@ export function formatCountdown(msRemaining: number): Countdown {
   };
 }
 
+import { loadRawConfig } from "./config.ts";
+
 export interface AgentScheduleConfig {
   agentHourUtc: number | null;
   agentDailyPicks: number;
 }
 
-const CONFIG_URL = "/api/config";
 const DEFAULT_AGENT_DAILY_PICKS = 10;
 
-let scheduleCache: AgentScheduleConfig | undefined;
-
-// Same fetch-once-and-cache convention as turnstile.ts's
-// loadTurnstileSiteKey — a fetch failure degrades to "disabled" (null hour),
-// never blocks rendering the empty-Today state.
+// Reads its slice of the single shared GET /api/config fetch (see
+// lib/config.ts) — a fetch failure degrades to "disabled" (null hour), never
+// blocks rendering the empty-Today state.
 export async function loadAgentSchedule(): Promise<AgentScheduleConfig> {
-  if (scheduleCache !== undefined) return scheduleCache;
-  try {
-    const res = await fetch(CONFIG_URL);
-    const body = await res.json() as {
-      agent_hour_utc?: number | null;
-      agent_daily_picks?: number;
-    };
-    scheduleCache = {
-      agentHourUtc: typeof body.agent_hour_utc === "number" ? body.agent_hour_utc : null,
-      agentDailyPicks: typeof body.agent_daily_picks === "number"
-        ? body.agent_daily_picks
-        : DEFAULT_AGENT_DAILY_PICKS,
-    };
-  } catch {
-    scheduleCache = { agentHourUtc: null, agentDailyPicks: DEFAULT_AGENT_DAILY_PICKS };
-  }
-  return scheduleCache;
+  const body = await loadRawConfig();
+  return {
+    agentHourUtc: typeof body.agent_hour_utc === "number" ? body.agent_hour_utc : null,
+    agentDailyPicks: typeof body.agent_daily_picks === "number"
+      ? body.agent_daily_picks
+      : DEFAULT_AGENT_DAILY_PICKS,
+  };
 }

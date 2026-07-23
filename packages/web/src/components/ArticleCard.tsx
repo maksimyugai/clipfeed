@@ -5,7 +5,7 @@ import { viaLabel } from "../i18n.ts";
 import { getAdminArticle, getArticle, translateArticle } from "../api.ts";
 import { selectSummaryFields } from "../lib/summaryFields.ts";
 import { formatDate, hostnameFromUrl } from "../lib/format.ts";
-import { nextPollDelayMs, pollReducer, type PollState } from "../lib/pollSchedule.ts";
+import { nextPollDelayMs, type PollState } from "../lib/pollSchedule.ts";
 import { translateQueue } from "../lib/translateQueue.ts";
 import {
   hasEnglish,
@@ -27,147 +27,45 @@ import { pendingCardVariant } from "../lib/agentBatch.ts";
 
 const JUST_READY_HIGHLIGHT_MS = 2000;
 
-// Polls GET /api/articles/:id while status is 'pending'. Cadence and the
-// give-up/resume transitions live in pollSchedule.ts (pure, unit-tested);
-// this hook owns only the DOM-timer wiring: a variable-delay setTimeout
-// chain (the schedule isn't a fixed interval — see nextPollDelayMs), the
-// elapsed-time clock driving it, tab-visibility pause/resume (existing
-// behavior, unchanged), and the manual "Check now" re-fetch that can always
-// bring a given-up card back to polling — so a pending card never reaches a
-// genuine dead end, just a slower/manual path back to the same result.
+// Task 41 Part A: no longer polls the network itself — a single feed-level
+// poll (App.tsx's feed-poll effect, see lib/feedPoll.ts) refreshes every
+// pending card from one shared snapshot on the same fast-then-slow cadence,
+// replacing what used to be one GET /api/articles/:id per pending card every
+// 4-10s. Every feed-poll tick also re-renders every mounted card (a fresh
+// `articles` array reference from App.tsx), so this hook doesn't need its
+// own timer either — it only needs to remember when THIS card's current
+// pending episode started, then derive "given up" from elapsed time on each
+// render using the same give-up budget as before (see pollSchedule.ts's
+// nextPollDelayMs). The manual "Check now" button still fetches this one
+// article directly, unaffected by any of the above.
 function usePendingPoll(
   article: ArticleListItem,
   onUpdate: (article: ArticleListItem) => void,
 ): { pollState: PollState; checkNow: () => void } {
-  const [pollState, setPollState] = useState<PollState>("polling");
-  // Mirrors `pollState` for the effect below to read synchronously — a
-  // plain closure over the state variable would see whatever value was
-  // current when the effect was set up (article.id/status haven't
-  // changed, so the effect never re-runs to pick up a fresher one), which
-  // would make visibility-resume always think it's still "polling" even
-  // after a give-up.
-  const pollStateRef = useRef<PollState>("polling");
-  // Wall-clock accumulator for the CURRENT cycle only — paused while the
-  // tab is hidden (matching the existing pause behavior) and reset to 0
-  // whenever a manual check resumes a fresh cycle.
-  const elapsedRef = useRef(0);
-  const checkNowRef = useRef<() => void>(() => {});
-
+  // Starts (or restarts) the clock exactly when a pending episode begins —
+  // covers both first-mount-while-pending and a later resummarize/retry that
+  // flips status back to 'pending' after having been ready/failed.
+  const pendingSinceRef = useRef<number | null>(null);
   useEffect(() => {
-    if (article.status !== "pending") return;
-
-    let cancelled = false;
-    let timerId: ReturnType<typeof setTimeout> | undefined;
-    let cycleStartedAt = 0;
-
-    pollStateRef.current = "polling";
-    elapsedRef.current = 0;
-    setPollState("polling");
-
-    const applyPollState = (next: PollState) => {
-      pollStateRef.current = next;
-      setPollState(next);
-    };
-
-    const stopTimer = () => {
-      if (timerId !== undefined) {
-        clearTimeout(timerId);
-        timerId = undefined;
-      }
-    };
-
-    const runCheck = async (): Promise<"done" | "still-pending" | "error"> => {
-      try {
-        const updated = await getArticle(article.id);
-        if (cancelled) return "done";
-        if (updated.status !== "pending") {
-          // getArticle() returns the public shape (has_error, no raw error
-          // string) — merge onto the existing list item so `error` survives
-          // (it was already null while pending; a newly-failed article
-          // shows the generic "—" fallback until the next full list fetch).
-          onUpdate({ ...article, ...updated });
-          return "done";
-        }
-        return "still-pending";
-      } catch {
-        return "error";
-      }
-    };
-
-    const scheduleNext = (delayMs: number) => {
-      stopTimer();
-      timerId = setTimeout(tick, delayMs);
-    };
-
-    // Starts (or resumes) a poll cycle from the current elapsed-time clock
-    // — if that clock already exceeds the give-up budget (only possible if
-    // this runs right after a stale resume), give up immediately instead
-    // of firing a 0-delay poll.
-    const startCycle = () => {
-      const delay = nextPollDelayMs(elapsedRef.current);
-      if (delay === null) {
-        applyPollState("given-up");
-        return;
-      }
-      cycleStartedAt = Date.now();
-      scheduleNext(delay);
-    };
-
-    async function tick() {
-      const outcome = await runCheck();
-      if (cancelled || outcome === "done") return;
-
-      elapsedRef.current += Date.now() - cycleStartedAt;
-
-      if (outcome === "error") {
-        applyPollState(pollReducer("polling", { type: "tick-error" }));
-        return;
-      }
-
-      const nextState = pollReducer("polling", {
-        type: "tick-still-pending",
-        elapsedMs: elapsedRef.current,
-      });
-      applyPollState(nextState);
-      if (nextState === "polling") {
-        cycleStartedAt = Date.now();
-        scheduleNext(nextPollDelayMs(elapsedRef.current) ?? 0);
-      }
-    }
-
-    const onVisibilityChange = () => {
-      if (document.hidden) {
-        stopTimer();
-      } else if (pollStateRef.current === "polling") {
-        startCycle();
-      }
-    };
-
-    checkNowRef.current = () => {
-      stopTimer();
-      runCheck().then((outcome) => {
-        if (cancelled || outcome === "done") return;
-        // A manual check always starts a fresh cycle, regardless of why the
-        // previous one stopped (give-up timeout or a fetch error) — that's
-        // the "never a dead end" guarantee: there's always a way back to
-        // polling.
-        elapsedRef.current = 0;
-        applyPollState(pollReducer("given-up", { type: "manual-check-still-pending" }));
-        if (!document.hidden) startCycle();
-      });
-    };
-
-    if (!document.hidden) startCycle();
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      cancelled = true;
-      stopTimer();
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
+    pendingSinceRef.current = article.status === "pending" ? Date.now() : null;
   }, [article.id, article.status]);
 
-  return { pollState, checkNow: () => checkNowRef.current() };
+  const elapsed = pendingSinceRef.current === null ? 0 : Date.now() - pendingSinceRef.current;
+  const pollState: PollState = nextPollDelayMs(elapsed) === null ? "given-up" : "polling";
+
+  const checkNow = () => {
+    getArticle(article.id).then((updated) => {
+      if (updated.status !== "pending") {
+        // getArticle() returns the public shape (has_error, no raw error
+        // string) — merge onto the existing list item so `error` survives
+        // (it was already null while pending; a newly-failed article shows
+        // the generic "—" fallback until the next full list fetch).
+        onUpdate({ ...article, ...updated });
+      }
+    }, () => {});
+  };
+
+  return { pollState, checkNow };
 }
 
 // Briefly true right after `status` flips from 'pending' to 'ready' — drives
@@ -406,6 +304,11 @@ export function ArticleCard(props: ArticleCardProps) {
   }, [expanded]);
 
   if (article.status === "pending") {
+    // Task 41 Part D: a visitor never has a pending row to begin with (the
+    // public API is ready-only) — this is a defensive belt, not the primary
+    // guard, in case local state ever ends up holding one anyway.
+    if (!isOwner) return null;
+
     // Task 25 Part A: an agent-added pending article is never rendered as
     // its own card — usePendingPoll above still runs (this component stays
     // mounted), so the pending->ready transition is still detected; it's
@@ -451,6 +354,14 @@ export function ArticleCard(props: ArticleCardProps) {
   }
 
   if (article.status === "failed") {
+    // Task 41 Part D: a visitor never has a failed row to begin with (the
+    // public API is ready-only) — this is a defensive belt, not the primary
+    // guard, in case local state ever ends up holding one anyway. A failed
+    // card ("Ошибка: timeout: processing did not complete") was making the
+    // public feed look broken; the fix is server-side (see index.ts), this
+    // is just the SPA not silently relying on that alone.
+    if (!isOwner) return null;
+
     // Owner mode has the real `error` string (from GET /api/admin/articles)
     // and can classify it precisely — including the daily-limit special
     // case (see isDailyLimitFailure: the budget resets at UTC midnight and

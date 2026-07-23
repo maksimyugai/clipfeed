@@ -34,6 +34,7 @@ import { loadRepoUrl } from "./lib/repoConfig.ts";
 import { classifyApiError, localizedErrorMessage } from "./lib/errorMessages.ts";
 import { mergeRefreshedArticles, pickFailedIds } from "./lib/failedRefresh.ts";
 import { isArticleInList, parseDeepLinkId } from "./lib/deepLink.ts";
+import { applyFeedPollSnapshot, feedPollDelayMs, hasPendingArticles } from "./lib/feedPoll.ts";
 import { translateQueue } from "./lib/translateQueue.ts";
 import { Header } from "./components/Header.tsx";
 import { AddModal } from "./components/AddModal.tsx";
@@ -305,6 +306,97 @@ export function App() {
     };
   }, [query, activeTag, activeSource, archivedView, isOwner, searchMode]);
 
+  // Task 41 Part A: replaces what used to be one GET /api/articles/:id per
+  // pending card, every 4s, independently (N pending == N requests/tick) —
+  // now a single feed-level poll refreshes every pending card from one
+  // shared snapshot, on the same fast-then-slow cadence (see
+  // lib/feedPoll.ts). The effect's own dependency is just the boolean
+  // "is anything pending right now", not the `articles` array itself — so
+  // it restarts (a fresh fast-phase clock) exactly when a new pending
+  // episode begins, and its cleanup stops the timer entirely the instant
+  // nothing is pending anymore, rather than re-triggering on every snapshot
+  // update the poll itself produces.
+  const anyPending = hasPendingArticles(articles);
+  // Read via a ref inside the timer closure so a filter/mode change doesn't
+  // need to restart this effect (that's already handled by the initial-load
+  // effect above) — this poll just always refetches with whatever's current.
+  const feedPollParamsRef = useRef({
+    isOwner,
+    activeTag,
+    activeSource,
+    query,
+    archivedView,
+    searchMode,
+  });
+  feedPollParamsRef.current = { isOwner, activeTag, activeSource, query, archivedView, searchMode };
+
+  useEffect(() => {
+    if (!anyPending) return;
+
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    let cycleStartedAt = Date.now();
+    let elapsed = 0;
+
+    const stopTimer = () => {
+      if (timerId !== undefined) {
+        clearTimeout(timerId);
+        timerId = undefined;
+      }
+    };
+
+    const scheduleNext = () => {
+      stopTimer();
+      timerId = setTimeout(tick, feedPollDelayMs(elapsed));
+    };
+
+    async function tick() {
+      const params = feedPollParamsRef.current;
+      // Semantic search has no pagination/pending concept in the same sense
+      // (see fetchSemanticSearch) — skip fetching while in that mode; the
+      // timer keeps running so it resumes correctly on leaving it.
+      const inSemanticMode = params.query.trim() !== "" && params.searchMode === "semantic";
+      if (!inSemanticMode) {
+        try {
+          const res = await fetchArticleList(params.isOwner, {
+            limit: PAGE_LIMIT,
+            tag: params.activeTag ?? undefined,
+            source: params.activeSource ?? undefined,
+            q: params.query || undefined,
+            archived: params.archivedView,
+          });
+          if (!cancelled) {
+            setArticles((current) => applyFeedPollSnapshot(current, res.items));
+          }
+        } catch {
+          // A single failed tick isn't fatal — just try again next tick.
+        }
+      }
+      if (cancelled) return;
+      elapsed += Date.now() - cycleStartedAt;
+      cycleStartedAt = Date.now();
+      scheduleNext();
+    }
+
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        stopTimer();
+      } else {
+        cycleStartedAt = Date.now();
+        scheduleNext();
+      }
+    };
+
+    if (!document.hidden) scheduleNext();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      stopTimer();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [anyPending]);
+
   // Resolves the deep link exactly once, after the initial (unfiltered,
   // default-view) load has actually settled — a hash present at mount
   // always lands on the default view first (nothing persists query/filter
@@ -456,6 +548,7 @@ export function App() {
           en_generated_at: null,
           image_key: null,
           image_source_url: null,
+          processing_started_at: null,
         },
         ...current,
       ]);

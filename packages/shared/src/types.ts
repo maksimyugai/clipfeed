@@ -132,6 +132,16 @@ export interface Article {
   // as attribution ("Image: <domain>", see ArticleCard.tsx) and re-checked
   // if the image is ever re-fetched; null whenever image_key is null.
   image_source_url: string | null;
+  // Task 41 Part C: set as the very first thing a queue consumer invocation
+  // does for this row (see index.ts's queue() handler), before fetch/
+  // summarize/anything else runs. NULL means the message hasn't reached a
+  // consumer yet — still sitting in the queue behind other work (see
+  // db.ts's sweepStalePending, which uses this to tell "queue backlog" apart
+  // from "the pipeline itself is stuck," rather than measuring both from
+  // added_at as it used to. Reset to NULL by markArticlePending so a retry/
+  // resummarize's own wait is measured fresh, not against a stale value from
+  // a previous attempt.
+  processing_started_at: string | null;
 }
 
 export type ArticleListItem = Omit<Article, "full_text">;
@@ -227,6 +237,13 @@ export interface QueueMessage {
   kind: "process" | "resummarize" | "translate";
   articleId: string;
   notify?: QueueNotify;
+  // Task 41 Part C: generated once per enqueue (see enqueueArticleJob in
+  // queue.ts), logged by both the producer (queue_started) and the consumer
+  // (queue_received/queue_done) so an operator can correlate the two sides
+  // in `wrangler tail` without guessing from articleId+kind alone — the
+  // same article can legitimately be enqueued more than once in quick
+  // succession (e.g. a process job, then an almost-immediate manual retry).
+  queueMessageId: string;
 }
 
 // GET /api/search (public, semantic mode only — keyword search reuses the
