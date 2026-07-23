@@ -652,8 +652,11 @@ Deno.test("POST /api/admin/articles/:id/translate: 202 for a ready article, gene
   let anthropicCallCount = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = ((input: string | URL | Request) => {
-    const urlText =
-      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const urlText = typeof input === "string"
+      ? input
+      : input instanceof URL
+      ? input.toString()
+      : input.url;
 
     let parsed: URL;
     try {
