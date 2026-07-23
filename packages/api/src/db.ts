@@ -1067,3 +1067,46 @@ export async function markTelegramPublished(
     id,
   ).run();
 }
+
+// Task 37 §2: sentinel value for `telegram_published_at` meaning "this
+// article aged out of the drip's today-only window and will never be
+// published" — distinct from a real ISO publish timestamp (see
+// markTelegramPublished above) but stored in the SAME column rather than a
+// new one, since both represent the identical underlying fact as far as
+// every query in this codebase cares: "the drip queue is done considering
+// this row" (every read of the column only ever checks NULL vs. NOT NULL —
+// see getNextPublishCandidate's WHERE clause below and the public/list
+// endpoints, none of which parse it as a Date). A dedicated column would
+// have needed its own migration and its own NULL-check everywhere this one
+// already is checked, for zero behavioral difference.
+export const TELEGRAM_SKIPPED_STALE_MARKER = "skipped-stale";
+
+// Sweeps 'ready', non-archived, still-unhandled (telegram_published_at IS
+// NULL) rows added before `cutoffIso` into the skipped-stale state — called
+// once per enabled tick by telegram-publish.ts's runPublishJob, with "start
+// of the current UTC day" as the cutoff (Task 37: publish today's articles
+// only, never a growing backlog of yesterday's leftovers). Idempotent and
+// loop-safe by construction: once a row's telegram_published_at is set (to
+// either this marker or a real publish timestamp), it can never match this
+// query's `IS NULL` clause again, so repeating the call with the same or a
+// later cutoff always converges toward 0 further rows — there is no
+// recursive or self-scheduling step here for a bug to loop on. Returns the
+// count actually marked, for the 'publish_skipped_stale' observability log.
+export async function markStaleArticlesSkipped(
+  db: D1Database,
+  cutoffIso: string,
+): Promise<number> {
+  const result = await db.prepare(
+    `SELECT id FROM articles
+     WHERE status = 'ready' AND archived = 0 AND telegram_published_at IS NULL AND added_at < ?`,
+  ).bind(cutoffIso).all<{ id: string }>();
+
+  const rows = result.results ?? [];
+  for (const row of rows) {
+    await db.prepare("UPDATE articles SET telegram_published_at = ? WHERE id = ?").bind(
+      TELEGRAM_SKIPPED_STALE_MARKER,
+      row.id,
+    ).run();
+  }
+  return rows.length;
+}

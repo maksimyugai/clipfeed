@@ -357,6 +357,23 @@ export class FakeD1 implements D1Database {
         }));
     }
 
+    // Task 37 §2: markStaleArticlesSkipped's candidate scan — same
+    // ready/non-archived/unhandled shape as the publish-candidate query
+    // above, but `added_at < cutoff` (older than today) instead of `>= since`
+    // (within the window).
+    if (
+      sql ===
+        "SELECT id FROM articles WHERE status = 'ready' AND archived = 0 AND telegram_published_at IS NULL AND added_at < ?"
+    ) {
+      const cutoff = values[0] as string;
+      return this.rows
+        .filter((r) =>
+          r.status === "ready" && r.archived === 0 && r.telegram_published_at === null &&
+          (r.added_at as string) < cutoff
+        )
+        .map((r) => ({ id: r.id }));
+    }
+
     if (
       sql ===
         "SELECT id FROM articles WHERE status = 'failed' AND archived = 0 AND added_via = 'agent' AND fail_class = 'content' AND heal_attempts >= ?"

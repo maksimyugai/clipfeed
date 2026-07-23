@@ -41,11 +41,15 @@ AUTOBLOCK_TTL_DAYS = "60"
 # instead of a channel — set it (e.g. "@your_channel" or "-100...") once
 # you've created a channel and added the bot as admin. PUBLISH_START_HOUR_UTC/
 # PUBLISH_END_HOUR_UTC bound the daily publish window (UTC); PUBLISH_ENABLED
-# is the on/off switch (only the literal "false" disables it).
+# is the on/off switch (only the literal "false" disables it). The drip only
+# ever selects the current UTC day's articles (Task 37) — PUBLISH_MAX_PER_DAY
+# caps how many of those are actually sent per UTC day, as a flood guard
+# against the scraping agent producing more than one batch in a day.
 TELEGRAM_CHANNEL_ID = ""
 PUBLISH_START_HOUR_UTC = "4"
 PUBLISH_END_HOUR_UTC = "18"
 PUBLISH_ENABLED = "true"
+PUBLISH_MAX_PER_DAY = "10"
 # How many candidates the agent saves per run. String, parsed defensively
 # (1-20, else this default with a warning) — see README "Daily scraping
 # agent".

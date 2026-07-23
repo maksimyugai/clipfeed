@@ -14,7 +14,9 @@ import {
   markArticleFailed,
   markArticleReady,
   markEmbedded,
+  markStaleArticlesSkipped,
   sweepStalePending,
+  TELEGRAM_SKIPPED_STALE_MARKER,
   tokenizeSearchQuery,
   toPublicArticle,
   toPublicListItem,
@@ -395,6 +397,83 @@ Deno.test("backfillNormalizedTags: a row with no tags at all (null column) is le
   db.rows.push({ id: "b4", tags: null });
   const updated = await backfillNormalizedTags(db);
   assertEquals(updated, 0);
+});
+
+// --- markStaleArticlesSkipped (Task 37 §2: stale drip candidates are
+// skipped, not queued forever) ---
+
+const STALE_CUTOFF = "2026-01-02T00:00:00.000Z";
+
+Deno.test("markStaleArticlesSkipped: marks only ready/non-archived/unpublished rows older than the cutoff", async () => {
+  const db = new FakeD1();
+  db.rows.push(
+    {
+      id: "old-unpublished",
+      status: "ready",
+      archived: 0,
+      telegram_published_at: null,
+      added_at: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      id: "today",
+      status: "ready",
+      archived: 0,
+      telegram_published_at: null,
+      added_at: "2026-01-02T00:00:00.000Z",
+    },
+    {
+      id: "already-published",
+      status: "ready",
+      archived: 0,
+      telegram_published_at: "2026-01-01T05:00:00.000Z",
+      added_at: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      id: "archived",
+      status: "ready",
+      archived: 1,
+      telegram_published_at: null,
+      added_at: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      id: "not-ready",
+      status: "pending",
+      archived: 0,
+      telegram_published_at: null,
+      added_at: "2026-01-01T00:00:00.000Z",
+    },
+  );
+
+  const count = await markStaleArticlesSkipped(db, STALE_CUTOFF);
+  assertEquals(count, 1);
+
+  const byId = (id: string) => db.rows.find((r) => r.id === id)!;
+  assertEquals(byId("old-unpublished").telegram_published_at, TELEGRAM_SKIPPED_STALE_MARKER);
+  assertEquals(byId("today").telegram_published_at, null);
+  assertEquals(byId("already-published").telegram_published_at, "2026-01-01T05:00:00.000Z");
+  assertEquals(byId("archived").telegram_published_at, null);
+  assertEquals(byId("not-ready").telegram_published_at, null);
+});
+
+Deno.test("markStaleArticlesSkipped: a second call with the same cutoff is idempotent, returns 0", async () => {
+  const db = new FakeD1();
+  db.rows.push({
+    id: "old-unpublished",
+    status: "ready",
+    archived: 0,
+    telegram_published_at: null,
+    added_at: "2026-01-01T00:00:00.000Z",
+  });
+
+  const first = await markStaleArticlesSkipped(db, STALE_CUTOFF);
+  assertEquals(first, 1);
+
+  const second = await markStaleArticlesSkipped(db, STALE_CUTOFF);
+  assertEquals(second, 0);
+  assertEquals(
+    db.rows.find((r) => r.id === "old-unpublished")!.telegram_published_at,
+    TELEGRAM_SKIPPED_STALE_MARKER,
+  );
 });
 
 // --- findRecentTitles (Task 19 Part C: story-level dedup against-DB window) ---

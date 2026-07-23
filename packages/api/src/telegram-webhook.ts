@@ -23,6 +23,7 @@ import {
   PUBLISH_FAILED_TEXT,
   PUBLISH_SKIPPED_TEXT,
   PUBLISH_SUCCESS_TEXT,
+  publishCapReachedText,
   SAVING_TEXT,
 } from "./telegram-strings.ts";
 import { timingSafeEqualStrings } from "./telegram-secret.ts";
@@ -170,6 +171,8 @@ async function handleOwnerMessage(
       ? PUBLISH_EMPTY_TEXT
       : outcome.kind === "skipped-unfaithful"
       ? PUBLISH_SKIPPED_TEXT
+      : outcome.kind === "cap-reached"
+      ? publishCapReachedText(outcome.maxPerDay)
       : PUBLISH_SUCCESS_TEXT;
     await sendMessage(config.botToken, config.ownerChatId, reply).catch(() => {});
     return c.json({ ok: true });

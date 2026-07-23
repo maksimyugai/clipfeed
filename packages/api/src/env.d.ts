@@ -207,10 +207,16 @@ declare global {
     // AGENT_HOUR_UTC/DIGEST_HOUR_UTC's empty-disables-the-job convention —
     // PUBLISH_ENABLED is the actual on/off switch here). PUBLISH_ENABLED
     // defaults to "true"; only the literal "false" turns the drip off.
+    // Task 37: the drip now selects only today's (current UTC day's)
+    // articles — see telegram-publish.ts's utcDayStartIso — and
+    // PUBLISH_MAX_PER_DAY (default 10, [vars] string) caps how many of those
+    // are actually sent per UTC day, as a flood guard against the scraping
+    // agent producing more than one batch in a day (see Task 36).
     TELEGRAM_CHANNEL_ID?: string;
     PUBLISH_START_HOUR_UTC?: string;
     PUBLISH_END_HOUR_UTC?: string;
     PUBLISH_ENABLED?: string;
+    PUBLISH_MAX_PER_DAY?: string;
     // Public origin of the deployed instance (e.g. "https://example.com"),
     // used only to build links in Telegram messages (the drip post's card
     // link, the "saved" reply). [vars], default "" — when empty those
