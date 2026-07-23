@@ -45,7 +45,7 @@ AUTOBLOCK_TTL_DAYS = "60"
 # ever selects the current UTC day's articles (Task 37) — PUBLISH_MAX_PER_DAY
 # caps how many of those are actually sent per UTC day, as a flood guard
 # against the scraping agent producing more than one batch in a day.
-TELEGRAM_CHANNEL_ID = ""
+TELEGRAM_CHANNEL_ID = "@clipfeedchannel"
 PUBLISH_START_HOUR_UTC = "4"
 PUBLISH_END_HOUR_UTC = "18"
 PUBLISH_ENABLED = "true"
