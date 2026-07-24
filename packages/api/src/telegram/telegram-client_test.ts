@@ -1,6 +1,11 @@
 import "../env.d.ts";
 import { assertEquals } from "@std/assert";
-import { missingTelegramSecretNames, readTelegramConfig, sendMessage } from "./telegram-client.ts";
+import {
+  missingTelegramSecretNames,
+  readTelegramConfig,
+  sendMessage,
+  sendPhoto,
+} from "./telegram-client.ts";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -165,5 +170,93 @@ Deno.test("sendMessage: never sends disable_web_page_preview — that field does
     assertEquals("disable_web_page_preview" in stub.body(), false);
   } finally {
     stub.restore();
+  }
+});
+
+// --- sendPhoto (Task 47 Part B §1): multipart upload, never a URL ---
+
+interface CapturedMultipart {
+  fields: Record<string, string>;
+  photo: { name: string; type: string; size: number } | null;
+}
+
+function stubFetchCapturingForm(): { restore: () => void; captured: () => CapturedMultipart } {
+  const original = globalThis.fetch;
+  let captured: CapturedMultipart = { fields: {}, photo: null };
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    const form = init?.body as FormData;
+    const fields: Record<string, string> = {};
+    let photo: CapturedMultipart["photo"] = null;
+    for (const [key, value] of form.entries()) {
+      if (value instanceof File) {
+        photo = { name: value.name, type: value.type, size: value.size };
+      } else {
+        fields[key] = value as string;
+      }
+    }
+    captured = { fields, photo };
+    return Promise.resolve(Response.json({ ok: true, result: { message_id: 1 } }));
+  }) as typeof fetch;
+  return { restore: () => (globalThis.fetch = original), captured: () => captured };
+}
+
+Deno.test("sendPhoto: uploads the photo as a multipart file field, never as a URL string", async () => {
+  const stub = stubFetchCapturingForm();
+  try {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    await sendPhoto("token", "42", bytes, "article.jpg", "image/jpeg", {
+      caption: "hello",
+      parseMode: "HTML",
+    });
+    const { fields, photo } = stub.captured();
+    assertEquals(fields.chat_id, "42");
+    assertEquals(fields.caption, "hello");
+    assertEquals(fields.parse_mode, "HTML");
+    assertEquals(photo, { name: "article.jpg", type: "image/jpeg", size: 5 });
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("sendPhoto: omits caption/parse_mode fields entirely when not provided", async () => {
+  const stub = stubFetchCapturingForm();
+  try {
+    await sendPhoto("token", "42", new Uint8Array([1]), "a.png", "image/png");
+    const { fields } = stub.captured();
+    assertEquals("caption" in fields, false);
+    assertEquals("parse_mode" in fields, false);
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("sendPhoto: a failed Bot API response logs ok/error_code/description and throws, never the token", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const logs: string[] = [];
+  console.error = (msg: string) => logs.push(msg);
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      Response.json({ ok: false, error_code: 400, description: "Bad Request: chat not found" }),
+    )) as typeof fetch;
+  try {
+    let threw = false;
+    try {
+      await sendPhoto("super-secret-token", "42", new Uint8Array([1]), "a.png", "image/png");
+    } catch {
+      threw = true;
+    }
+    assertEquals(threw, true);
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.event, "telegram_api_error");
+    assertEquals(parsed.method, "sendPhoto");
+    assertEquals(parsed.ok, false);
+    assertEquals(parsed.error_code, 400);
+    assertEquals(parsed.description, "Bad Request: chat not found");
+    assertEquals(logs[0].includes("super-secret-token"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalError;
   }
 });
