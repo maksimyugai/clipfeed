@@ -12,6 +12,10 @@
 // no href) so the card link is the ONLY <a> in the message.
 
 const MAX_MESSAGE_CHARS = 4096;
+// Task 47 Part B §2: Telegram's own cap for a sendPhoto caption with
+// parse_mode HTML — far smaller than a plain message's 4096, so a caption
+// truncates its bullets/TL;DR much more aggressively for the same article.
+const MAX_CAPTION_CHARS = 1024;
 
 export interface PublishPostInput {
   id: string;
@@ -89,28 +93,40 @@ function renderMessage(
   return lines.join("\n");
 }
 
-// Respects Telegram's 4096-char cap by truncating bullets first (dropped
-// one at a time from the end), then the TL;DR — title and link are never
-// touched. Each step re-measures the FULL rendered (escaped) message rather
-// than estimating, since HTML-escaping can grow a string's length
-// non-linearly (a title full of "&" characters escapes to nearly 5x its
-// raw length).
-export function buildPublishPost(input: PublishPostInput, publicBaseUrl: string): string {
+// Respects the given char cap by truncating bullets first (dropped one at a
+// time from the end), then the TL;DR — title and link are never touched.
+// Each step re-measures the FULL rendered (escaped) message rather than
+// estimating, since HTML-escaping can grow a string's length non-linearly
+// (a title full of "&" characters escapes to nearly 5x its raw length).
+// Shared by buildPublishPost (4096) and buildPublishCaption (1024) below —
+// same priority rule, just a different budget.
+function buildMessage(input: PublishPostInput, publicBaseUrl: string, maxChars: number): string {
   let bullets = input.bullets_ru;
   let message = renderMessage(input, publicBaseUrl, bullets, input.tldr_ru);
 
-  while (message.length > MAX_MESSAGE_CHARS && bullets.length > 0) {
+  while (message.length > maxChars && bullets.length > 0) {
     bullets = bullets.slice(0, -1);
     message = renderMessage(input, publicBaseUrl, bullets, input.tldr_ru);
   }
 
   let tldr = input.tldr_ru;
-  while (message.length > MAX_MESSAGE_CHARS && tldr.length > 0) {
-    const overshoot = message.length - MAX_MESSAGE_CHARS;
+  while (message.length > maxChars && tldr.length > 0) {
+    const overshoot = message.length - maxChars;
     const cut = Math.max(1, overshoot);
     tldr = tldr.length > cut ? `${tldr.slice(0, tldr.length - cut - 1)}…` : "";
     message = renderMessage(input, publicBaseUrl, bullets, tldr);
   }
 
   return message;
+}
+
+export function buildPublishPost(input: PublishPostInput, publicBaseUrl: string): string {
+  return buildMessage(input, publicBaseUrl, MAX_MESSAGE_CHARS);
+}
+
+// Task 47 Part B §2: same structure and truncation priority as
+// buildPublishPost, just budgeted for a sendPhoto caption instead of a
+// standalone message.
+export function buildPublishCaption(input: PublishPostInput, publicBaseUrl: string): string {
+  return buildMessage(input, publicBaseUrl, MAX_CAPTION_CHARS);
 }

@@ -73,12 +73,35 @@ const API_BASE = "https://api.telegram.org";
 interface TelegramApiResponse<T> {
   ok: boolean;
   result?: T;
+  error_code?: number;
   description?: string;
 }
 
+// Task 47 Part B §5: every failed Bot API call gets logged here, at the one
+// choke point both the JSON and multipart transports funnel through — the
+// method name, the `ok`/`error_code`/`description` fields Telegram actually
+// returned, and the HTTP status. Never the token (never in the URL either —
+// only logged as "telegram <method>") and never the full request/response
+// body, which for sendPhoto could echo back arbitrary image bytes.
+async function parseTelegramResponse<T>(method: string, res: Response): Promise<T> {
+  const data = await res.json().catch(() => null) as TelegramApiResponse<T> | null;
+  if (!res.ok || !data?.ok) {
+    console.error(JSON.stringify({
+      event: "telegram_api_error",
+      method,
+      status: res.status,
+      ok: data?.ok ?? false,
+      error_code: data?.error_code,
+      description: data?.description,
+    }));
+    throw new Error(`telegram ${method}: request failed (status ${res.status})`);
+  }
+  return data.result as T;
+}
+
 // The bot token lives inline in every request URL, so this — and every
-// caller — logs the method name only, never the URL or the response body
-// (which could echo the token back in an error description).
+// caller — never logs the URL itself, only the method name (see
+// parseTelegramResponse above for where failures actually get logged).
 async function callTelegram<T>(
   botToken: string,
   method: string,
@@ -94,12 +117,27 @@ async function callTelegram<T>(
   } catch {
     throw new Error(`telegram ${method}: network error`);
   }
+  return await parseTelegramResponse<T>(method, res);
+}
 
-  const data = await res.json().catch(() => null) as TelegramApiResponse<T> | null;
-  if (!res.ok || !data?.ok) {
-    throw new Error(`telegram ${method}: request failed (status ${res.status})`);
+// Task 47 Part B §1: sendPhoto's multipart transport — a photo passed as a
+// `file` field is UPLOADED, never a URL Telegram would have to fetch back
+// from us (fetching is exactly the step that's been silently failing). No
+// `content-type` header is set here on purpose: fetch computes the
+// multipart boundary itself from the FormData body, and setting one by hand
+// risks a mismatched boundary that Telegram would reject outright.
+async function callTelegramForm<T>(
+  botToken: string,
+  method: string,
+  form: FormData,
+): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/bot${botToken}/${method}`, { method: "POST", body: form });
+  } catch {
+    throw new Error(`telegram ${method}: network error`);
   }
-  return data.result as T;
+  return await parseTelegramResponse<T>(method, res);
 }
 
 // Task 46 Part B: mirrors Bot API 7.0+'s link_preview_options object
@@ -145,6 +183,33 @@ export async function sendMessage(
       ? { link_preview_options: toTelegramLinkPreviewOptions(options.linkPreviewOptions) }
       : {}),
   });
+}
+
+export interface SendPhotoOptions {
+  caption?: string;
+  parseMode?: "HTML";
+}
+
+// Task 47 Part B §1: uploads the photo BYTES directly — Telegram never
+// fetches anything from us for this call, unlike a URL-based photo or the
+// og:image-driven link preview this replaces. `filename` only affects the
+// multipart field's own metadata (Telegram infers the actual image format
+// from the bytes), so any name is fine as long as its extension is
+// consistent with `contentType` for well-behaved intermediaries.
+export async function sendPhoto(
+  botToken: string,
+  chatId: string,
+  photoBytes: Uint8Array,
+  filename: string,
+  contentType: string,
+  options?: SendPhotoOptions,
+): Promise<SentMessage> {
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  form.append("photo", new Blob([photoBytes.slice()], { type: contentType }), filename);
+  if (options?.caption) form.append("caption", options.caption);
+  if (options?.parseMode) form.append("parse_mode", options.parseMode);
+  return await callTelegramForm<SentMessage>(botToken, "sendPhoto", form);
 }
 
 export async function editMessageText(

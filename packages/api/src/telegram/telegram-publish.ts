@@ -3,9 +3,97 @@ import {
   getNextPublishCandidate,
   markStaleArticlesSkipped,
   markTelegramPublished,
+  type PublishCandidate,
 } from "../articles/db.ts";
-import { readTelegramConfig, sendMessage, type TelegramConfig } from "./telegram-client.ts";
-import { buildPublishPost, cardUrl } from "./telegram-post.ts";
+import {
+  readTelegramConfig,
+  sendMessage,
+  sendPhoto,
+  type TelegramConfig,
+} from "./telegram-client.ts";
+import { buildPublishCaption, buildPublishPost, cardUrl } from "./telegram-post.ts";
+import { extensionForContentType } from "../pipeline/images.ts";
+
+// Task 47 Part B §4: Telegram's own limits for a sendPhoto upload — a photo
+// exceeding either is rejected outright, so it's cheaper to check ourselves
+// and fall back to the sendMessage+link-preview path than to let the API
+// call fail. Byte size is also checked defensively even though our own
+// ingest-time IMAGES_MAX_BYTES cap (5 MB, see ssrf.ts) already keeps every
+// stored image well under this.
+export const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+export const MAX_PHOTO_DIMENSION_SUM = 10000;
+export const MAX_PHOTO_DIMENSION_RATIO = 20;
+
+// Unknown dimensions (either null — no parser match at ingest time, an old
+// row from before Task 46, or a format the parser doesn't cover) can't be
+// checked at all, so they're treated as "not disqualified" here rather than
+// blocking the photo path outright.
+export function photoDimensionsWithinLimits(
+  width: number | null,
+  height: number | null,
+): boolean {
+  if (width === null || height === null) return true;
+  if (width <= 0 || height <= 0) return false;
+  if (width + height > MAX_PHOTO_DIMENSION_SUM) return false;
+  return Math.max(width, height) / Math.min(width, height) <= MAX_PHOTO_DIMENSION_RATIO;
+}
+
+export interface PublishablePhoto {
+  bytes: Uint8Array;
+  filename: string;
+  contentType: string;
+}
+
+// Task 47 Part B §3: never throws, never blocks a publish — any failure
+// (no image, no IMAGES binding, dimension limits, R2 miss/error, oversized
+// bytes, unrecognized content-type) simply means "no photo this time",
+// falling back to the existing sendMessage+link-preview path unchanged.
+async function loadPublishablePhoto(
+  env: Env,
+  candidate: PublishCandidate,
+): Promise<PublishablePhoto | null> {
+  if (!candidate.image_key || !env.IMAGES) return null;
+
+  if (!photoDimensionsWithinLimits(candidate.image_width, candidate.image_height)) {
+    console.warn(JSON.stringify({
+      event: "telegram_publish_photo_skipped",
+      reason: "dimension_limits",
+      articleId: candidate.id,
+      width: candidate.image_width,
+      height: candidate.image_height,
+    }));
+    return null;
+  }
+
+  try {
+    const object = await env.IMAGES.get(candidate.image_key);
+    if (!object) return null;
+
+    const contentType = object.httpMetadata?.contentType;
+    const extension = contentType ? extensionForContentType(contentType) : null;
+    if (!contentType || !extension) return null;
+
+    const buffer = await object.arrayBuffer();
+    if (buffer.byteLength > MAX_PHOTO_BYTES) {
+      console.warn(JSON.stringify({
+        event: "telegram_publish_photo_skipped",
+        reason: "oversized",
+        articleId: candidate.id,
+        bytes: buffer.byteLength,
+      }));
+      return null;
+    }
+
+    return { bytes: new Uint8Array(buffer), filename: `article.${extension}`, contentType };
+  } catch (err) {
+    console.warn(JSON.stringify({
+      event: "telegram_publish_photo_failed",
+      articleId: candidate.id,
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    return null;
+  }
+}
 
 // Task 37: publish ONLY today's articles. The drip used to draw from a
 // rolling 48h window, which meant a quiet stretch let yesterday's leftovers
@@ -151,14 +239,14 @@ export async function publishNextArticle(
     return { kind: "cap-reached", maxPerDay };
   }
 
-  const text = buildPublishPost({
+  const postInput = {
     id: candidate.id,
     url: candidate.url,
     source: candidate.source,
     title_ru: candidate.title_ru,
     tldr_ru: candidate.tldr_ru,
     bullets_ru: candidate.bullets_ru,
-  }, env.PUBLIC_BASE_URL);
+  };
 
   // TELEGRAM_CHANNEL_ID (when set) is where posts go so the feature works
   // as a proper channel from day one; empty means "no channel yet", so
@@ -167,33 +255,41 @@ export async function publishNextArticle(
   // channel.
   const chatId = (env.TELEGRAM_CHANNEL_ID ?? "").trim() || config.ownerChatId;
 
-  // Task 46 Part B: pin the preview to the ClipFeed card URL explicitly
-  // rather than relying on Telegram's "first link in the message" guess —
-  // the post's plain-text source-domain mention (see telegram-post.ts) gets
-  // auto-linkified by Telegram's client even though it's not an <a> tag,
-  // so an implicit guess could land on the wrong link. prefer_large_media
-  // requests the big-image card; show_above_text puts it above the post
-  // text, which reads better for a short digest-style message like this one
-  // (revisit if it looks wrong in practice). Omitted entirely when
-  // PUBLIC_BASE_URL is unset — renderMessage already omits the card link
-  // itself in that case (see telegram-post.ts), so there is no link at all
-  // to pin a preview to.
-  const trimmedBase = env.PUBLIC_BASE_URL.trim();
-  const linkPreviewOptions = trimmedBase
-    ? {
-      url: cardUrl(trimmedBase, candidate.id),
-      preferLargeMedia: true,
-      showAboveText: true,
-    }
-    : undefined;
+  // Task 47 Part B: Telegram's own link-preview crawler never renders a
+  // preview for this instance regardless of link_preview_options (see Task
+  // 46/47's investigation — /a/:id and /img/:id are both reachable and
+  // correctly tagged from outside, so the failure isn't ours to fix by
+  // tuning parameters further). Uploading the image directly via sendPhoto
+  // sidesteps the crawler entirely: Telegram never has to fetch anything
+  // from us for the photo to appear. Deliberately NOT caught here: a send
+  // failure must not mark this candidate published — leaving
+  // telegram_published_at untouched means the next tick simply retries the
+  // same (still-oldest) candidate, which is the correct self-healing
+  // behavior for a transient Telegram/network error. Callers (runPublishJob,
+  // the /publish command) decide how to surface the failure.
+  const photo = await loadPublishablePhoto(env, candidate);
+  if (photo) {
+    const caption = buildPublishCaption(postInput, env.PUBLIC_BASE_URL);
+    await sendPhoto(config.botToken, chatId, photo.bytes, photo.filename, photo.contentType, {
+      caption,
+      parseMode: "HTML",
+    });
+  } else {
+    const text = buildPublishPost(postInput, env.PUBLIC_BASE_URL);
+    // Kept as a best-effort fallback for the no-image/failed-load case —
+    // harmless to still pin the preview even though it hasn't been observed
+    // to actually render (see the doc comment above).
+    const trimmedBase = env.PUBLIC_BASE_URL.trim();
+    const linkPreviewOptions = trimmedBase
+      ? {
+        url: cardUrl(trimmedBase, candidate.id),
+        preferLargeMedia: true,
+        showAboveText: true,
+      }
+      : undefined;
+    await sendMessage(config.botToken, chatId, text, { parseMode: "HTML", linkPreviewOptions });
+  }
 
-  // Deliberately NOT caught here: a send failure must not mark this
-  // candidate published — leaving telegram_published_at untouched means
-  // the next tick simply retries the same (still-oldest) candidate, which
-  // is the correct self-healing behavior for a transient Telegram/network
-  // error. Callers (runPublishJob, the /publish command) decide how to
-  // surface the failure.
-  await sendMessage(config.botToken, chatId, text, { parseMode: "HTML", linkPreviewOptions });
   await markTelegramPublished(env.DB, candidate.id, now);
   await incrementPublishCount(env.CACHE, nowMs, countToday);
   return { kind: "published", articleId: candidate.id };

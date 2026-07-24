@@ -4,6 +4,8 @@ import {
   DEFAULT_PUBLISH_MAX_PER_DAY,
   isPublishEnabled,
   isWithinPublishWindow,
+  MAX_PHOTO_BYTES,
+  photoDimensionsWithinLimits,
   publishNextArticle,
   runPublishJob,
   utcDayStartIso,
@@ -78,6 +80,22 @@ const CONFIG: TelegramConfig = {
 interface TelegramCall {
   method: string;
   body: Record<string, unknown>;
+  // Present only for a multipart (sendPhoto) call — the JSON `body` above
+  // stays an empty object in that case, since there is no JSON payload.
+  form?: { fields: Record<string, string>; photo: { name: string; type: string } | null };
+}
+
+function formToCall(form: FormData): TelegramCall["form"] {
+  const fields: Record<string, string> = {};
+  let photo: { name: string; type: string } | null = null;
+  for (const [key, value] of form.entries()) {
+    if (value instanceof File) {
+      photo = { name: value.name, type: value.type };
+    } else {
+      fields[key] = value as string;
+    }
+  }
+  return { fields, photo };
 }
 
 function stubTelegramFetch(): { restore: () => void; calls: TelegramCall[] } {
@@ -87,8 +105,12 @@ function stubTelegramFetch(): { restore: () => void; calls: TelegramCall[] } {
     const url = input.toString();
     const match = url.match(/^https:\/\/api\.telegram\.org\/bot[^/]+\/(\w+)$/);
     if (match) {
-      const body = init?.body ? JSON.parse(init.body as string) : {};
-      calls.push({ method: match[1], body });
+      if (init?.body instanceof FormData) {
+        calls.push({ method: match[1], body: {}, form: formToCall(init.body) });
+      } else {
+        const body = init?.body ? JSON.parse(init.body as string) : {};
+        calls.push({ method: match[1], body });
+      }
       return Promise.resolve(Response.json({ ok: true, result: { message_id: 1 } }));
     }
     return Promise.resolve(new Response("not used", { status: 404 }));
@@ -166,6 +188,9 @@ function insertReadyArticle(
     faithfulness_verdict?: string | null;
     telegram_published_at?: string | null;
     archived?: number;
+    image_key?: string | null;
+    image_width?: number | null;
+    image_height?: number | null;
   },
 ) {
   db.rows.push({
@@ -194,6 +219,9 @@ function insertReadyArticle(
     faithfulness_checked_at: null,
     embedded_at: null,
     telegram_published_at: overrides.telegram_published_at ?? null,
+    image_key: overrides.image_key ?? null,
+    image_width: overrides.image_width ?? null,
+    image_height: overrides.image_height ?? null,
   });
 }
 
@@ -312,6 +340,215 @@ Deno.test("publishNextArticle: sends to TELEGRAM_CHANNEL_ID when set, not the ow
 
     await publishNextArticle(env, CONFIG, NOW_MS);
     assertEquals(stub.calls[0].body.chat_id, "@my_channel");
+  } finally {
+    stub.restore();
+  }
+});
+
+// --- photoDimensionsWithinLimits (Task 47 Part B §4, pure) ---
+
+Deno.test("photoDimensionsWithinLimits: unknown dimensions (either null) are never disqualified — can't check what we don't know", () => {
+  assertEquals(photoDimensionsWithinLimits(null, null), true);
+  assertEquals(photoDimensionsWithinLimits(1200, null), true);
+  assertEquals(photoDimensionsWithinLimits(null, 630), true);
+});
+
+Deno.test("photoDimensionsWithinLimits: a normal photo (sum and ratio well inside limits) passes", () => {
+  assertEquals(photoDimensionsWithinLimits(1200, 630), true);
+  assertEquals(photoDimensionsWithinLimits(1000, 1000), true);
+});
+
+Deno.test("photoDimensionsWithinLimits: sum of width+height over 10000 fails", () => {
+  assertEquals(photoDimensionsWithinLimits(6000, 5000), false); // sum 11000
+  assertEquals(photoDimensionsWithinLimits(5000, 5000), true); // sum exactly 10000
+});
+
+Deno.test("photoDimensionsWithinLimits: an aspect ratio steeper than 20:1 fails, regardless of sum", () => {
+  assertEquals(photoDimensionsWithinLimits(2000, 90), false); // ratio ~22.2, sum well under 10000
+  assertEquals(photoDimensionsWithinLimits(2000, 100), true); // ratio exactly 20
+});
+
+Deno.test("photoDimensionsWithinLimits: zero or negative dimensions fail (never a real image)", () => {
+  assertEquals(photoDimensionsWithinLimits(0, 100), false);
+  assertEquals(photoDimensionsWithinLimits(100, -1), false);
+});
+
+// --- sendPhoto path (Task 47 Part B §§1,3,4) ---
+
+function makeFakeImagesBucket(bytes: Uint8Array, contentType: string): R2Bucket {
+  return {
+    get(_key: string) {
+      return Promise.resolve({
+        httpMetadata: { contentType },
+        arrayBuffer: () => Promise.resolve(bytes.buffer),
+      });
+    },
+    put() {
+      return Promise.resolve();
+    },
+    delete() {
+      return Promise.resolve();
+    },
+  } as unknown as R2Bucket;
+}
+
+Deno.test("publishNextArticle: an article with a stored image within limits publishes via sendPhoto with the bytes as a multipart file and a capped caption", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, {
+      id: "a1",
+      added_at: TODAY_EARLY,
+      image_key: "articles/a1.jpg",
+      image_width: 1200,
+      image_height: 630,
+    });
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const env = makeEnv({
+      DB: db as unknown as D1Database,
+      IMAGES: makeFakeImagesBucket(bytes, "image/jpeg"),
+    });
+
+    const outcome = await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(outcome, { kind: "published", articleId: "a1" });
+
+    assertEquals(stub.calls.length, 1);
+    assertEquals(stub.calls[0].method, "sendPhoto");
+    const form = stub.calls[0].form;
+    assertEquals(form?.fields.chat_id, "999");
+    assertEquals(form?.fields.parse_mode, "HTML");
+    assertEquals(form?.photo?.type, "image/jpeg");
+    assertEquals((form?.fields.caption ?? "").length <= 1024, true);
+    assertEquals(form?.fields.caption?.includes("Заголовок"), true);
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: no image_key falls back to sendMessage unchanged", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY, image_key: null });
+    const env = makeEnv({ DB: db as unknown as D1Database });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(stub.calls[0].method, "sendMessage");
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: an image_key set but no IMAGES binding configured falls back to sendMessage", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY, image_key: "articles/a1.jpg" });
+    const env = makeEnv({ DB: db as unknown as D1Database }); // no IMAGES
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(stub.calls[0].method, "sendMessage");
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: an R2 get() miss (object gone) falls back to sendMessage, never throws", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY, image_key: "articles/a1.jpg" });
+    const bucket = {
+      get() {
+        return Promise.resolve(null);
+      },
+    } as unknown as R2Bucket;
+    const env = makeEnv({ DB: db as unknown as D1Database, IMAGES: bucket });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(stub.calls[0].method, "sendMessage");
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: an R2 get() rejection falls back to sendMessage, never throws", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY, image_key: "articles/a1.jpg" });
+    const bucket = {
+      get() {
+        return Promise.reject(new Error("R2 unavailable"));
+      },
+    } as unknown as R2Bucket;
+    const env = makeEnv({ DB: db as unknown as D1Database, IMAGES: bucket });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(stub.calls[0].method, "sendMessage");
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: a stored object with a missing/unrecognized content-type falls back to sendMessage", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY, image_key: "articles/a1.jpg" });
+    const env = makeEnv({
+      DB: db as unknown as D1Database,
+      IMAGES: makeFakeImagesBucket(new Uint8Array([1, 2, 3]), "application/octet-stream"),
+    });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(stub.calls[0].method, "sendMessage");
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: an oversized stored image (> 10 MB) falls back to sendMessage", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY, image_key: "articles/a1.jpg" });
+    const bytes = new Uint8Array(MAX_PHOTO_BYTES + 1);
+    const env = makeEnv({
+      DB: db as unknown as D1Database,
+      IMAGES: makeFakeImagesBucket(bytes, "image/jpeg"),
+    });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(stub.calls[0].method, "sendMessage");
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: dimensions violating the sum/ratio limits fall back to sendMessage without ever touching R2", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, {
+      id: "a1",
+      added_at: TODAY_EARLY,
+      image_key: "articles/a1.jpg",
+      image_width: 6000,
+      image_height: 6000, // sum 12000 > 10000
+    });
+    let getCalled = false;
+    const bucket = {
+      get() {
+        getCalled = true;
+        return Promise.resolve(null);
+      },
+    } as unknown as R2Bucket;
+    const env = makeEnv({ DB: db as unknown as D1Database, IMAGES: bucket });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+    assertEquals(stub.calls[0].method, "sendMessage");
+    assertEquals(getCalled, false);
   } finally {
     stub.restore();
   }

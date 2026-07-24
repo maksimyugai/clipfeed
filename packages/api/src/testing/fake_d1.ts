@@ -453,7 +453,9 @@ export class FakeD1 implements D1Database {
     }
 
     if (
-      sql.startsWith("SELECT id, url, source, faithfulness_verdict, summary_json FROM articles")
+      sql.startsWith(
+        "SELECT id, url, source, faithfulness_verdict, summary_json, image_key, image_width, image_height FROM articles",
+      )
     ) {
       const since = values[0] as string;
       return this.rows
@@ -469,6 +471,9 @@ export class FakeD1 implements D1Database {
           source: r.source,
           faithfulness_verdict: r.faithfulness_verdict,
           summary_json: r.summary_json,
+          image_key: r.image_key ?? null,
+          image_width: r.image_width ?? null,
+          image_height: r.image_height ?? null,
         }));
     }
 
