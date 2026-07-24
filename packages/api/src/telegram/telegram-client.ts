@@ -102,8 +102,33 @@ async function callTelegram<T>(
   return data.result as T;
 }
 
+// Task 46 Part B: mirrors Bot API 7.0+'s link_preview_options object
+// (api.telegram.org has run 7.0+ since Jan 2024 — nothing in this plain-fetch
+// client pins an older API version, so no compatibility shim is needed).
+// `url` pins the preview to a SPECIFIC link in the message, removing any
+// ambiguity about which of several links (or an auto-linkified bare domain)
+// Telegram's crawler would otherwise guess at.
+export interface LinkPreviewOptions {
+  url?: string;
+  preferLargeMedia?: boolean;
+  showAboveText?: boolean;
+}
+
 export interface SendMessageOptions {
   parseMode?: "HTML";
+  linkPreviewOptions?: LinkPreviewOptions;
+}
+
+function toTelegramLinkPreviewOptions(
+  options: LinkPreviewOptions,
+): Record<string, unknown> {
+  return {
+    ...(options.url ? { url: options.url } : {}),
+    ...(options.preferLargeMedia !== undefined
+      ? { prefer_large_media: options.preferLargeMedia }
+      : {}),
+    ...(options.showAboveText !== undefined ? { show_above_text: options.showAboveText } : {}),
+  };
 }
 
 export async function sendMessage(
@@ -116,6 +141,9 @@ export async function sendMessage(
     chat_id: chatId,
     text,
     ...(options?.parseMode ? { parse_mode: options.parseMode } : {}),
+    ...(options?.linkPreviewOptions
+      ? { link_preview_options: toTelegramLinkPreviewOptions(options.linkPreviewOptions) }
+      : {}),
   });
 }
 

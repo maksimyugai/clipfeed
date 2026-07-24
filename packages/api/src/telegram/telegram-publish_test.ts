@@ -263,6 +263,46 @@ Deno.test("publishNextArticle: orders candidates oldest-first within the same da
   }
 });
 
+// --- link_preview_options (Task 46 Part B) ---
+
+Deno.test("publishNextArticle: sends link_preview_options pinned to the card URL with prefer_large_media and show_above_text, no disable_web_page_preview", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY });
+    const env = makeEnv({ DB: db as unknown as D1Database });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+
+    assertEquals(stub.calls.length, 1);
+    const body = stub.calls[0].body;
+    assertEquals(body.disable_web_page_preview, undefined);
+    assertEquals(body.link_preview_options, {
+      url: "https://clipfeed.example.com/a/a1",
+      prefer_large_media: true,
+      show_above_text: true,
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("publishNextArticle: link_preview_options is omitted entirely when PUBLIC_BASE_URL is unset (no link exists to pin)", async () => {
+  const stub = stubTelegramFetch();
+  try {
+    const db = new FakeD1();
+    insertReadyArticle(db, { id: "a1", added_at: TODAY_EARLY });
+    const env = makeEnv({ DB: db as unknown as D1Database, PUBLIC_BASE_URL: "" });
+
+    await publishNextArticle(env, CONFIG, NOW_MS);
+
+    assertEquals(stub.calls.length, 1);
+    assertEquals(stub.calls[0].body.link_preview_options, undefined);
+  } finally {
+    stub.restore();
+  }
+});
+
 Deno.test("publishNextArticle: sends to TELEGRAM_CHANNEL_ID when set, not the owner chat", async () => {
   const stub = stubTelegramFetch();
   try {

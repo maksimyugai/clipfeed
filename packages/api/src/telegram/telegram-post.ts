@@ -39,8 +39,11 @@ function escapeHtmlAttr(text: string): string {
 // Absolute path to the SPA's per-article route (see GET /a/:id in
 // index.ts) — deliberately not the old "/#article-<id>" hash: a hash
 // fragment is never sent to the server, so it can never produce a link
-// preview (see the og.ts module GET /a/:id uses to inject one).
-function cardUrl(publicBaseUrl: string, id: string): string {
+// preview (see the og.ts module GET /a/:id uses to inject one). Exported so
+// telegram-publish.ts can point link_preview_options.url (Task 46 Part B) at
+// the exact same URL this message's own <a> link uses, rather than
+// recomputing it a second way.
+export function cardUrl(publicBaseUrl: string, id: string): string {
   return `${publicBaseUrl}/a/${id}`;
 }
 

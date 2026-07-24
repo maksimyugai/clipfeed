@@ -1,6 +1,6 @@
 import "../env.d.ts";
 import { assertEquals } from "@std/assert";
-import { missingTelegramSecretNames, readTelegramConfig } from "./telegram-client.ts";
+import { missingTelegramSecretNames, readTelegramConfig, sendMessage } from "./telegram-client.ts";
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -96,4 +96,74 @@ Deno.test("missingTelegramSecretNames: empty array when all three are set", () =
     })),
     [],
   );
+});
+
+// --- sendMessage: link_preview_options (Task 46 Part B) ---
+
+function stubFetchCapturingBody(): { restore: () => void; body: () => Record<string, unknown> } {
+  const original = globalThis.fetch;
+  let captured: Record<string, unknown> = {};
+  globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    captured = init?.body ? JSON.parse(init.body as string) : {};
+    return Promise.resolve(Response.json({ ok: true, result: { message_id: 1 } }));
+  }) as typeof fetch;
+  return { restore: () => (globalThis.fetch = original), body: () => captured };
+}
+
+Deno.test("sendMessage: with no options, the request body has no parse_mode and no link_preview_options keys at all", async () => {
+  const stub = stubFetchCapturingBody();
+  try {
+    await sendMessage("token", "42", "hello");
+    const body = stub.body();
+    assertEquals("parse_mode" in body, false);
+    assertEquals("link_preview_options" in body, false);
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("sendMessage: linkPreviewOptions is sent as a nested JSON object, not a string, with snake_case keys", async () => {
+  const stub = stubFetchCapturingBody();
+  try {
+    await sendMessage("token", "42", "hello", {
+      parseMode: "HTML",
+      linkPreviewOptions: {
+        url: "https://clipfeed.example.com/a/id-1",
+        preferLargeMedia: true,
+        showAboveText: true,
+      },
+    });
+    const body = stub.body();
+    assertEquals(body.parse_mode, "HTML");
+    assertEquals(typeof body.link_preview_options, "object");
+    assertEquals(body.link_preview_options, {
+      url: "https://clipfeed.example.com/a/id-1",
+      prefer_large_media: true,
+      show_above_text: true,
+    });
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("sendMessage: linkPreviewOptions with only some fields set omits the rest", async () => {
+  const stub = stubFetchCapturingBody();
+  try {
+    await sendMessage("token", "42", "hello", { linkPreviewOptions: { url: "https://x.test" } });
+    assertEquals(stub.body().link_preview_options, { url: "https://x.test" });
+  } finally {
+    stub.restore();
+  }
+});
+
+Deno.test("sendMessage: never sends disable_web_page_preview — that field doesn't exist on our options type", async () => {
+  const stub = stubFetchCapturingBody();
+  try {
+    await sendMessage("token", "42", "hello", {
+      linkPreviewOptions: { url: "https://x.test", preferLargeMedia: true, showAboveText: true },
+    });
+    assertEquals("disable_web_page_preview" in stub.body(), false);
+  } finally {
+    stub.restore();
+  }
 });
