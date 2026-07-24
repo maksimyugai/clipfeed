@@ -88,6 +88,41 @@ Deno.test("buildOgTags: escapes the imageUrl (attribute context)", () => {
   assertEquals(tags.includes("<script>"), false);
 });
 
+// --- og:image:width / og:image:height (Task 46 Part C) ---
+
+Deno.test("buildOgTags: both dimensions known -> emits og:image:width and og:image:height", () => {
+  const tags = buildOgTags(
+    {
+      title: "t",
+      tldr: "d",
+      imageUrl: "https://example.com/img/id-1",
+      imageWidth: 1200,
+      imageHeight: 630,
+    },
+    "https://example.com/a/id-1",
+  );
+  assertEquals(tags.includes('<meta property="og:image:width" content="1200" />'), true);
+  assertEquals(tags.includes('<meta property="og:image:height" content="630" />'), true);
+});
+
+Deno.test("buildOgTags: imageUrl present but dimensions unknown -> no width/height tags", () => {
+  const tags = buildOgTags(
+    { title: "t", tldr: "d", imageUrl: "https://example.com/img/id-1" },
+    "https://example.com/a/id-1",
+  );
+  assertEquals(tags.includes("og:image:width"), false);
+  assertEquals(tags.includes("og:image:height"), false);
+});
+
+Deno.test("buildOgTags: no imageUrl at all -> no width/height tags even if somehow passed", () => {
+  const tags = buildOgTags(
+    { title: "t", tldr: "d", imageWidth: 1200, imageHeight: 630 },
+    "https://example.com/a/id-1",
+  );
+  assertEquals(tags.includes("og:image:width"), false);
+  assertEquals(tags.includes("og:image:height"), false);
+});
+
 Deno.test("injectOgTags: replaces the <!--OG--> marker with the rendered tags", () => {
   const html = "<head><title>x</title>\n    <!--OG-->\n  </head>";
   const result = injectOgTags(html, '<meta property="og:title" content="t" />');

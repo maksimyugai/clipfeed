@@ -19,6 +19,11 @@ export interface OgArticle {
   // image automatically, the same mechanism that already renders the
   // title/description above.
   imageUrl?: string;
+  // Task 46 Part C: emitted together (both or neither) alongside og:image —
+  // crawlers render large media more reliably with explicit dimensions.
+  // Ignored when imageUrl itself is absent.
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 // Attribute-context escaping (content="...") — the four characters that
@@ -51,6 +56,10 @@ export function buildOgTags(article: OgArticle, cardUrl: string): string {
   ];
   if (article.imageUrl) {
     tags.push(`<meta property="og:image" content="${escapeHtmlAttr(article.imageUrl)}" />`);
+    if (article.imageWidth && article.imageHeight) {
+      tags.push(`<meta property="og:image:width" content="${article.imageWidth}" />`);
+      tags.push(`<meta property="og:image:height" content="${article.imageHeight}" />`);
+    }
     tags.push(`<meta name="twitter:card" content="summary_large_image" />`);
   } else {
     tags.push(`<meta name="twitter:card" content="summary" />`);

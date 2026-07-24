@@ -46,6 +46,8 @@ interface ArticleRow {
   en_generated_at: string | null;
   image_key: string | null;
   image_source_url: string | null;
+  image_width: number | null;
+  image_height: number | null;
   processing_started_at: string | null;
   faithfulness_enforced_at: string | null;
 }
@@ -148,6 +150,8 @@ function rowToListItem(row: ArticleRowNoText): ArticleListItem {
     en_generated_at: row.en_generated_at,
     image_key: row.image_key,
     image_source_url: row.image_source_url,
+    image_width: row.image_width,
+    image_height: row.image_height,
     processing_started_at: row.processing_started_at,
     faithfulness_enforced_at: row.faithfulness_enforced_at,
   };
@@ -396,10 +400,12 @@ export async function markImageStored(
   id: string,
   imageKey: string,
   imageSourceUrl: string,
+  imageWidth: number | null,
+  imageHeight: number | null,
 ): Promise<void> {
   await db.prepare(
-    "UPDATE articles SET image_key = ?, image_source_url = ? WHERE id = ?",
-  ).bind(imageKey, imageSourceUrl, id).run();
+    "UPDATE articles SET image_key = ?, image_source_url = ?, image_width = ?, image_height = ? WHERE id = ?",
+  ).bind(imageKey, imageSourceUrl, imageWidth, imageHeight, id).run();
 }
 
 export interface UnembeddedArticle {
@@ -960,7 +966,7 @@ export interface ListArticlesResult {
 // in production, invisible to FakeD1's tests since it returns whole stored
 // rows regardless of the projected column list).
 export const LIST_COLUMNS =
-  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at, en_generated_at, image_key, image_source_url, processing_started_at, faithfulness_enforced_at";
+  "id, url, canonical_url, title, source, author, published_at, added_at, added_via, lang_original, summary_ru, summary_en, summary_json, tags, status, archived, error, fail_class, heal_attempts, faithfulness_verdict, faithfulness_json, faithfulness_checked_at, embedded_at, telegram_published_at, en_generated_at, image_key, image_source_url, image_width, image_height, processing_started_at, faithfulness_enforced_at";
 
 export interface ListQuery {
   sql: string;

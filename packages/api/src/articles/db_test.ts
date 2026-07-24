@@ -70,6 +70,8 @@ const sampleListItem: ArticleListItem = {
   en_generated_at: null,
   image_key: null,
   image_source_url: null,
+  image_width: null,
+  image_height: null,
   processing_started_at: null,
   faithfulness_enforced_at: null,
 };
@@ -1246,6 +1248,8 @@ Deno.test("toPublicArticle: strips faithfulness_json but keeps faithfulness_verd
     en_generated_at: null,
     image_key: null,
     image_source_url: null,
+    image_width: null,
+    image_height: null,
     processing_started_at: null,
     faithfulness_enforced_at: "2026-01-01T00:05:00.000Z",
   };
@@ -1287,6 +1291,8 @@ Deno.test("toPublicListItem: strips faithfulness_json but keeps faithfulness_ver
     en_generated_at: null,
     image_key: null,
     image_source_url: null,
+    image_width: null,
+    image_height: null,
     processing_started_at: null,
     faithfulness_enforced_at: null,
   };

@@ -313,6 +313,8 @@ app.get("/a/:id", async (c) => {
       title: article.summary_json.title_ru || article.title,
       tldr: article.summary_json.tldr_ru,
       imageUrl,
+      imageWidth: article.image_width ?? undefined,
+      imageHeight: article.image_height ?? undefined,
     },
     cardUrl,
   );

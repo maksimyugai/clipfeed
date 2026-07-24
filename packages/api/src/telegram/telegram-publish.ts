@@ -5,7 +5,7 @@ import {
   markTelegramPublished,
 } from "../articles/db.ts";
 import { readTelegramConfig, sendMessage, type TelegramConfig } from "./telegram-client.ts";
-import { buildPublishPost } from "./telegram-post.ts";
+import { buildPublishPost, cardUrl } from "./telegram-post.ts";
 
 // Task 37: publish ONLY today's articles. The drip used to draw from a
 // rolling 48h window, which meant a quiet stretch let yesterday's leftovers
@@ -167,13 +167,33 @@ export async function publishNextArticle(
   // channel.
   const chatId = (env.TELEGRAM_CHANNEL_ID ?? "").trim() || config.ownerChatId;
 
+  // Task 46 Part B: pin the preview to the ClipFeed card URL explicitly
+  // rather than relying on Telegram's "first link in the message" guess —
+  // the post's plain-text source-domain mention (see telegram-post.ts) gets
+  // auto-linkified by Telegram's client even though it's not an <a> tag,
+  // so an implicit guess could land on the wrong link. prefer_large_media
+  // requests the big-image card; show_above_text puts it above the post
+  // text, which reads better for a short digest-style message like this one
+  // (revisit if it looks wrong in practice). Omitted entirely when
+  // PUBLIC_BASE_URL is unset — renderMessage already omits the card link
+  // itself in that case (see telegram-post.ts), so there is no link at all
+  // to pin a preview to.
+  const trimmedBase = env.PUBLIC_BASE_URL.trim();
+  const linkPreviewOptions = trimmedBase
+    ? {
+      url: cardUrl(trimmedBase, candidate.id),
+      preferLargeMedia: true,
+      showAboveText: true,
+    }
+    : undefined;
+
   // Deliberately NOT caught here: a send failure must not mark this
   // candidate published — leaving telegram_published_at untouched means
   // the next tick simply retries the same (still-oldest) candidate, which
   // is the correct self-healing behavior for a transient Telegram/network
   // error. Callers (runPublishJob, the /publish command) decide how to
   // surface the failure.
-  await sendMessage(config.botToken, chatId, text, { parseMode: "HTML" });
+  await sendMessage(config.botToken, chatId, text, { parseMode: "HTML", linkPreviewOptions });
   await markTelegramPublished(env.DB, candidate.id, now);
   await incrementPublishCount(env.CACHE, nowMs, countToday);
   return { kind: "published", articleId: candidate.id };

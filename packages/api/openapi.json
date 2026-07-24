@@ -150,6 +150,8 @@
           "en_generated_at",
           "image_key",
           "image_source_url",
+          "image_width",
+          "image_height",
           "processing_started_at",
           "faithfulness_enforced_at"
         ],
@@ -204,6 +206,11 @@
             "description": "R2 object key; fetch the image itself via GET /img/{id}, never this key directly."
           },
           "image_source_url": { "type": ["string", "null"], "format": "uri" },
+          "image_width": {
+            "type": ["integer", "null"],
+            "description": "Parsed from the stored image's own header bytes at download time; null when no image or the format wasn't recognized. Used for og:image:width on GET /a/{id}."
+          },
+          "image_height": { "type": ["integer", "null"] },
           "processing_started_at": {
             "type": ["string", "null"],
             "format": "date-time",
@@ -261,6 +268,8 @@
           "en_generated_at",
           "image_key",
           "image_source_url",
+          "image_width",
+          "image_height",
           "has_error"
         ],
         "properties": {
@@ -291,6 +300,8 @@
           "en_generated_at": { "type": ["string", "null"], "format": "date-time" },
           "image_key": { "type": ["string", "null"] },
           "image_source_url": { "type": ["string", "null"], "format": "uri" },
+          "image_width": { "type": ["integer", "null"] },
+          "image_height": { "type": ["integer", "null"] },
           "has_error": {
             "type": "boolean",
             "description": "True when this failed article has a stored error a retry might fix — the raw string itself is owner-only."
