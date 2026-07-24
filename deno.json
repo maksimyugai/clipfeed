@@ -33,6 +33,7 @@
     "lineWidth": 100,
     "exclude": [
       "packages/web/vendor/",
+      "docs/assets/",
       "dist/",
       "node_modules/",
       ".wrangler/",
@@ -43,7 +44,7 @@
     ]
   },
   "lint": {
-    "exclude": ["packages/web/vendor/", "dist/", "node_modules/", ".wrangler/"]
+    "exclude": ["packages/web/vendor/", "docs/assets/", "dist/", "node_modules/", ".wrangler/"]
   },
   "allowScripts": ["npm:sharp", "npm:workerd"]
 }
