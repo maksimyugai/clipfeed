@@ -55,6 +55,15 @@ spec's schemas roughly honest against `packages/shared/src/types.ts`.
 Swagger UI itself is self-hosted (vendored under `packages/web/vendor/swagger-ui/`, never loaded
 from a CDN) — same privacy/fork-friendliness reasoning as the self-hosted fonts.
 
+**`/docs` and `/openapi.json` are public by default in a fresh fork** — they're registered before
+`accessAuth()` is mounted (see "Protecting your instance" below) and don't sit under `/api/admin/*`,
+so anyone can view the documentation page and the raw spec without a Cloudflare Access session, even
+once the admin routes themselves are locked down. The owner's own instance has both paths added to
+the same Cloudflare Access self-hosted application that protects `/api/admin/*` — if you want your
+fork's docs private too, add `/docs` and `/openapi.json` as additional paths on that same Access
+application; this isn't automatic, since a public repo needs its documentation to stay readable by
+default.
+
 ## LLM modes
 
 ClipFeed picks a summarization backend at request time, in this priority order:

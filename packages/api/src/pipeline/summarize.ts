@@ -1,5 +1,6 @@
 import "../env.d.ts";
 import type { SummaryJson } from "@clipfeed/shared/types";
+import { normalizeAiChatResponse } from "./ai-response.ts";
 
 const ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -1406,12 +1407,11 @@ export function parseWorkersAiResultWithDiagnostics(result: unknown): SummaryPar
     };
   }
 
-  const obj = result as Record<string, unknown>;
-  const inner = "response" in obj ? obj.response : result;
-  if (typeof inner === "string") return parseSummaryJsonWithDiagnostics(inner);
+  const normalized = normalizeAiChatResponse(result);
+  if (normalized.text !== null) return parseSummaryJsonWithDiagnostics(normalized.text);
 
-  const shape = checkSummaryShape(inner);
-  const rawText = JSON.stringify(inner ?? {});
+  const shape = checkSummaryShape(normalized.parsed);
+  const rawText = JSON.stringify(normalized.parsed ?? {});
   return {
     value: shape.value,
     diagnostics: {
@@ -1439,12 +1439,11 @@ function parseWorkersAiEnglishResultWithDiagnostics(result: unknown): EnglishPar
     };
   }
 
-  const obj = result as Record<string, unknown>;
-  const inner = "response" in obj ? obj.response : result;
-  if (typeof inner === "string") return parseEnglishJsonWithDiagnostics(inner);
+  const normalized = normalizeAiChatResponse(result);
+  if (normalized.text !== null) return parseEnglishJsonWithDiagnostics(normalized.text);
 
-  const shape = checkEnglishShape(inner);
-  const rawText = JSON.stringify(inner ?? {});
+  const shape = checkEnglishShape(normalized.parsed);
+  const rawText = JSON.stringify(normalized.parsed ?? {});
   return {
     value: shape.value,
     diagnostics: {
@@ -1516,18 +1515,12 @@ function looksTruncated(rawText: string): boolean {
   }
 }
 
-// Workers AI's chat models normally return `{ response: string }`, not a
-// bare string — same duality parseWorkersAiResultWithDiagnostics already
-// unwraps. Extracts the text the truncation heuristic should actually check
-// against; null when the result is already a parsed object (json_schema
-// succeeded structurally — nothing to check for truncation).
+// Task 44 Part A: thin wrapper over the shared normalizer — extracts the
+// text the truncation heuristic should actually check against; null when
+// the result is already a parsed object (json_schema succeeded
+// structurally — nothing to check for truncation).
 function extractCheckableText(result: unknown): string | null {
-  if (typeof result === "string") return result;
-  if (typeof result === "object" && result !== null && "response" in result) {
-    const response = (result as { response: unknown }).response;
-    if (typeof response === "string") return response;
-  }
-  return null;
+  return normalizeAiChatResponse(result).text;
 }
 
 async function runWorkersAiChecked(
@@ -1609,12 +1602,9 @@ export async function summarizeArticleWithWorkersAi(
 export type LlmMode = "gateway" | "direct" | "workers-ai";
 
 function extractWorkersAiText(result: unknown): string {
-  if (typeof result === "string") return result;
-  if (typeof result === "object" && result !== null && "response" in result) {
-    const response = (result as { response: unknown }).response;
-    if (typeof response === "string") return response;
-  }
-  throw new Error("workers ai error: unexpected response shape");
+  const text = normalizeAiChatResponse(result).text;
+  if (text === null) throw new Error("workers ai error: unexpected response shape");
+  return text;
 }
 
 export async function callLlm(
