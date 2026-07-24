@@ -416,7 +416,12 @@ Deno.test("sweepStalePending: last-writer-safe — a real completion landing AFT
   db.rows.push(
     {
       id: "race-1",
+      url: "https://example.com/race-1",
+      title: "Race 1",
+      added_via: "manual",
       status: "pending",
+      archived: 0,
+      heal_attempts: 0,
       added_at: "2025-12-31T23:00:00.000Z",
       processing_started_at: "2025-12-31T23:59:00.000Z",
       error: null,
@@ -454,7 +459,12 @@ Deno.test("sweepStalePending: last-writer-safe — a real completion landing BEF
   db.rows.push(
     {
       id: "race-2",
+      url: "https://example.com/race-2",
+      title: "Race 2",
+      added_via: "manual",
       status: "pending",
+      archived: 0,
+      heal_attempts: 0,
       added_at: "2025-12-31T23:00:00.000Z",
       processing_started_at: "2025-12-31T23:59:00.000Z",
       error: null,
@@ -572,9 +582,39 @@ Deno.test("markArticleReady: normalizes tags on the pipeline's success write", a
 Deno.test("backfillNormalizedTags: normalizes only rows whose stored tags actually change, reports an accurate count", async () => {
   const db = new FakeD1();
   db.rows.push(
-    { id: "b1", tags: JSON.stringify(["ИИ", "ai"]) }, // will change: case dedupe
-    { id: "b2", tags: JSON.stringify(["security"]) }, // already normalized: no change
-    { id: "b3", tags: JSON.stringify(["таймаут", "space"]) }, // will change: drop + already-plain
+    {
+      id: "b1",
+      url: "https://example.com/b1",
+      title: "B1",
+      added_via: "manual",
+      status: "ready",
+      added_at: "2026-01-01T00:00:00.000Z",
+      archived: 0,
+      heal_attempts: 0,
+      tags: JSON.stringify(["ИИ", "ai"]), // will change: case dedupe
+    },
+    {
+      id: "b2",
+      url: "https://example.com/b2",
+      title: "B2",
+      added_via: "manual",
+      status: "ready",
+      added_at: "2026-01-01T00:00:00.000Z",
+      archived: 0,
+      heal_attempts: 0,
+      tags: JSON.stringify(["security"]), // already normalized: no change
+    },
+    {
+      id: "b3",
+      url: "https://example.com/b3",
+      title: "B3",
+      added_via: "manual",
+      status: "ready",
+      added_at: "2026-01-01T00:00:00.000Z",
+      archived: 0,
+      heal_attempts: 0,
+      tags: JSON.stringify(["таймаут", "space"]), // will change: drop + already-plain
+    },
   );
 
   const updated = await backfillNormalizedTags(db);
@@ -587,7 +627,17 @@ Deno.test("backfillNormalizedTags: normalizes only rows whose stored tags actual
 
 Deno.test("backfillNormalizedTags: a second run is a no-op (idempotent), returns 0", async () => {
   const db = new FakeD1();
-  db.rows.push({ id: "b1", tags: JSON.stringify(["ИИ", "ai", "таймаут"]) });
+  db.rows.push({
+    id: "b1",
+    url: "https://example.com/b1",
+    title: "B1",
+    added_via: "manual",
+    status: "ready",
+    added_at: "2026-01-01T00:00:00.000Z",
+    archived: 0,
+    heal_attempts: 0,
+    tags: JSON.stringify(["ИИ", "ai", "таймаут"]),
+  });
 
   const first = await backfillNormalizedTags(db);
   assertEquals(first, 1);
@@ -613,36 +663,56 @@ Deno.test("markStaleArticlesSkipped: marks only ready/non-archived/unpublished r
   db.rows.push(
     {
       id: "old-unpublished",
+      url: "https://example.com/old-unpublished",
+      title: "Old unpublished",
+      added_via: "manual",
       status: "ready",
       archived: 0,
+      heal_attempts: 0,
       telegram_published_at: null,
       added_at: "2026-01-01T00:00:00.000Z",
     },
     {
       id: "today",
+      url: "https://example.com/today",
+      title: "Today",
+      added_via: "manual",
       status: "ready",
       archived: 0,
+      heal_attempts: 0,
       telegram_published_at: null,
       added_at: "2026-01-02T00:00:00.000Z",
     },
     {
       id: "already-published",
+      url: "https://example.com/already-published",
+      title: "Already published",
+      added_via: "manual",
       status: "ready",
       archived: 0,
+      heal_attempts: 0,
       telegram_published_at: "2026-01-01T05:00:00.000Z",
       added_at: "2026-01-01T00:00:00.000Z",
     },
     {
       id: "archived",
+      url: "https://example.com/archived",
+      title: "Archived",
+      added_via: "manual",
       status: "ready",
       archived: 1,
+      heal_attempts: 0,
       telegram_published_at: null,
       added_at: "2026-01-01T00:00:00.000Z",
     },
     {
       id: "not-ready",
+      url: "https://example.com/not-ready",
+      title: "Not ready",
+      added_via: "manual",
       status: "pending",
       archived: 0,
+      heal_attempts: 0,
       telegram_published_at: null,
       added_at: "2026-01-01T00:00:00.000Z",
     },
@@ -663,8 +733,12 @@ Deno.test("markStaleArticlesSkipped: a second call with the same cutoff is idemp
   const db = new FakeD1();
   db.rows.push({
     id: "old-unpublished",
+    url: "https://example.com/old-unpublished",
+    title: "Old unpublished",
+    added_via: "manual",
     status: "ready",
     archived: 0,
+    heal_attempts: 0,
     telegram_published_at: null,
     added_at: "2026-01-01T00:00:00.000Z",
   });

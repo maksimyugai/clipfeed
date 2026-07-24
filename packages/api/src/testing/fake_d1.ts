@@ -1,4 +1,5 @@
 import "../env.d.ts";
+import { type ArticleColumnDef, parseArticlesSchema } from "./articles-schema.ts";
 
 // A hand-rolled D1 test double — not a SQL engine, just enough pattern
 // matching to execute the exact statements packages/api/src/articles/db.ts issues.
@@ -11,6 +12,94 @@ function likeTest(pattern: string): (value: unknown) => boolean {
   const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*");
   const re = new RegExp(`^${escaped}$`, "is");
   return (value) => typeof value === "string" && re.test(value);
+}
+
+// Task 44 Part B: the default row for a fresh INSERT, DERIVED from the
+// migrations themselves (see articles-schema.ts) rather than a second,
+// hand-maintained object literal — the exact drift class that let
+// `faithfulness_verdict`/`embedded_at`/`telegram_published_at` go missing
+// from `LIST_COLUMNS` unnoticed (Task 34) can't recur here, since there's
+// no second list to fall out of sync with the schema. Every NULLABLE
+// column defaults to null; NOT-NULL-with-no-default columns (id, url,
+// title, added_at, added_via) are deliberately absent — they must come
+// from the INSERT's own column list, and are enforced below if they
+// don't; NOT-NULL-with-a-default columns (status, archived,
+// heal_attempts) are also absent here — `execute()` sets their real
+// defaults explicitly, same as it always has.
+function defaultRowFromSchema(): FakeRow {
+  const row: FakeRow = {};
+  for (const col of parseArticlesSchema()) {
+    if (!col.notNull) row[col.name] = null;
+  }
+  return row;
+}
+
+const ARTICLES_SCHEMA: ArticleColumnDef[] = parseArticlesSchema();
+
+// Task 44 Part B point 3: real D1/SQLite rejects a NOT NULL column ending
+// up null or unset with "NOT NULL constraint failed: articles.<col>" —
+// FakeD1 previously let this through silently (`row[col] = values[vi++]`
+// producing `undefined` for a column the INSERT's column list omitted).
+// Called after every write path that assigns arbitrary bind values into
+// arbitrary columns (INSERT, and the two generically-parsed UPDATE SET
+// clauses) — the branches that only ever assign fixed, hardcoded literals
+// (e.g. `row.status = "failed"`) can't produce this, so don't need it.
+function assertNotNullConstraints(row: FakeRow): void {
+  for (const col of ARTICLES_SCHEMA) {
+    if (col.notNull && (row[col.name] === null || row[col.name] === undefined)) {
+      throw new Error(`D1_ERROR: NOT NULL constraint failed: articles.${col.name}`);
+    }
+  }
+}
+
+// Task 44 Part B point 1: FakeD1 previously returned whole stored rows
+// regardless of the query's actual SELECT column list — invisible because
+// nothing forced a mismatch to surface, which is exactly how a
+// `LIST_COLUMNS` drift (Task 34) went unnoticed for a real endpoint while
+// every test using this double kept passing. Parses a plain
+// `SELECT col[, col2, ...] FROM articles` list (with optional `AS alias`)
+// into {source, alias} pairs; returns null for `SELECT *` (nothing to
+// project) or anything containing an expression/function call (aggregates
+// like `COUNT(*)` can't be generically projected — those branches already
+// hand-build their own correct output shape, so this just leaves them
+// alone rather than guessing).
+interface ColumnProjection {
+  source: string;
+  alias: string;
+}
+
+function parseSelectColumns(sql: string): ColumnProjection[] | null {
+  const match = sql.match(/^SELECT\s+(.+?)\s+FROM\s+articles\b/i);
+  if (!match) return null;
+  const list = match[1].trim();
+  if (list === "*") return null;
+
+  const columns: ColumnProjection[] = [];
+  for (const part of list.split(",")) {
+    const trimmed = part.trim();
+    if (/[()]/.test(trimmed)) return null; // an aggregate/expression — bail, trust the branch
+    const columnMatch = trimmed.match(/^(\w+)(?:\s+as\s+(\w+))?$/i);
+    if (!columnMatch) return null; // unrecognized shape — bail defensively
+    columns.push({ source: columnMatch[1], alias: columnMatch[2] ?? columnMatch[1] });
+  }
+  return columns;
+}
+
+// Some branches in `queryUnprojected` already hand-build a narrow, aliased
+// result (e.g. `processing_started_at as ts` → `{ id, ts }`) rather than
+// returning whole stored rows — this wrapper must stay a no-op on rows
+// that are ALREADY correctly shaped, not just on genuinely-whole ones.
+// Falls back to the alias key when the source key isn't present, so
+// composing this with either kind of branch produces the same result.
+function projectColumns(rows: FakeRow[], columns: ColumnProjection[] | null): FakeRow[] {
+  if (columns === null) return rows;
+  return rows.map((row) => {
+    const projected: FakeRow = {};
+    for (const { source, alias } of columns) {
+      projected[alias] = source in row ? row[source] : row[alias];
+    }
+    return projected;
+  });
 }
 
 export class FakeD1 implements D1Database {
@@ -26,20 +115,27 @@ export class FakeD1 implements D1Database {
         bind(...newValues: unknown[]): D1PreparedStatement {
           return makeStatement(newValues);
         },
-        run<T = unknown>(): Promise<D1Result<T>> {
+        // Task 44 Part B point 3: `async` here (not a sync function
+        // returning `Promise.resolve(...)`) matters — a NOT NULL violation
+        // thrown inside `execute`/`query` must surface as a REJECTED
+        // promise, same as real D1, not as a synchronous throw at the
+        // `.run()`/`.all()`/`.first()` call site. A caller using
+        // `await ...run()` behaves identically either way, but
+        // `assertRejects`-style test helpers (and any real `.catch()`
+        // chain) only see it correctly when it's an actual rejection.
+        async run<T = unknown>(): Promise<D1Result<T>> {
+          await Promise.resolve();
           execute(values);
-          return Promise.resolve({ results: [] as T[], success: true, meta: {} });
+          return { results: [] as T[], success: true, meta: {} };
         },
-        all<T = unknown>(): Promise<D1Result<T>> {
-          return Promise.resolve({
-            results: query(values) as unknown as T[],
-            success: true,
-            meta: {},
-          });
+        async all<T = unknown>(): Promise<D1Result<T>> {
+          await Promise.resolve();
+          return { results: query(values) as unknown as T[], success: true, meta: {} };
         },
-        first<T = unknown>(): Promise<T | null> {
+        async first<T = unknown>(): Promise<T | null> {
+          await Promise.resolve();
           const results = query(values);
-          return Promise.resolve((results[0] as unknown as T) ?? null);
+          return (results[0] as unknown as T) ?? null;
         },
       };
     }
@@ -50,35 +146,15 @@ export class FakeD1 implements D1Database {
   private execute(sql: string, values: unknown[]): void {
     if (sql.startsWith("INSERT INTO articles")) {
       const cols = sql.match(/\(([^)]+)\)\s+VALUES/)![1].split(",").map((c) => c.trim());
-      const row: FakeRow = {
-        canonical_url: null,
-        author: null,
-        published_at: null,
-        lang_original: null,
-        full_text: null,
-        summary_ru: null,
-        summary_en: null,
-        summary_json: null,
-        error: null,
-        fail_class: null,
-        faithfulness_verdict: null,
-        faithfulness_json: null,
-        faithfulness_checked_at: null,
-        embedded_at: null,
-        telegram_published_at: null,
-        en_generated_at: null,
-        image_key: null,
-        image_source_url: null,
-        processing_started_at: null,
-        faithfulness_enforced_at: null,
-      };
+      const row: FakeRow = defaultRowFromSchema();
       let vi = 0;
       for (const col of cols) {
-        row[col] = values[vi++]; // trailing literal columns (status, archived) get undefined here
+        row[col] = values[vi++];
       }
       row.status = "pending";
       row.archived = 0;
       row.heal_attempts = 0;
+      assertNotNullConstraints(row);
       this.rows.push(row);
       return;
     }
@@ -134,6 +210,7 @@ export class FakeD1 implements D1Database {
           if (m) row[m[1]] = values[vi++];
         }
         Object.assign(row, { status: "ready", error: null, fail_class: null, heal_attempts: 0 });
+        assertNotNullConstraints(row);
         return;
       }
       if (sql.includes("SET status = 'failed'")) {
@@ -172,6 +249,7 @@ export class FakeD1 implements D1Database {
         const m = assignment.trim().match(/^(\w+)\s*=\s*\?$/);
         if (m) row[m[1]] = values[vi++];
       }
+      assertNotNullConstraints(row);
       return;
     }
 
@@ -184,7 +262,18 @@ export class FakeD1 implements D1Database {
     throw new Error(`FakeD1: unsupported statement: ${sql}`);
   }
 
+  // Task 44 Part B point 1: every dispatch path funnels through this one
+  // wrapper, which projects down to exactly the SQL's own SELECT column
+  // list — so a branch that (for convenience) still returns whole stored
+  // rows internally (e.g. queryList, or the plain `SELECT * ...` cases,
+  // which need no projection since they genuinely select everything) can
+  // never leak an unrequested column to a caller the way a real D1 query
+  // wouldn't either.
   private query(sql: string, values: unknown[]): FakeRow[] {
+    return projectColumns(this.queryUnprojected(sql, values), parseSelectColumns(sql));
+  }
+
+  private queryUnprojected(sql: string, values: unknown[]): FakeRow[] {
     if (sql === "SELECT id FROM articles WHERE url = ?") {
       const row = this.rows.find((r) => r.url === values[0]);
       return row ? [{ id: row.id }] : [];
