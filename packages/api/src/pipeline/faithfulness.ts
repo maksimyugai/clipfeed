@@ -6,6 +6,7 @@ import type {
   SummaryJson,
 } from "@clipfeed/shared/types";
 import { stripJsonFences, withTimeout } from "./summarize.ts";
+import { normalizeAiChatResponse } from "./ai-response.ts";
 
 // A SEPARATE verification pass, run after a summary validates but before
 // the article is marked 'ready' (see pipeline.ts's runFaithfulnessStage):
@@ -252,6 +253,14 @@ export async function readFaithfulnessCallCount(
 // its own observed latency instead of sharing one timeout).
 const JUDGE_CALL_TIMEOUT_MS = 90_000;
 
+// Task 44 Part A: routed through the shared normalizer, which also fixed a
+// real latent bug found by this consolidation — see this task's report.
+// Previously this required a literal `response` wrapper key and returned
+// null (forcing a wasted retry) for a bare, unwrapped judge object, even
+// though Workers AI's own documented shape family includes returning "the
+// object directly" (see summarize.ts's parseWorkersAiResultWithDiagnostics
+// doc comment) — the RU/EN summarization parsers already handled that case
+// correctly; the judge parser alone did not.
 async function callJudgeOnce(ai: Ai, model: string, prompt: string): Promise<unknown | null> {
   try {
     const result = await withTimeout(
@@ -259,12 +268,9 @@ async function callJudgeOnce(ai: Ai, model: string, prompt: string): Promise<unk
       JUDGE_CALL_TIMEOUT_MS,
       `judge timed out after ${JUDGE_CALL_TIMEOUT_MS}ms`,
     );
-    if (typeof result === "string") return result;
-    if (typeof result === "object" && result !== null && "response" in result) {
-      const response = (result as { response: unknown }).response;
-      if (typeof response === "string" || typeof response === "object") return response;
-    }
-    return null;
+    const normalized = normalizeAiChatResponse(result);
+    if (normalized.text !== null) return normalized.text;
+    return normalized.parsed;
   } catch {
     // A judge failure (timeout, binding error) must never block a good
     // summary — collapse any transport error into the same "no usable

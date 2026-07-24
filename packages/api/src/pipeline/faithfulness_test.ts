@@ -360,6 +360,31 @@ Deno.test("runFaithfulnessCheck: Workers AI returning response as an object (not
   assert("claims" in result.json);
 });
 
+// Task 44 Part A: a latent bug the shared normalizer consolidation exposed
+// and fixed — callJudgeOnce previously required a literal `{response: ...}`
+// wrapper and returned null (forcing a wasted retry) for a BARE, unwrapped
+// judge object, even though Workers AI's own documented shape family
+// includes returning "the object directly" (no wrapper at all) — the RU/EN
+// summarization parsers already handled that shape correctly; the judge
+// parser alone did not, until routed through the same shared normalizer.
+Deno.test("runFaithfulnessCheck: a bare (unwrapped) object response is now correctly parsed, not treated as unparseable (Task 44 latent-bug fix)", async () => {
+  const ai = fakeAi([{
+    claims: SUMMARY.bullets_ru.map((_t, i) => ({
+      i: i + 1,
+      verdict: "supported",
+      evidence: "x",
+    })),
+    notes: "ok",
+  }]);
+  const result = await runFaithfulnessCheck(ai, "test-model", "source text", {
+    ...SUMMARY,
+    bullets_ru: ["one", "two"],
+    body_ru: [],
+  });
+  assertEquals(result.verdict, "pass");
+  assert("claims" in result.json);
+});
+
 Deno.test("runFaithfulnessCheck: both attempts unparseable -> verdict null + {error}, never throws", async () => {
   const ai = fakeAi([{ response: "garbage" }, { response: "still garbage" }]);
   const result = await runFaithfulnessCheck(ai, "test-model", "source", {

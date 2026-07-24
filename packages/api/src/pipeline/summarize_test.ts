@@ -844,6 +844,26 @@ Deno.test("summarizeArticleWithWorkersAi: an object response (json_schema succee
   assertEquals(calls, 2);
 });
 
+// Task 44 Part A regression test: the exact Task 35 bug this shared
+// normalizer exists to prevent recurring — the truncation heuristic's
+// text-extraction step never fired against a response Workers AI returned
+// as a BARE, unwrapped object (no `{response: ...}` at all — the "or the
+// object directly" shape parseWorkersAiResultWithDiagnostics already
+// documents), because a naive `typeof result !== "string"` guard treats
+// that shape as "not checkable" and skips straight past. Same assertion as
+// the `{response: object}`-wrapped case above, but for the unwrapped shape.
+Deno.test("summarizeArticleWithWorkersAi: a bare (unwrapped) object response is never treated as truncated (Task 35 heuristic regression)", async () => {
+  let calls = 0;
+  const ai = makeStubAi(() => {
+    calls += 1;
+    if (calls === 1) return { title_ru: "only one field" }; // no {response} wrapper
+    return { response: VALID_SUMMARY_2 };
+  });
+  const result = await summarizeArticleWithWorkersAi(ai, "test-model", "Title", "Body text");
+  assertEquals(result, VALID_SUMMARY_2);
+  assertEquals(calls, 2);
+});
+
 // --- callLlm: shared transport used by both summarization and ranking ---
 
 function makeLlmEnv(overrides: Partial<Env> = {}): Env {
