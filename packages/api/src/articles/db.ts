@@ -1172,6 +1172,11 @@ export interface PublishCandidate {
   title_ru: string;
   tldr_ru: string;
   bullets_ru: string[];
+  // Task 47 Part B: lets telegram-publish.ts try a direct sendPhoto upload
+  // instead of relying on Telegram's link-preview crawler.
+  image_key: string | null;
+  image_width: number | null;
+  image_height: number | null;
 }
 
 // Oldest un-drip-published 'ready' article, non-archived, added within the
@@ -1186,7 +1191,7 @@ export async function getNextPublishCandidate(
   sinceIso: string,
 ): Promise<PublishCandidate | null> {
   const result = await db.prepare(
-    `SELECT id, url, source, faithfulness_verdict, summary_json FROM articles
+    `SELECT id, url, source, faithfulness_verdict, summary_json, image_key, image_width, image_height FROM articles
      WHERE status = 'ready' AND archived = 0 AND telegram_published_at IS NULL AND added_at >= ?
      ORDER BY added_at ASC
      LIMIT 20`,
@@ -1197,6 +1202,9 @@ export async function getNextPublishCandidate(
       source: string | null;
       faithfulness_verdict: string | null;
       summary_json: string | null;
+      image_key: string | null;
+      image_width: number | null;
+      image_height: number | null;
     }
   >();
 
@@ -1211,6 +1219,9 @@ export async function getNextPublishCandidate(
       title_ru: summary.title_ru,
       tldr_ru: summary.tldr_ru,
       bullets_ru: summary.bullets_ru,
+      image_key: row.image_key,
+      image_width: row.image_width,
+      image_height: row.image_height,
     };
   }
   return null;
