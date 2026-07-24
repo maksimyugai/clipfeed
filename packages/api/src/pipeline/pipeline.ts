@@ -467,7 +467,7 @@ async function runImageStage(
       logStage(id, "image", imageStart, { outcome: "skipped_download_failed" });
       return;
     }
-    await markImageStored(env.DB, id, stored.key, stored.sourceUrl);
+    await markImageStored(env.DB, id, stored.key, stored.sourceUrl, stored.width, stored.height);
     logStage(id, "image", imageStart, { outcome: "stored" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

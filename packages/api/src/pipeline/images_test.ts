@@ -181,6 +181,8 @@ Deno.test("downloadAndStoreImage: a successful fetch stores the bytes under arti
     assertEquals(result, {
       key: "articles/article-1.jpg",
       sourceUrl: "https://example.com/photo.jpg",
+      width: null,
+      height: null,
     });
     assertEquals(puts.length, 1);
     assertEquals(puts[0].key, "articles/article-1.jpg");

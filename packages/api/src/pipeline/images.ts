@@ -1,5 +1,6 @@
 import "../env.d.ts";
 import { parseHTML } from "linkedom";
+import { parseImageDimensions } from "./image-dimensions.ts";
 import { safeFetchImageBytes, SsrfError } from "./ssrf.ts";
 
 // Task 35 Part C: article preview images. Extraction reads ONLY the
@@ -66,6 +67,11 @@ export function r2ImageKey(articleId: string, extension: string): string {
 export interface StoredImage {
   key: string;
   sourceUrl: string;
+  // Task 46 Part C: parsed from the header bytes we already downloaded — no
+  // extra fetch. Both null together when the format isn't recognized/the
+  // bytes are truncated; never one without the other.
+  width: number | null;
+  height: number | null;
 }
 
 // Downloads THROUGH the SSRF guard (safeFetchImageBytes — private ranges
@@ -101,7 +107,13 @@ export async function downloadAndStoreImage(
 
     const key = r2ImageKey(articleId, extension);
     await env.IMAGES.put(key, bytes, { httpMetadata: { contentType } });
-    return { key, sourceUrl: imageUrl };
+    const dimensions = parseImageDimensions(bytes, contentType);
+    return {
+      key,
+      sourceUrl: imageUrl,
+      width: dimensions?.width ?? null,
+      height: dimensions?.height ?? null,
+    };
   } catch (err) {
     const reason = err instanceof SsrfError
       ? `ssrf: ${err.message}`

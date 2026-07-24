@@ -132,6 +132,12 @@ export interface Article {
   // as attribution ("Image: <domain>", see ArticleCard.tsx) and re-checked
   // if the image is ever re-fetched; null whenever image_key is null.
   image_source_url: string | null;
+  // Task 46 Part C: pixel dimensions parsed from the image's own header
+  // bytes at download time (see packages/api/src/pipeline/image-dimensions.ts)
+  // — used for og:image:width/height on GET /a/:id. Both null whenever
+  // image_key is null or the format wasn't recognized.
+  image_width: number | null;
+  image_height: number | null;
   // Task 41 Part C: set as the very first thing a queue consumer invocation
   // does for this row (see index.ts's queue() handler), before fetch/
   // summarize/anything else runs. NULL means the message hasn't reached a
