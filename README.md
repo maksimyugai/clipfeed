@@ -2,7 +2,7 @@
   <img src="docs/assets/logo.svg" alt="ClipFeed" width="420">
 </p>
 <p align="center">
-  Персональная лента AI-выжимок · Your personal AI-summarized feed
+  Your personal AI-summarized feed
 </p>
 
 # ClipFeed
