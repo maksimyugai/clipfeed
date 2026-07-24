@@ -1,5 +1,10 @@
 import { assertEquals } from "@std/assert";
-import { buildPublishPost, escapeHtml, type PublishPostInput } from "./telegram-post.ts";
+import {
+  buildPublishCaption,
+  buildPublishPost,
+  escapeHtml,
+  type PublishPostInput,
+} from "./telegram-post.ts";
 
 Deno.test("escapeHtml: escapes &, <, > and only those three", () => {
   assertEquals(escapeHtml("A & B < C > D"), "A &amp; B &lt; C &gt; D");
@@ -154,4 +159,51 @@ Deno.test("buildPublishPost: truncates the TL;DR only once bullets are fully exh
   );
   assertEquals(text.endsWith("Источник: example.com"), true);
   assertEquals(linkCount(text), 1);
+});
+
+// --- buildPublishCaption (Task 47 Part B §2): same structure/priority as
+// buildPublishPost, budgeted for a sendPhoto caption (1024 chars) instead. ---
+
+Deno.test("buildPublishCaption: renders the same structure as buildPublishPost — title, tldr, bullets, single card link, plain source", () => {
+  const caption = buildPublishCaption(baseInput(), "https://clipfeed.example.com");
+  assertEquals(caption.startsWith("<b>Заголовок статьи</b>\n\n"), true);
+  assertEquals(caption.includes("Краткое содержание статьи в двух предложениях."), true);
+  assertEquals(caption.includes("• Первый пункт."), true);
+  assertEquals(
+    caption.includes(
+      'Читать полностью → <a href="https://clipfeed.example.com/a/abc-123">https://clipfeed.example.com/a/abc-123</a>',
+    ),
+    true,
+  );
+  assertEquals(caption.includes("Источник: example.com"), true);
+  assertEquals(linkCount(caption), 1);
+});
+
+Deno.test("buildPublishCaption: stays within Telegram's 1024-char caption cap, even with content that fits comfortably inside buildPublishPost's larger 4096 budget", () => {
+  const input = baseInput({
+    tldr_ru: "а".repeat(600),
+    bullets_ru: Array.from({ length: 10 }, (_, i) => `Пункт номер ${i}, довольно длинный текст.`),
+  });
+  const caption = buildPublishCaption(input, "https://clipfeed.example.com");
+  const post = buildPublishPost(input, "https://clipfeed.example.com");
+  assertEquals(caption.length <= 1024, true);
+  // Same input produces a longer (untruncated) plain message — proves the
+  // caption budget is genuinely tighter, not just coincidentally shorter.
+  assertEquals(post.length > 1024, true);
+});
+
+Deno.test("buildPublishCaption: truncates bullets first, then the TL;DR — title and link are never touched", () => {
+  const input = baseInput({
+    tldr_ru: "я".repeat(900),
+    bullets_ru: Array.from({ length: 20 }, (_, i) => `Пункт номер ${i} — ${"x".repeat(80)}`),
+  });
+  const caption = buildPublishCaption(input, "https://clipfeed.example.com");
+  assertEquals(caption.length <= 1024, true);
+  assertEquals(caption.startsWith("<b>Заголовок статьи</b>\n\n"), true);
+  assertEquals(
+    caption.includes('<a href="https://clipfeed.example.com/a/abc-123">'),
+    true,
+  );
+  assertEquals(caption.endsWith("Источник: example.com"), true);
+  assertEquals(caption.includes("Пункт номер 19"), false);
 });
